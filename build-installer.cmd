@@ -31,7 +31,15 @@ if errorlevel 1 (
 )
 
 echo [3/3] listing bundle artifacts >> %LOG%
-dir /b src-tauri\target\release\bundle\nsis >> %LOG% 2>&1
-dir /b src-tauri\target\release\bundle\msi >> %LOG% 2>&1
+dir /b target\release\bundle\nsis >> %LOG% 2>&1
+if errorlevel 1 (
+  echo [FAIL] nsis bundle missing - artifact verification failed >> %LOG%
+  exit /b 1
+)
+dir /b target\release\bundle\msi >> %LOG% 2>&1
+if errorlevel 1 (
+  echo [FAIL] msi bundle missing - artifact verification failed >> %LOG%
+  exit /b 1
+)
 echo [%date% %time%] === BUILD OK === >> %LOG%
 exit /b 0
