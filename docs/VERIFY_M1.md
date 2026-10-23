@@ -3,7 +3,8 @@
 > **대상**: M1 네이티브 코어 & 배경 제어 엔진 (`docs/development-plan.md` M1, 항목 1.1~1.4)
 > **측정 일자**: 2026-10-23
 > **플랫폼**: Windows (로컬 실측)
-> **커밋 기준 HEAD**: `No commits yet on main` (아직 커밋 전 워킹 트리 상태)
+> **커밋 기준 HEAD**: `ab72b98` — `chore: M1 워크스페이스 기반 파일 커밋 + 검증 보고서(VERIFY_M1.md)`
+> (커밋 3건: `d1878ca` 빌드 수정 → `dc1e2ae` UI 스캐폴딩 → `ab72b98` 기반 파일 + 본 보고서)
 
 ---
 
@@ -315,4 +316,52 @@ SUBCOMMANDS:
 - **잘못된(손상된) 이미지 투입 시 "기존 배경 유지" 시나리오 미실측.** `validate_and_stage_image` 의 해상도 하한(640×480) 거부만 단위 테스트로 확인했고, 파일은 존재하나 디코드가 깨진 이미지(예: 확장자 위장된 텍스트 파일)의 거부 동작은 CLI로 실측하지 않았다.
 - **`tauri build` 로 실제 exe/인스톨러 패키징 미수행.** M1 범위에서 Tauri 런타임을 의도적으로 제외했으므로 `src-tauri` 는 순수 Rust IPC 래퍼로만 동작한다. `#[tauri::command]` 매크로와 `invoke_handler` 연결은 M5 예정이며, 그때 `src-tauri` 에 Tauri 의존성을 복원해야 한다.
 - **다중 모니터 / 잠금화면 배경 / 비-Windows 빌드 미검증.** 비-Windows 분기(`#[cfg(not(windows))]`)는 컴파일만 확인.
-- **커밋 미실시.** 저장소에 커밋이 아직 존재하지 않아(`No commits yet on main`) 본 보고서는 워킹 트리 기준 측정값이다. R3(기능 추가 시 커밋) 요구는 다음 턴에서 반영해야 한다.
+- **커밋 완료.** R3(기능 추가 시 커밋) 요구에 따라 3개 커밋으로 반영했다. 최종 커밋 `ab72b98` 기준 `git status --short --branch` → `## main` (워킹 트리 clean). 커밋 구성은 §7 참조.
+
+---
+
+## 7. 커밋 구성 (R3 반영)
+
+```
+$ git log --oneline --stat -3
+exit=0
+
+ab72b98 chore: M1 워크스페이스 기반 파일 커밋 + 검증 보고서(VERIFY_M1.md)
+ .gitignore                |    5 +
+ crates/cli/Cargo.toml     |   10 +
+ crates/cli/src/main.rs    |  205 +++++
+ crates/core/Cargo.toml    |   17 +
+ docs/VERIFY_M1.md         |  318 +++++++
+ docs/development-plan.md  |  391 +++++++++
+ package-lock.json         | 2070 +++++++++++++++++++++++++++++++++++++++++++++
+ package.json              |   25 +
+ src-tauri/src/lib.rs      |   83 ++
+ src-tauri/tauri.conf.json |   30 +
+ src-ui/App.tsx            |  173 ++++
+ tsconfig.json             |   20 +
+ 12 files changed, 3347 insertions(+)
+dc1e2ae feat(ui): React/Vite 스캐폴딩 3종 추가 — 프론트엔드 빌드 통과
+ index.html      | 12 ++++++++++++
+ src-ui/main.tsx | 14 ++++++++++++++
+ vite.config.ts  | 23 +++++++++++++++++++++++
+ 3 files changed, 49 insertions(+)
+d1878ca fix(build): src-tauri M5 Tauri 런타임 의존성 제거 — cargo check --workspace 통과
+ Cargo.lock                   | 477 ++++++++++++++++++++++++++++++++++++++++
+ Cargo.toml                   |  31 +++
+ crates/core/src/lib.rs       | 142 ++++++++++++
+ crates/core/src/wallpaper.rs | 502 +++++++++++++++++++++++++++++++++++++++++++
+ src-tauri/Cargo.toml         |  22 ++
+ 5 files changed, 1174 insertions(+)
+```
+
+```
+$ git status --short --branch
+exit=0
+## main
+```
+
+| 커밋 | 성격 | 내용 |
+|---|---|---|
+| `d1878ca` | fix | 빌드 차단 결함 제거 (Tauri M5 의존성, 고아 doc comment, `map_err`→`inspect_err`) |
+| `dc1e2ae` | feat | M1 항목 1.1 React/Vite 스캐폴딩 3종 추가 |
+| `ab72b98` | chore | 워크스페이스 기반 파일 최초 커밋 + 본 검증 보고서 |
