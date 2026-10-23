@@ -29,10 +29,90 @@ mod tests {
     use super::*;
     use image::{ImageBuffer, Rgb, RgbImage};
     use std::fs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    /// Serializes every test that mutates the process-wide `WALLMAGIC_DATA_DIR` override.
+    fn data_dir_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Redirects `WALLMAGIC_DATA_DIR` to an isolated temporary directory for the lifetime of
+    /// the guard, so neither `state.json` nor the staging directory touches the real user
+    /// environment. On drop the previous environment value is restored and the temp directory
+    /// is removed.
+    struct DataDirGuard {
+        _lock: MutexGuard<'static, ()>,
+        temp_dir: PathBuf,
+        previous: Option<String>,
+    }
+
+    impl DataDirGuard {
+        fn new(label: &str) -> Self {
+            let lock = data_dir_lock();
+            let temp_dir = std::env::temp_dir().join(format!("wallmagic_test_{label}"));
+            let _ = fs::remove_dir_all(&temp_dir);
+            fs::create_dir_all(&temp_dir).expect("create isolated test data dir");
+            let previous = std::env::var("WALLMAGIC_DATA_DIR").ok();
+            std::env::set_var("WALLMAGIC_DATA_DIR", &temp_dir);
+            Self {
+                _lock: lock,
+                temp_dir,
+                previous,
+            }
+        }
+
+        fn dir(&self) -> &Path {
+            &self.temp_dir
+        }
+    }
+
+    impl Drop for DataDirGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var("WALLMAGIC_DATA_DIR", value),
+                None => std::env::remove_var("WALLMAGIC_DATA_DIR"),
+            }
+            let _ = fs::remove_dir_all(&self.temp_dir);
+        }
+    }
+
+    /// Restores the real OS wallpaper when the guard is dropped — including on panic,
+    /// so a failed assertion can never leave the user's desktop changed.
+    #[cfg(windows)]
+    struct OsWallpaperGuard {
+        original: Option<String>,
+    }
+
+    #[cfg(windows)]
+    impl OsWallpaperGuard {
+        fn capture() -> Self {
+            let original = get_current_wallpaper(None)
+                .ok()
+                .filter(|p| !p.trim().is_empty());
+            Self { original }
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for OsWallpaperGuard {
+        fn drop(&mut self) {
+            if let Some(ref path) = self.original {
+                let path = Path::new(path);
+                if path.exists() {
+                    let _ = win32::set_wallpaper_com(None, path, WallpaperPosition::Fill)
+                        .or_else(|_| win32::set_wallpaper_spi(path));
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_rejects_low_resolution_image() {
+        let _guard = DataDirGuard::new("low_resolution");
         let tmp = std::env::temp_dir().join("wallmagic_test_small.bmp");
         let small: RgbImage = ImageBuffer::from_pixel(320, 240, Rgb([10, 20, 30]));
         small.save(&tmp).expect("save small bmp");
@@ -50,48 +130,114 @@ mod tests {
 
     #[test]
     fn test_generate_and_stage_valid_wallpaper() {
+        let guard = DataDirGuard::new("staging");
         let tmp = std::env::temp_dir().join("wallmagic_test_hd.bmp");
         let generated = generate_sample_wallpaper("cyberpunk neon city", &tmp).expect("generate");
         assert!(generated.exists());
 
         let staged = validate_and_stage_image(&generated, Some("unit_test")).expect("stage");
         assert!(staged.exists());
+        assert!(
+            staged.starts_with(guard.dir()),
+            "staged wallpaper must be written inside the isolated data dir: {}",
+            staged.display()
+        );
 
         let _ = fs::remove_file(&tmp);
     }
 
     #[test]
+    fn test_state_file_is_isolated_by_data_dir_override() {
+        let guard = DataDirGuard::new("state_isolation");
+        let state_path = state_file_path();
+        assert!(
+            state_path.starts_with(guard.dir()),
+            "state.json must be redirected into the isolated data dir: {}",
+            state_path.display()
+        );
+        assert!(
+            !state_path.exists(),
+            "isolated data dir must start without a pre-existing state file"
+        );
+
+        let state = WallpaperState {
+            previous_wallpaper: Some("C:\\Users\\test\\original.jpg".to_string()),
+            current_wallpaper: Some("C:\\Users\\test\\current.jpg".to_string()),
+            backend_used: Some("unit-test".to_string()),
+        };
+        save_state(&state).expect("save state");
+        assert!(
+            state_path.exists(),
+            "state.json must be created inside the isolated data dir"
+        );
+
+        let loaded = load_state().expect("load state");
+        assert_eq!(loaded.previous_wallpaper, state.previous_wallpaper);
+        assert_eq!(loaded.current_wallpaper, state.current_wallpaper);
+        assert_eq!(loaded.backend_used, state.backend_used);
+    }
+
+    #[test]
+    fn test_resolve_previous_wallpaper_preserves_original_user_wallpaper() {
+        let _guard = DataDirGuard::new("previous_wallpaper");
+        let original = "C:\\Users\\test\\original.jpg";
+
+        // 1st set: no snapshot yet -> the currently active wallpaper becomes the snapshot.
+        assert_eq!(
+            crate::wallpaper::resolve_previous_wallpaper(None, original),
+            Some(original.to_string())
+        );
+
+        // 2nd set: the active wallpaper is one of our own staged files -> the snapshot is kept.
+        let staged = app_data_dir()
+            .join("active")
+            .join("active_first_theme_primary.bmp");
+        assert!(
+            is_staged_path(&staged.to_string_lossy()),
+            "staged path detection must work inside the isolated data dir"
+        );
+        assert_eq!(
+            crate::wallpaper::resolve_previous_wallpaper(Some(original), &staged.to_string_lossy()),
+            Some(original.to_string()),
+            "the original user wallpaper must survive a second set"
+        );
+    }
+
+    /// Opt-in end-to-end test: it really changes the wallpaper of the current desktop session.
+    ///
+    /// It is `#[ignore]`d by default because it mutates the user environment. Run it with
+    /// `cargo test -p wallmagic-core -- --ignored`. The state file is redirected to an
+    /// isolated temp dir (never the real `%LOCALAPPDATA%\WallMagic\state.json`) and the real
+    /// wallpaper is restored by a `Drop` guard even when an assertion fails.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "changes the real OS wallpaper; run explicitly with `cargo test -- --ignored`"]
     fn test_double_set_then_restore_preserves_original_wallpaper() {
-        // Backup real OS wallpaper & state before test
-        let real_os_wall = get_current_wallpaper(None)
-            .ok()
-            .filter(|p| Path::new(p).exists());
-        let real_state = load_state().ok();
+        let data_guard = DataDirGuard::new("e2e_double_set");
+        let os_guard = OsWallpaperGuard::capture();
 
-        let temp_dir = std::env::temp_dir().join("wallmagic_repro_double_set");
-        let _ = fs::create_dir_all(&temp_dir);
+        let assets_dir = data_guard.dir().join("assets");
+        fs::create_dir_all(&assets_dir).expect("create assets dir");
 
-        let orig_path = temp_dir.join("user_original.bmp");
-        let wall1_path = temp_dir.join("wall_first.bmp");
-        let wall2_path = temp_dir.join("wall_second.bmp");
+        let orig_path = assets_dir.join("user_original.bmp");
+        let wall1_path = assets_dir.join("wall_first.bmp");
+        let wall2_path = assets_dir.join("wall_second.bmp");
 
         generate_sample_wallpaper("original user desktop", &orig_path).expect("gen orig");
         generate_sample_wallpaper("first theme aurora", &wall1_path).expect("gen wall1");
         generate_sample_wallpaper("second theme sunset", &wall2_path).expect("gen wall2");
 
-        // Set OS wallpaper to user_original.bmp and clear state.json to simulate initial user state
-        #[cfg(windows)]
+        // Put a known, non-staged wallpaper on the desktop so the snapshot logic is exercised.
         let _ = win32::set_wallpaper_com(None, &orig_path, WallpaperPosition::Fill)
             .or_else(|_| win32::set_wallpaper_spi(&orig_path));
-        let _ = fs::remove_file(state_file_path());
 
-        // 1st set: stages active_wall_first_primary.bmp and applies wallpaper
+        // 1st set: stages active_wall_first_primary.bmp and applies the wallpaper.
         let state1 =
             set_wallpaper(&wall1_path, None, WallpaperPosition::Fill).expect("1st set_wallpaper");
         assert_eq!(
             state1.previous_wallpaper.as_deref(),
             Some(orig_path.to_string_lossy().as_ref()),
-            "after 1st set, previous_wallpaper must be original wallpaper"
+            "after 1st set, previous_wallpaper must be the original wallpaper"
         );
         let os_after_1st = get_current_wallpaper(None).expect("get after 1st set");
         assert!(
@@ -99,7 +245,7 @@ mod tests {
             "OS wallpaper after 1st set must be recognized as a staged path: {os_after_1st}"
         );
 
-        // 2nd set: stages active_wall_second_primary.bmp while OS wallpaper is active_wall_first_primary.bmp
+        // 2nd set: stages active_wall_second_primary.bmp while the OS wallpaper is the 1st one.
         let state2 =
             set_wallpaper(&wall2_path, None, WallpaperPosition::Fill).expect("2nd set_wallpaper");
         assert_ne!(
@@ -109,10 +255,10 @@ mod tests {
         assert_eq!(
             state2.previous_wallpaper.as_deref(),
             Some(orig_path.to_string_lossy().as_ref()),
-            "after 2nd set, previous_wallpaper must still be original wallpaper (not overwritten by 1st staged path)"
+            "after 2nd set, previous_wallpaper must still be the original wallpaper (not overwritten by the 1st staged path)"
         );
 
-        // Restore must bring back user_original.bmp
+        // Restore must bring back the original wallpaper.
         let restored = restore_wallpaper(None).expect("restore_wallpaper");
         assert_eq!(
             restored.current_wallpaper.as_deref(),
@@ -122,21 +268,10 @@ mod tests {
         let os_after_restore = get_current_wallpaper(None).expect("get after restore");
         assert!(
             os_after_restore.eq_ignore_ascii_case(&orig_path.to_string_lossy()),
-            "OS wallpaper after restore must match original wallpaper"
+            "OS wallpaper after restore must match the original wallpaper"
         );
 
-        // Cleanup & restore real environment
-        #[cfg(windows)]
-        if let Some(ref real_wall) = real_os_wall {
-            if !real_wall.is_empty() && Path::new(real_wall).exists() {
-                let _ =
-                    win32::set_wallpaper_com(None, Path::new(real_wall), WallpaperPosition::Fill)
-                        .or_else(|_| win32::set_wallpaper_spi(Path::new(real_wall)));
-            }
-        }
-        if let Some(st) = real_state {
-            let _ = save_state(&st);
-        }
-        let _ = fs::remove_dir_all(&temp_dir);
+        // Restore the real user wallpaper explicitly (the guard would do it on drop as well).
+        drop(os_guard);
     }
 }

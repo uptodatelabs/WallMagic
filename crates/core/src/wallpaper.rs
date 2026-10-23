@@ -53,8 +53,22 @@ pub enum WallpaperError {
     WindowsApi(String),
 }
 
-/// Returns the application data directory (`%LOCALAPPDATA%\WallMagic` or fallback temp dir)
+/// Returns the application data directory.
+///
+/// Resolution order:
+/// 1. `WALLMAGIC_DATA_DIR` environment variable (explicit override)
+/// 2. `%LOCALAPPDATA%\WallMagic`
+/// 3. `%TEMP%\WallMagic` (fallback)
+///
+/// The `WALLMAGIC_DATA_DIR` override lets tests point the whole engine (state file + staging
+/// directory) at an isolated temporary directory, so a test run never touches the real user
+/// state in `%LOCALAPPDATA%\WallMagic`.
 pub fn app_data_dir() -> PathBuf {
+    if let Ok(custom) = std::env::var("WALLMAGIC_DATA_DIR") {
+        if !custom.trim().is_empty() {
+            return PathBuf::from(custom);
+        }
+    }
     if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
         PathBuf::from(local_app_data).join("WallMagic")
     } else {
@@ -224,6 +238,34 @@ pub fn is_staged_path(wallpaper_path: &str) -> bool {
     norm_candidate.starts_with(&norm_active)
 }
 
+/// Decides which wallpaper should be kept as the restore snapshot.
+///
+/// Rules:
+/// - If no snapshot exists yet, the currently active wallpaper becomes the snapshot.
+/// - If the currently active wallpaper is one of our own staged files, the existing snapshot is
+///   kept — a second `set` must never overwrite the original user wallpaper with an
+///   intermediate staged path.
+/// - Otherwise (the active wallpaper is a genuine user wallpaper), it becomes the new snapshot.
+///
+/// This is a pure function so the rule can be unit tested without touching the OS.
+pub fn resolve_previous_wallpaper(
+    existing_snapshot: Option<&str>,
+    current_os_wallpaper: &str,
+) -> Option<String> {
+    let current = current_os_wallpaper.trim();
+    if current.is_empty() {
+        return existing_snapshot.map(|s| s.to_string());
+    }
+    let snapshot_is_missing = existing_snapshot
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(true);
+    if snapshot_is_missing || !is_staged_path(current) {
+        Some(current.to_string())
+    } else {
+        existing_snapshot.map(|s| s.to_string())
+    }
+}
+
 /// Sets the desktop wallpaper with Zero-Black-Screen protection:
 /// 1. Validates image & resolution (>= 640x480) and stages atomically.
 /// 2. Snapshots current wallpaper path into `state.json` (preserving non-staged original user wallpaper).
@@ -237,15 +279,12 @@ pub fn set_wallpaper(
     let staged_path = validate_and_stage_image(candidate_path, monitor_id)?;
     let mut state = load_state().unwrap_or_default();
 
-    // Capture current OS wallpaper before overwriting so we can restore reliably
+    // Capture current OS wallpaper before overwriting so we can restore reliably.
+    // The snapshot rule lives in `resolve_previous_wallpaper` so it can be unit tested
+    // without touching the OS.
     if let Ok(current_os_wall) = get_current_wallpaper(monitor_id) {
-        if !current_os_wall.trim().is_empty() {
-            // Preserve the original user wallpaper if previous_wallpaper isn't set yet,
-            // or update previous_wallpaper only when current_os_wall is NOT a staged path under active/.
-            if state.previous_wallpaper.is_none() || !is_staged_path(&current_os_wall) {
-                state.previous_wallpaper = Some(current_os_wall);
-            }
-        }
+        state.previous_wallpaper =
+            resolve_previous_wallpaper(state.previous_wallpaper.as_deref(), &current_os_wall);
     }
 
     #[cfg(windows)]
