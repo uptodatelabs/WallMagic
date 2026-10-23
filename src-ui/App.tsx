@@ -12,6 +12,12 @@ export interface WallpaperCandidate {
   thumb_base64: string;
 }
 
+export interface SearchResult {
+  candidates: WallpaperCandidate[];
+  total_matched: number;
+  truncated: boolean;
+}
+
 export interface WallpaperState {
   previous_wallpaper: string | null;
   current_wallpaper: string | null;
@@ -112,13 +118,17 @@ export function App(): React.ReactElement {
   const handleSearch = async () => {
     setBusy(true);
     try {
-      const results = await invoke<WallpaperCandidate[]>("search_wallpapers", {
+      const result = await invoke<SearchResult>("search_wallpapers", {
         query,
         dir: searchDir.trim() ? searchDir.trim() : null,
       });
-      setCandidates(results);
-      setSelected(results.length > 0 ? results[0] : null);
-      reportOk(`검색 완료: ${results.length}개 후보`);
+      setCandidates(result.candidates);
+      setSelected(result.candidates.length > 0 ? result.candidates[0] : null);
+      reportOk(
+        result.truncated
+          ? `검색 완료: ${result.total_matched}건 중 ${result.candidates.length}건 표시`
+          : `검색 완료: ${result.candidates.length}개 후보`,
+      );
     } catch (err) {
       reportError(`검색 실패: ${String(err)}`);
     } finally {

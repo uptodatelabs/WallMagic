@@ -13,7 +13,8 @@ pub mod wallpaper;
 // Public facade: the canonical implementation lives in the `wallpaper` / `search` modules.
 // Types and functions are re-exported here so downstream crates keep a stable import path.
 pub use search::{
-    generate_library_wallpaper, search_wallpapers, WallpaperCandidate, SUPPORTED_EXTENSIONS,
+    generate_library_wallpaper, search_wallpapers, WallpaperCandidate, SearchResult,
+    SUPPORTED_EXTENSIONS,
 };
 pub use wallpaper::{
     app_data_dir, generate_sample_wallpaper, get_current_wallpaper, is_staged_path, list_monitors,
@@ -296,11 +297,73 @@ mod tests {
             .expect("save sunset_c");
 
         let results = search_wallpapers("sunset", Some(&root)).expect("search_wallpapers");
-        let names: Vec<String> = results.iter().map(|c| c.file_name.clone()).collect();
+        let names: Vec<String> = results
+            .candidates
+            .iter()
+            .map(|c| c.file_name.clone())
+            .collect();
         assert_eq!(
             names,
             vec!["sunset_a.bmp".to_string(), "sunset_c.png".to_string()],
             "search must return only name-matching, decodable, >=640x480 images in sorted order"
+        );
+    }
+
+    /// 회귀 테스트 (검수 지적 1): 알파 채널이 있는 PNG는 JPEG 인코더가 Rgba8을 거부하므로
+    /// RGB 변환 없이는 `load_candidate`가 조용히 None을 반환해 검색 결과에서 사라진다.
+    #[test]
+    fn test_search_includes_rgba_png_with_alpha_channel() {
+        let guard = DataDirGuard::new("rgba_png");
+        let root = guard.dir().join("pics");
+        fs::create_dir_all(&root).expect("create search root");
+
+        let rgba: image::RgbaImage =
+            image::ImageBuffer::from_pixel(800, 600, image::Rgba([10, 20, 30, 128]));
+        rgba.save(root.join("alpha_sunset.png"))
+            .expect("save rgba png");
+
+        let results = search_wallpapers("alpha", Some(&root)).expect("search_wallpapers");
+        let names: Vec<String> = results
+            .candidates
+            .iter()
+            .map(|c| c.file_name.clone())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["alpha_sunset.png".to_string()],
+            "RGBA PNG (with alpha channel) must appear in search results"
+        );
+    }
+
+    /// 회귀 테스트 (검수 지적 2): 결과 상한 없이 수천 장을 디코딩하면 IPC가 장시간 블로킹된다.
+    #[test]
+    fn test_search_caps_results_at_max() {
+        let guard = DataDirGuard::new("cap_results");
+        let root = guard.dir().join("pics");
+        fs::create_dir_all(&root).expect("create search root");
+
+        let solid: RgbImage = ImageBuffer::from_pixel(640, 480, Rgb([5, 6, 7]));
+        let total = 205usize;
+        for i in 0..total {
+            solid
+                .save(root.join(format!("cap_{i:03}.png")))
+                .expect("save cap png");
+        }
+
+        let results = search_wallpapers("cap_", Some(&root)).expect("search_wallpapers");
+        assert_eq!(
+            results.total_matched, total,
+            "total_matched must count every name-matched file before the cap"
+        );
+        assert!(
+            results.truncated,
+            "truncated must be true when total_matched exceeds the cap"
+        );
+        assert_eq!(
+            results.candidates.len(),
+            200,
+            "search results must be capped at MAX_RESULTS (200), got {}",
+            results.candidates.len()
         );
     }
 

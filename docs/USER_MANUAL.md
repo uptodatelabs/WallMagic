@@ -44,9 +44,11 @@ WallMagic은 Windows PC의 바탕화면을 **검색 · 생성 · 적용 · 복�
 
 **방법 A — 인스톨러 (권장, 배포용)**
 ```
-src-tauri/target/release/bundle/nsis/WallMagic_*_x64-setup.exe   ← NSIS 설치 프로그램
-src-tauri/target/release/bundle/msi/WallMagic_*_x64_en-US.msi   ← MSI 설치 패키지
+target/release/bundle/nsis/WallMagic_0.1.0_x64-setup.exe   ← NSIS 설치 프로그램 (2.13 MiB)
+target/release/bundle/msi/WallMagic_0.1.0_x64_en-US.msi    ← MSI 설치 패키지 (3.17 MiB)
 ```
+> **검증 상태**: 위 인스톨러 2종은 `build-installer.cmd`(`npm run tauri build`)로 2026-10-24 실제 생성 확인 (`=== BUILD OK ===` 로그). 다만 **인스톨러 설치 실행 자체는 미검증**입니다 — 실제 설치를 시험하려면 방법 B/C의 개발 빌드(`run-app.cmd`)를 먼저 권장합니다.
+
 실행 후 시작 메뉴의 **WallMagic** 바로가기로 시작합니다.
 
 **방법 B — 소스에서 빌드 (개발용)**
@@ -68,14 +70,16 @@ cargo run -p wallmagic-app
 npm install
 npm run tauri build
 ```
-산출물:
-- 실행 파일: `src-tauri/target/release/WallMagic.exe`
-- NSIS 인스톨러: `src-tauri/target/release/bundle/nsis/`
-- MSI 인스톨러: `src-tauri/target/release/bundle/msi/`
+산출물 (실측 경로, 2026-10-24):
+- 실행 파일: `target/release/wallmagic-app.exe`
+- NSIS 인스톨러: `target/release/bundle/nsis/WallMagic_0.1.0_x64-setup.exe`
+- MSI 인스톨러: `target/release/bundle/msi/WallMagic_0.1.0_x64_en-US.msi`
+
+> 워크스페이스 루트의 `target/`이 번들 산출 루트입니다 (`src-tauri/target/`이 아님).
 
 ### 2.3 프로그램 시작
 
-1. 시작 메뉴 또는 `WallMagic.exe` 실행
+1. 시작 메뉴 또는 `target/release/wallmagic-app.exe` 실행 (인스톨러 설치 시 시작 메뉴의 **WallMagic** 바로가기)
 2. 메인 창이 열리면 상단에 **현재 배경 · 적용 백엔드 배지 · 모니터 선택**이 표시됩니다
 3. 좌측 패널에서 **검색** 또는 **생성**으로 시작합니다
 
@@ -117,6 +121,7 @@ npm run tauri build
 - 후보별 썸네일 + 파일명 + 해상도 + 용량 표시
 - 카드를 클릭하면 오른쪽 미리보기에 선택됩니다
 - **적용 가능한 이미지만** 표시됩니다 (640×480 이상 + 정상 디코딩)
+- **최대 200건만 표시**됩니다 — 매칭된 전체 후보가 200건을 초과하면 상위 200건만 썸네일로 표시되고, 상태 바에 "N건 중 200건 표시"로 잘림이 안내됩니다 (IPC 페이로드·메모리 보호). 더 보려면 키워드를 좁혀 검색하세요.
 
 ### 3.4 우측 패널 — ③ 미리보기 / ④ 적용 · 복원
 - **미리보기**: 선택 이미지의 큰 썸네일과 상세 정보(파일명·해상도·용량·전체 경로)

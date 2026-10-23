@@ -17,7 +17,10 @@
 
 use serde::Serialize;
 use std::path::PathBuf;
-use wallmagic_core::{MonitorInfo, WallpaperCandidate, WallpaperError, WallpaperPosition, WallpaperState, VERSION};
+use wallmagic_core::{
+    MonitorInfo, SearchResult, WallpaperCandidate, WallpaperError, WallpaperPosition,
+    WallpaperState, VERSION,
+};
 
 /// 상태바용 앱 상태 스냅샷 (IPC #6 `get_app_status`).
 #[derive(Debug, Clone, Serialize)]
@@ -49,18 +52,16 @@ fn err_to_string(err: WallpaperError) -> String {
 }
 
 /// IPC #1 (액션 ① 검색): 키워드로 로컬 배경화면 후보를 검색한다.
+///
+/// 반환은 `SearchResult`다 — 후보 목록(`candidates`)뿐 아니라 전체 매칭 수
+/// (`total_matched`)와 상한 초과 여부(`truncated`)를 함께 전달해, UI가
+/// "N건 중 200건 표시"를 노출할 수 있게 한다.
 #[tauri::command]
-fn search_wallpapers(
-    query: String,
-    dir: Option<String>,
-) -> Result<Vec<WallpaperCandidate>, String> {
+fn search_wallpapers(query: String, dir: Option<String>) -> Result<SearchResult, String> {
     search_wallpapers_impl(&query, dir.as_deref())
 }
 
-pub fn search_wallpapers_impl(
-    query: &str,
-    dir: Option<&str>,
-) -> Result<Vec<WallpaperCandidate>, String> {
+pub fn search_wallpapers_impl(query: &str, dir: Option<&str>) -> Result<SearchResult, String> {
     let root: Option<PathBuf> = dir
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -177,7 +178,10 @@ mod tests {
         // ① 검색: 생성된 파일이 키워드 검색으로 다시 조회된다.
         let results = search_wallpapers_impl("tauri", None).expect("search_wallpapers");
         assert!(
-            results.iter().any(|c| c.path == candidate.path),
+            results
+                .candidates
+                .iter()
+                .any(|c| c.path == candidate.path),
             "search must find the generated candidate back"
         );
 
