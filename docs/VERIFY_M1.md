@@ -3,8 +3,9 @@
 > **대상**: M1 네이티브 코어 & 배경 제어 엔진 (`docs/development-plan.md` M1, 항목 1.1~1.4)
 > **측정 일자**: 2026-10-23
 > **플랫폼**: Windows (로컬 실측)
-> **커밋 기준 HEAD**: `ab72b98` — `chore: M1 워크스페이스 기반 파일 커밋 + 검증 보고서(VERIFY_M1.md)`
-> (커밋 3건: `d1878ca` 빌드 수정 → `dc1e2ae` UI 스캐폴딩 → `ab72b98` 기반 파일 + 본 보고서)
+> **커밋 기준 HEAD**: `db901ab` — `docs(verify): VERIFY_M1.md §7 커밋 구성 및 git 증빙을 최종 HEAD(0fda2c6) 기준으로 갱신`
+> (커밋 5건: `d1878ca` 빌드 수정 → `dc1e2ae` UI 스캐폴딩 → `ab72b98` 기반 파일 + 보고서 → `76043ea` §7 추가 → `0fda2c6` 파괴적 테스트 격리 → `db901ab` 증빙 갱신)
+> 코드 변경 커밋: **`0fda2c6`** (`crates/core/src/lib.rs`, `crates/core/src/wallpaper.rs`)
 
 ---
 
@@ -456,7 +457,8 @@ exit=0
 ```
 $ git log --oneline --stat -3
 exit=0
-(측정 시점 HEAD=0fda2c6)
+(측정 시점 HEAD=db901ab — 본 보고서 커밋 db901ab 의 부모. 본 보고서는 §7 갱신 커밋을
+ 자기 자신에 기록할 수 없으므로, 코드 변경 커밋 0fda2c6 을 기준선으로 삼는다)
 
 0fda2c6 test(core): 파괴적 배경화면 테스트 격리 — WALLMAGIC_DATA_DIR 오버라이드 + #[ignore] opt-in 분리
  crates/core/src/lib.rs       | 201 ++++++++++++++++++++++++++++++++++++-------
