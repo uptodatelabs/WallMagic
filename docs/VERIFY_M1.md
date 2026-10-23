@@ -456,7 +456,16 @@ exit=0
 ```
 $ git log --oneline --stat -3
 exit=0
+(측정 시점 HEAD=0fda2c6)
 
+0fda2c6 test(core): 파괴적 배경화면 테스트 격리 — WALLMAGIC_DATA_DIR 오버라이드 + #[ignore] opt-in 분리
+ crates/core/src/lib.rs       | 201 ++++++++++++++++++++++++++++++++++++-------
+ crates/core/src/wallpaper.rs |  57 ++++++++++--
+ docs/VERIFY_M1.md            | 141 ++++++++++++++++++++++++++++--
+ 3 files changed, 352 insertions(+), 47 deletions(-)
+76043ea docs(verify): VERIFY_M1.md에 커밋 구성(§7) 추가 및 HEAD 기준 갱신
+ docs/VERIFY_M1.md | 53 +++++++++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 51 insertions(+), 2 deletions(-)
 ab72b98 chore: M1 워크스페이스 기반 파일 커밋 + 검증 보고서(VERIFY_M1.md)
  .gitignore                |    5 +
  crates/cli/Cargo.toml     |   10 +
@@ -496,3 +505,5 @@ exit=0
 | `d1878ca` | fix | 빌드 차단 결함 제거 (Tauri M5 의존성, 고아 doc comment, `map_err`→`inspect_err`) |
 | `dc1e2ae` | feat | M1 항목 1.1 React/Vite 스캐폴딩 3종 추가 |
 | `ab72b98` | chore | 워크스페이스 기반 파일 최초 커밋 + 본 검증 보고서 |
+| `76043ea` | docs | `VERIFY_M1.md` §7(커밋 구성) 추가 및 HEAD 기준 갱신 |
+| `0fda2c6` | test | 파괴적 배경화면 테스트 격리 — `WALLMAGIC_DATA_DIR` 오버라이드 + `#[ignore]` opt-in 분리 + Drop 가드 복구 (§4-1) |
