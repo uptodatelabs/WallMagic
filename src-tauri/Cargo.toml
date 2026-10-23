@@ -6,17 +6,14 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[lib]
+name = "wallmagic_app"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build.workspace = true
+
 [dependencies]
 wallmagic-core = { path = "../crates/core" }
 serde.workspace = true
-serde_json.workspace = true
-tracing.workspace = true
-
-# NOTE (M1 scope): the `tauri` / `tauri-build` / `tauri-plugin-opener` crates are intentionally
-# NOT declared here yet. `src-tauri/src/lib.rs` exposes plain Rust IPC wrapper functions in M1;
-# `#[tauri::command]` attributes and `tauri::Builder::invoke_handler` runtime wiring are
-# scheduled for M5 (see docs/development-plan.md, M5.1/M5.2).
-# Declaring them in M1 pulled the full GTK/WebKit2 dependency tree (403 crates) into the
-# workspace lock file and made `cargo check --workspace` unbuildable in CI-sized timeouts.
-# The workspace-level `[workspace.dependencies]` entries for Tauri are kept in the root
-# `Cargo.toml` so M5 can inherit them with a single `workspace = true` line.
+tauri.workspace = true

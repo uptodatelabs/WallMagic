@@ -46,6 +46,9 @@ pub enum WallpaperError {
     #[error("serialization error: {0}")]
     Serde(#[from] serde_json::Error),
 
+    #[error("failed to load generated candidate image: {0}")]
+    CandidateLoad(String),
+
     #[error("no previous wallpaper snapshot available to restore")]
     NoSnapshotAvailable,
 
@@ -211,6 +214,39 @@ pub fn get_current_wallpaper(monitor_id: Option<&str>) -> Result<String, Wallpap
     }
 }
 
+/// GUI 모니터 선택 목록에 노출되는 디스플레이 정보.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MonitorInfo {
+    /// `IDesktopWallpaper`가 인식하는 모니터 장치 경로 (예: `\\.\DISPLAY1`)
+    pub id: String,
+    /// 사람이 읽는 장치 설명 문자열 (예: `Generic PnP Monitor`)
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub is_primary: bool,
+}
+
+/// 현재 데스크톱에 연결된(활성화된) 모니터 목록을 반환한다.
+///
+/// Windows에서는 `EnumDisplayDevicesW` + `EnumDisplaySettingsW`로 장치 경로·해상도·주 모니터
+/// 여부를 조회한다. 비 Windows 플랫폼(빌드 검증용)에서는 목업 1대를 반환한다.
+pub fn list_monitors() -> Vec<MonitorInfo> {
+    #[cfg(windows)]
+    {
+        win32::list_monitors_win32()
+    }
+    #[cfg(not(windows))]
+    {
+        vec![MonitorInfo {
+            id: "MOCK-0".to_string(),
+            name: "Mock Display".to_string(),
+            width: 1920,
+            height: 1080,
+            is_primary: true,
+        }]
+    }
+}
+
 /// Checks whether the given wallpaper path resides inside our active staging directory (`app_data_dir()/active/`).
 pub fn is_staged_path(wallpaper_path: &str) -> bool {
     let trimmed = wallpaper_path.trim();
@@ -370,6 +406,10 @@ pub mod win32 {
         CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
         COINIT_APARTMENTTHREADED,
     };
+    use windows::Win32::Graphics::Gdi::{
+        EnumDisplayDevicesW, EnumDisplaySettingsW, DEVMODEW, DISPLAY_DEVICEW,
+        DISPLAY_DEVICE_ATTACHED_TO_DESKTOP, DISPLAY_DEVICE_PRIMARY_DEVICE, ENUM_CURRENT_SETTINGS,
+    };
     use windows::Win32::UI::Shell::{
         DesktopWallpaper, IDesktopWallpaper, DESKTOP_WALLPAPER_POSITION, DWPOS_CENTER, DWPOS_FILL,
         DWPOS_FIT, DWPOS_SPAN, DWPOS_STRETCH, DWPOS_TILE,
@@ -508,6 +548,64 @@ pub mod win32 {
             }
         }
         Ok(())
+    }
+
+    /// Enumerates attached display adapters with `EnumDisplayDevicesW` and resolves each one's
+    /// current resolution with `EnumDisplaySettingsW(ENUM_CURRENT_SETTINGS)`.
+    ///
+    /// The `DeviceName` (`\\.\DISPLAY1`) is exactly the monitor device path that
+    /// `IDesktopWallpaper::SetWallpaper` accepts, so the GUI can pass `MonitorInfo::id` through
+    /// unchanged.
+    pub fn list_monitors_win32() -> Vec<super::MonitorInfo> {
+        use super::MonitorInfo;
+
+        fn wide_to_string(buf: &[u16]) -> String {
+            let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+            String::from_utf16_lossy(&buf[..len])
+        }
+
+        let mut out: Vec<MonitorInfo> = Vec::new();
+        unsafe {
+            for idx in 0..32u32 {
+                let mut device = DISPLAY_DEVICEW {
+                    cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32,
+                    ..Default::default()
+                };
+                if !EnumDisplayDevicesW(PCWSTR::null(), idx, &mut device, 0).as_bool() {
+                    break;
+                }
+                let attached = (device.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP).0 != 0;
+                if !attached {
+                    continue;
+                }
+                let is_primary = (device.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE).0 != 0;
+
+                let mut dev_mode = DEVMODEW {
+                    dmSize: std::mem::size_of::<DEVMODEW>() as u16,
+                    ..Default::default()
+                };
+                let (width, height) = if EnumDisplaySettingsW(
+                    PCWSTR(device.DeviceName.as_ptr()),
+                    ENUM_CURRENT_SETTINGS,
+                    &mut dev_mode,
+                )
+                .as_bool()
+                {
+                    (dev_mode.dmPelsWidth, dev_mode.dmPelsHeight)
+                } else {
+                    (0, 0)
+                };
+
+                out.push(MonitorInfo {
+                    id: wide_to_string(&device.DeviceName),
+                    name: wide_to_string(&device.DeviceString),
+                    width,
+                    height,
+                    is_primary,
+                });
+            }
+        }
+        out
     }
 
     pub fn get_wallpaper_spi() -> Result<String, WallpaperError> {

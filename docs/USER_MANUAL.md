@@ -1,378 +1,335 @@
-# WallMagic 사용 매뉴얼 (v0.1.0 — M1 네이티브 코어)
+# WallMagic 사용 매뉴얼 (v0.2.0 — Windows 전용 GUI)
 
-> **대상 버전**: `wallmagic-core` / `wallmagic-cli` / `wallmagic-app` v0.1.0
-> **기준 커밋**: M1 검증 완료 시점 (문서 작성 시점 HEAD)
-> **플랫폼**: Windows 10 / 11 (COM `IDesktopWallpaper` 1차 경로, `SystemParametersInfoW` 2차 폴백)
-> **관련 문서**: `docs/development-plan.md` (개발 계획서), `docs/VERIFY_M1.md` (M1 검증 보고서)
+> **대상 버전**: `wallmagic-core` / `wallmagic-app` v0.1.0 (제품 표기 v0.2.0 — GUI 전환 릴리스)
+> **플랫폼**: Windows 10 (1809+) / Windows 11 (64-bit)
+> **인터페이스**: **Windows GUI 프로그램 (Tauri v2 + React)** — CLI 인터페이스는 폐기되었습니다.
+> **관련 문서**: `docs/ARCHITECTURE.md` (GUI 아키텍처 결정), `docs/development-plan.md` (개발 계획서)
 
 ---
 
 ## 1. WallMagic란 무엇인가
 
-WallMagic은 Windows PC의 바탕화면을 **자동 검색·생성·설정**하는 프로그램입니다.
+WallMagic은 Windows PC의 바탕화면을 **검색 · 생성 · 적용 · 복원**하는 Windows 전용 데스크톱 프로그램입니다.
 
-현재 M1 단계에서 제공되는 기능은 다음 3가지 축입니다.
+**창을 닫아도 배경은 그대로 유지**되며, 언제든지 "이전 배경으로 복원"으로 되돌릴 수 있습니다.
 
-| 축 | 설명 |
+| 핵심 기능 | 설명 |
 |---|---|
-| **네이티브 배경 제어** | `IDesktopWallpaper` COM API를 1차로 사용하고, 실패 시 `SystemParametersInfoW` 로 자동 폴백합니다. |
-| **안전한 적용** | 이미지를 검증(존재·디코딩·최소 640×480)한 뒤 **원자적 스테이징**하고, 기존 배경은 스냅샷으로 보존해 언제든 원복할 수 있습니다(Zero-Black-Screen). |
-| **프롬프트 기반 생성** | 외부 API 없이 프롬프트 문자열을 시드로 1920×1080 그라디언트 이미지를 결정론적으로 생성합니다(네트워크·비용 0). |
+| **① 검색** | 내 PC의 이미지 폴더(라이브러리 + Pictures, 또는 지정 폴더)에서 키워드로 배경 후보를 찾아 썸네일로 보여줍니다. |
+| **② 생성** | 테마 프롬프트를 입력하면 1920×1080 배경 이미지를 생성해 라이브러리에 저장하고 바로 적용할 수 있습니다. (네트워크·비용 0) |
+| **③ 적용** | 선택한 이미지를 검증·스테이징 후 바탕화면으로 적용합니다. 모니터별 개별 적용과 6가지 배치 방식을 지원합니다. |
+| **④ 복원** | 적용 전에 자동 저장한 스냅샷으로 이전 배경을 되돌립니다. |
 
-> **중요**: M1은 **시제품(프로토타입)** 입니다. 실제 사진 검색 API, AI 이미지 생성, 트레이 상주, 자동 스케줄러는 M3~M5에서 추가 예정입니다(§7 참고).
+**안전성 (Zero-Black-Screen)**
+- `IDesktopWallpaper` COM API를 1차로 사용하고, 실패 시 `SystemParametersInfoW`로 자동 폴백합니다.
+- 적용 전 원본 배경을 스냅샷하므로, 실패하더라도 검은 화면으로 남지 않습니다.
+- 640×480 미만이거나 손상된 이미지는 자동 제외됩니다.
+
+> **현재 상태**: 상용화 1단계 빌드입니다. 원격 이미지 검색 API, AI 이미지 생성, 트레이 상주, 자동 스케줄러는 후속 단계입니다 (§8 참고).
 
 ---
 
-## 2. 설치와 빌드
+## 2. 설치와 실행
 
-### 2.1 필요 환경
+### 2.1 시스템 요구 사항
 
-| 항목 | 버전 | 비고 |
-|---|---|---|
-| Rust | 1.82 이상 | `rust-version = "1.82"` (Cargo.toml 기준) |
-| Node.js | 20 이상 (권장) | 프론트엔드(`src-ui`) 빌드용 |
-| OS | Windows 10 / 11 | COM/SPI 경로는 Windows 전용 (`#[cfg(windows)]`) |
+| 항목 | 요구 사항 |
+|---|---|
+| OS | Windows 10 (1809 이상) / Windows 11 (64-bit) |
+| 런타임 | WebView2 (Windows 10/11에 기본 탑재 — 별도 설치 불필요) |
+| 디스크 | 약 50 MB |
+| 메모리 | 유휴 시 약 40 MB |
 
-### 2.2 빌드
+### 2.2 설치
 
+**방법 A — 인스톨러 (권장, 배포용)**
+```
+src-tauri/target/release/bundle/nsis/WallMagic_*_x64-setup.exe   ← NSIS 설치 프로그램
+src-tauri/target/release/bundle/msi/WallMagic_*_x64_en-US.msi   ← MSI 설치 패키지
+```
+실행 후 시작 메뉴의 **WallMagic** 바로가기로 시작합니다.
+
+**방법 B — 소스에서 빌드 (개발용)**
 ```bash
-# Rust 워크스페이스 전체 (core / cli / src-tauri)
-cargo build --workspace
-
-# 린트 + 포맷 검사
-cargo clippy --workspace --all-targets
-cargo fmt --all -- --check
-
-# 프론트엔드 번들 (dist/)
+# 1) 프론트엔드 의존성 설치 + 웹 번들 빌드
 npm install
 npm run build
-```
 
-### 2.3 테스트 실행
-
-```bash
-# 전체 테스트 (OS 배경을 건드리지 않는 기본 실행)
+# 2) Rust 코어 빌드 + 테스트
+cargo build --workspace
 cargo test --workspace
 
-# 실제 배경을 변경하는 통합 테스트 (opt-in)
-#   → 이 실행은 사용자 desktops의 배경화면을 실제로 바꾸고 되돌립니다.
-cargo test -p wallmagic-core -- --ignored
+# 3) GUI 실행 (개발 빌드)
+cargo run -p wallmagic-app
 ```
 
-기본 실행 결과 기준선: **core 4 passed / 1 ignored, app 1 passed** (총 5 passed, 0 failed).
+**방법 C — 릴리스 빌드 (배포 산출물 생성)**
+```bash
+npm install
+npm run tauri build
+```
+산출물:
+- 실행 파일: `src-tauri/target/release/WallMagic.exe`
+- NSIS 인스톨러: `src-tauri/target/release/bundle/nsis/`
+- MSI 인스톨러: `src-tauri/target/release/bundle/msi/`
+
+### 2.3 프로그램 시작
+
+1. 시작 메뉴 또는 `WallMagic.exe` 실행
+2. 메인 창이 열리면 상단에 **현재 배경 · 적용 백엔드 배지 · 모니터 선택**이 표시됩니다
+3. 좌측 패널에서 **검색** 또는 **생성**으로 시작합니다
 
 ---
 
-## 3. 빠른 시작 (5분)
+## 3. 화면 구성
 
-```bash
-# 1) 현재 적용된 배경화면 경로 조회
-cargo run -q -p wallmagic-cli -- get
-# 예) C:\Users\<user>\AppData\Local\WallMagic\active\active_xxx_primary.bmp
-
-# 2) 프롬프트로 샘플 배경 생성 (파일에만 저장, 적용하지 않음)
-cargo run -q -p wallmagic-cli -- generate "cyberpunk neon street" --out %TEMP%\wm.bmp
-
-# 3) 생성한 이미지를 배경으로 적용
-cargo run -q -p wallmagic-cli -- set %TEMP%\wm.bmp --pos fill
-
-# 4) 되돌리기
-cargo run -q -p wallmagic-cli -- restore
+```
+┌────────────────────────────────────────────────────────────┐
+│ WallMagic Studio       [백엔드 배지]        [모니터 선택 ▾] │
+├──────────────────┬─────────────────────────────────────────┤
+│ ① 검색           │                                         │
+│  [키워드]        │   ③ 미리보기 (선택된 이미지)              │
+│  [검색 폴더]     │      ┌───────────────────────┐          │
+│  [검색]          │      │                       │          │
+│                  │      │   1920 x 1080 · 2.1MB  │          │
+│  ┌────┬────┐     │      └───────────────────────┘          │
+│  │썸  │썸  │     │   [배치 방식 ▾]                          │
+│  │네일│네일│ ... │   [④ 바탕화면에 적용]                     │
+│  └────┴────┘     │   [이전 배경으로 복원]                    │
+│ ② 생성           │                                         │
+│  [프롬프트]      │                                         │
+│  [생성]          │                                         │
+├──────────────────┴─────────────────────────────────────────┤
+│ 현재 배경: <경로> · 이전 배경: <경로> · 상태 메시지          │
+└────────────────────────────────────────────────────────────┘
 ```
 
-`set` 은 **적용 전에 기존 배경 경로를 스냅샷**으로 저장하므로, 4번 `restore` 로 원래 배경이 복구됩니다.
+### 3.1 상단 바
+- **백엔드 배지**: 마지막으로 성공한 적용에 사용된 API (`IDesktopWallpaper (COM)` 또는 `SystemParametersInfoW (Fallback)`)
+- **모니터 선택 드롭다운**: `모든 모니터` 또는 특정 모니터를 지정 (해상도·기본 모니터 표시)
+
+### 3.2 좌측 패널 — ① 검색 / ② 생성
+- **키워드**: 파일명 기준 대소문자 무시 부분 일치. 비우면 전체 목록.
+- **검색 폴더**: 비우면 기본 루트(앱 라이브러리 + `Pictures`)를 탐색. 절대 경로 입력 시 해당 폴더만 탐색.
+- **프롬프트**: 테마 문장 입력 (예: `aurora over icy mountains`). 같은 프롬프트는 같은 이미지를 생성합니다.
+
+### 3.3 중앙 패널 — 결과 그리드
+- 후보별 썸네일 + 파일명 + 해상도 + 용량 표시
+- 카드를 클릭하면 오른쪽 미리보기에 선택됩니다
+- **적용 가능한 이미지만** 표시됩니다 (640×480 이상 + 정상 디코딩)
+
+### 3.4 우측 패널 — ③ 미리보기 / ④ 적용 · 복원
+- **미리보기**: 선택 이미지의 큰 썸네일과 상세 정보(파일명·해상도·용량·전체 경로)
+- **배치 방식**: `채우기(Fill)` / `맞춤(Fit)` / `늘이기(Stretch)` / `바둑판식(Tile)` / `가운데(Center)` / `스팬(Span)`
+- **바탕화면에 적용**: 검증 → 스테이징 → 스냅샷 → 적용 순서로 실행
+- **이전 배경으로 복원**: 스냅샷된 원본 배경으로 되돌림
+
+### 3.5 하단 상태 바
+- **현재 배경**: OS가 보고하는 실제 배경화면 경로
+- **이전 배경**: 복원용 스냅샷 경로 (없으면 "스냅샷 없음")
+- **상태 메시지**: 각 액션의 성공/실패 원문 (성공=녹색, 실패=빨간색)
 
 ---
 
-## 4. CLI 사용법 (`wallmagic-cli`)
+## 4. 사용법 — 핵심 4가지 액션
 
-### 4.1 문법
+### 4.1 ① 검색
 
-```
-wallmagic-cli <SUBCOMMAND> [OPTIONS]
-```
+1. 좌측 **키워드** 입력 (예: `sunset`)
+2. (선택) **검색 폴더**에 탐색할 폴더 절대 경로 입력
+3. **검색** 버튼 클릭 또는 `Enter`
+4. 중앙 그리드에 후보가 표시되고, 첫 번째 후보가 자동 선택됩니다
 
-| 서브커맨드 | 설명 |
-|---|---|
-| `get` | 현재 적용된 데스크톱 배경화면 경로를 출력 |
-| `set <PATH> [--pos <STYLE>]` | 이미지를 검증·스테이징 후 배경으로 적용 |
-| `generate <PROMPT> [--apply] [--out <PATH>]` | 프롬프트 기반 1920×1080 이미지 생성(선택: 즉시 적용) |
-| `restore` | 스냅샷된 이전 배경으로 복원 |
-| `-h`, `--help`, `help` | 도움말 출력 (exit 0) |
-| `-V`, `--version`, `version` | 버전 출력 (exit 0) |
+**동작 규칙**
+- 파일명에 키워드가 포함된 이미지만 후보 (대소문자 무시)
+- 지원 확장자: `.jpg`, `.jpeg`, `.png`, `.bmp`
+- 최대 깊이 3단계까지 하위 폴더 탐색
+- 640×480 미만 · 디코딩 불가 파일은 목록에서 제외
+- 결과는 파일명 오름차순으로 정렬
 
-### 4.2 종료 코드 규약
+### 4.2 ② 생성
 
-| 상황 | 출력 | 종료 코드 |
-|---|---|---|
-| 정상 처리 | stdout | `0` |
-| 도움말/버전 | stdout | `0` |
-| 알 수 없는 서브커맨드 | stderr에 `error: unknown subcommand or option '...'` + 도움말(stdout) | `1` |
-| 알 수 없는 옵션 값 | stderr에 `error: ...` | `1` |
-| 필수 인자 누락 | stderr에 `error: ...` + 도움말 | `1` |
-| OS API 실패 | stderr에 `error: failed to ...` | `1` |
+1. 좌측 **프롬프트** 입력 (예: `cyberpunk rainy neon street in Seoul`)
+2. **생성** 버튼 클릭
+3. 생성된 이미지가 라이브러리에 저장되고 결과 그리드 상단에 자동 선택됩니다
 
-> **설계 원칙**: 어떤 입력에 대해서도 "버전만 출력하고 exit 0"으로 끝나지 않습니다. 알 수 없는 인자는 항상 stderr + non-zero로 종료합니다.
+**동작 규칙**
+- 프롬프트를 시드로 1920×1080 그라디언트 이미지를 결정론적으로 생성 (네트워크·비용 0)
+- 저장 위치: 앱 라이브러리 (`%LOCALAPPDATA%\WallMagic\library\`)
+- 파일명: `generated_<프롬프트슬러그>_<해시8자리>.bmp` — 같은 프롬프트는 같은 파일을 재생성합니다
 
-### 4.3 `get` — 현재 배경 조회
+### 4.3 ③ 적용
 
-```bash
-cargo run -q -p wallmagic-cli -- get
-```
+1. 그리드에서 원하는 썸네일 클릭 → 오른쪽 미리보기에서 확인
+2. **배치 방식** 선택 (기본: 채우기)
+3. (다중 모니터) 상단 **모니터 선택**에서 대상 지정 — `모든 모니터`가 기본
+4. **바탕화면에 적용** 클릭
 
-- 1차: `IDesktopWallpaper::GetWallpaper` (COM)
-- 2차: `SystemParametersInfoW(SPI_GETDESKWALLPAPER)`
-- 출력이 비어 있으면 OS에 설정된 배경이 없는 상태입니다.
+**동작 규칙**
+1. 이미지 검증 (존재 · 디코딩 · 640×480 이상)
+2. `%LOCALAPPDATA%\WallMagic\active\` 로 **원자적 스테이징** (`staged_*.bmp` → `active_*.bmp` rename)
+3. 현재 배경을 **스냅샷** (`state.json`의 `previous_wallpaper`)
+4. `IDesktopWallpaper` COM으로 적용 → 실패 시 `SystemParametersInfoW` 폴백
+5. 둘 다 실패하면 스냅샷된 원본을 재적용 (**검은 화면 방지**)
 
-### 4.4 `set` — 이미지 적용
+### 4.4 ④ 복원
 
-```bash
-wallmagic-cli set <PATH> [--pos <STYLE>]
-```
+1. **이전 배경으로 복원** 클릭
+2. 스냅샷된 경로로 배경이 되돌아갑니다
 
-- `<PATH>`: PNG / JPEG / BMP 등 `image` 크레이트가 지원하는 포맷의 **로컬 파일 경로**
-- `--pos <STYLE>`: 배치 스타일. 기본값은 `fill`
-
-| 스타일 | 동작 |
-|---|---|
-| `fill` | 화면을 꽉 채우되 비율 유지 (기본) |
-| `fit` | 이미지 전체가 보이도록 축소 |
-| `stretch` | 화면 크기로 늘이기 (비율 왜곡) |
-| `center` | 원본 크기 그대로 중앙 정렬 |
-| `tile` | 타일 반복 |
-| `span` | 다중 모니터 전체를 하나의 이미지로 맞춤 |
-
-적용 절차:
-
-1. **검증** — 파일 존재 → 디코딩 성공 → 해상도 ≥ 640×480 (미달 시 `image resolution too low (WxH); minimum is 640x480` 로 거부)
-2. **원자적 스테이징** — `<데이터디렉터리>\active\staged_<이름>_<모니터>.bmp` 로 저장 후 `active_<이름>_<모니터>.bmp` 로 원자적 rename
-3. **스냅샷** — 현재 OS 배경 경로를 `state.json` 의 `previous_wallpaper` 에 기록
-   - *현재 배경이 WallMagic이 스테이징한 파일이면* 스냅샷을 덮어쓰지 않습니다 → 연속 적용해도 원본이 살아남습니다
-4. **적용** — COM 1차 → 실패 시 SPI 폴백 → **둘 다 실패하면 스냅샷된 이전 배경을 재적용**해 빈 화면을 방지
-
-성공 시 출력 예시:
-
-```
-OK: applied wallpaper 'C:\Users\<user>\AppData\Local\WallMagic\active\active_wm_doc_demo_primary.bmp' via IDesktopWallpaper (COM)
-```
-
-`via ...` 부분으로 어떤 백엔드가 실제로 성공했는지 확인할 수 있습니다.
-
-### 4.5 `generate` — 프롬프트 기반 이미지 생성
-
-```bash
-wallmagic-cli generate <PROMPT> [--apply] [--out <PATH>]
-```
-
-- `<PROMPT>`: 자유 텍스트. 문자열을 FNV-1a 해시로 시드 삼아 **결정론적** 1920×1080 그라디언트를 생성합니다 (같은 프롬프트 → 같은 이미지).
-- `--out <PATH>`: 저장 경로. 미지정 시 `<데이터디렉터리>\generated_prompt.bmp`
-- `--apply`: 생성 직후 배경으로 적용
-
-> **주의**: 현재 생성기는 **순수 절차적 그라디언트**입니다. 사진이나 AI 생성 이미지가 아닙니다. 프롬프트는 색상 팔레트를 파생하는 시드로만 사용됩니다.
-
-### 4.6 `restore` — 원복
-
-```bash
-wallmagic-cli restore
-```
-
-- `state.json` 의 `previous_wallpaper` 를 읽어 그 경로의 이미지를 다시 배경으로 적용합니다.
-- 스냅샷이 없으면 `no previous wallpaper snapshot available to restore` 로 실패(exit 1).
-- 스냅샷 파일이 삭제/이동되었으면 `file not found: ...` 로 실패(exit 1) — 이 경우 **원래 배경으로 자동 복구되지 않으니** 백업 경로를 확인하세요.
+**주의**: 한 번도 적용한 적이 없으면 `스냅샷 없음` 상태이며 복원할 대상이 없습니다.
 
 ---
 
-## 5. 데이터 디렉터리와 환경변수
+## 5. 데이터 디렉터리와 설정
 
-### 5.1 경로 해석 순서
+### 5.1 위치 해석 순서
 
-`app_data_dir()` 는 아래 순서로 결정됩니다.
-
-| 순위 | 경로 | 용도 |
-|---|---|---|
-| 1 | `WALLMAGIC_DATA_DIR` 환경변수 | 명시적 오버라이드 (테스트·다중 프로필용) |
-| 2 | `%LOCALAPPDATA%\WallMagic` | 기본값 |
-| 3 | `%TEMP%\WallMagic` | `LOCALAPPDATA` 가 없을 때 폴백 |
-
-`WALLMAGIC_DATA_DIR` 는 **state 파일과 스테이징 디렉터리 전체**를 함께 리다이렉트합니다. 빈 문자열/공백 값은 오버라이드로 인정하지 않습니다.
+1. `WALLMAGIC_DATA_DIR` 환경변수 (명시적 오버라이드 — 테스트 격리용)
+2. `%LOCALAPPDATA%\WallMagic`
+3. `%TEMP%\WallMagic` (폴백)
 
 ### 5.2 디렉터리 구조
 
 ```
-<데이터디렉터리>\
-├── state.json                  # 스냅샷/현재 배경/사용 백엔드
-├── generated_prompt.bmp        # generate 기본 출력
-└── active\
-    ├── staged_<stem>_<monitor>.bmp    # 검증 통과한 임시 파일
-    └── active_<stem>_<monitor>.bmp    # 실제 적용되는 스테이징 파일
+%LOCALAPPDATA%\WallMagic\
+├── state.json          # 스냅샷 상태 (previous/current/backend)
+├── active\             # 스테이징 파일 (active_<stem>_<monitor>.bmp)
+└── library\            # 생성된 배경 + 검색 기본 루트
 ```
 
 ### 5.3 `state.json` 스키마
 
 ```json
 {
-  "previous_wallpaper": "D:\\path\\to\\original.jpg",
-  "current_wallpaper": "D:\\path\\to\\current.jpg",
+  "previous_wallpaper": "C:\\Users\\<user>\\Pictures\\original.jpg",
+  "current_wallpaper": "C:\\Users\\<user>\\AppData\\Local\\WallMagic\\active\\active_sunset_primary.bmp",
   "backend_used": "IDesktopWallpaper (COM)"
 }
 ```
 
 | 필드 | 의미 |
 |---|---|
-| `previous_wallpaper` | `restore` 로 되돌릴 대상 (사용자 원본 배경) |
-| `current_wallpaper` | 마지막으로 WallMagic이 적용한 스테이징 경로 |
-| `backend_used` | 마지막 적용에 사용된 백엔드 표기 |
+| `previous_wallpaper` | 복원용 스냅샷 (원본 사용자 배경) |
+| `current_wallpaper` | 마지막으로 적용한 스테이징 경로 |
+| `backend_used` | 사용된 API (`IDesktopWallpaper (COM)` / `SystemParametersInfoW (Fallback)` 등) |
 
-### 5.4 환경변수로 격리 실행 (권장 예시)
-
-```bash
-cmd /c "set WALLMAGIC_DATA_DIR=D:\path\to\wm_profile&& wallmagic-cli set D:\path\to\img.bmp --pos fill"
-```
-
-PowerShell:
+### 5.4 격리 실행 (개발·테스트용)
 
 ```powershell
-$env:WALLMAGIC_DATA_DIR = "D:\path\to\wm_profile"
-wallmagic-cli set D:\path\to\img.bmp --pos fill
+$env:WALLMAGIC_DATA_DIR = "$env:TEMP\wallmagic_sandbox"
+cargo run -p wallmagic-app
 ```
+이렇게 하면 상태 파일과 스테이징이 샌드박스로 격리되어 실제 사용자 상태를 건드리지 않습니다.
 
 ---
 
-## 6. GUI (`src-ui`) 및 IPC 명령
-
-### 6.1 상태
-
-M1에서 `src-tauri` 는 **Tauri 런타임 없이 순수 Rust IPC 래퍼**로 동작합니다. `#[tauri::command]` 매크로와 `invoke_handler` 연결은 M5 예정입니다. 따라서 지금은 `npm run dev` 로 띄운 웹 화면에서 `invoke()` 가 실제 백엔드에 닿지 않습니다(프론트엔드 빌드/타입체크는 통과하지만 Tauri 런타임 미연결).
-
-### 6.2 IPC 명령 계약 (`src-tauri/src/lib.rs`)
-
-| 명령 | 인자 | 반환 | 비고 |
-|---|---|---|---|
-| `get_current_wallpaper` | `monitor_id: Option<String>` | `String` | 현재 배경 경로 |
-| `set_wallpaper` | `path: String`, `monitor_id: Option<String>`, `position: Option<String>` | `WallpaperState` | `position` 미지정 시 `fill` |
-| `restore_wallpaper` | `monitor_id: Option<String>` | `WallpaperState` | 스냅샷 복원 |
-| `generate_and_apply_wallpaper` | `prompt: String`, `monitor_id: Option<String>`, `position: Option<String>` | `WallpaperState` | 생성 후 적용 |
-
-`position` 허용값: `center | tile | stretch | fit | fill | span`. 그 외 값은 `invalid position '<x>' (expected: ...)` 로 거부됩니다.
-
-### 6.3 화면 구성 (`src-ui/App.tsx`)
-
-1. **현재 적용된 배경화면 경로** 표시
-2. **프롬프트 기반 생성 및 즉시 적용** (입력 + `생성 및 적용` 버튼)
-3. **로컬 이미지 경로 직접 지정 + 배치 스타일 선택 + 적용**
-4. **이전 배경으로 원복 / 현재 배경 새로고침** 버튼
-
----
-
-## 7. 문제 해결 (Troubleshooting)
+## 6. 문제 해결 (Troubleshooting)
 
 | 증상 | 원인 | 조치 |
 |---|---|---|
-| `image resolution too low (320x240); minimum is 640x480` | 입력 이미지가 하한 미달 | 640×480 이상 이미지 사용 |
-| `file not found: <path>` | 경로 오타 또는 파일 이동/삭제 | 경로 확인. `restore` 실패 시 스냅샷 파일이 살아 있는지 확인 |
-| `no previous wallpaper snapshot available to restore` | 아직 `set` 을 한 번도 하지 않았거나 `state.json` 이 없음 | `set` 실행 후 `restore` |
-| `io error: 지정된 경로를 찾을 수 없습니다. (os error 3)` | 데이터 디렉터리 경로에 공백/따옴표가 섞인 `set VAR=... &` 사용 | `cmd /c "set VAR=값&& 명령"` 형태 또는 PowerShell `$env:` 사용 |
-| 화면이 검게 보임 | COM·SPI 모두 실패 | WallMagic은 실패 시 스냅샷을 재적용합니다. 그래도 검다면 `restore` 실행 |
-| `set` 후 `restore` 했는데 원본이 아닌 이전 WallMagic 이미지로 돌아옴 | 1차 적용에서 이미 WallMagic 스테이징 파일이 활성화된 상태 | 정상 동작입니다. `state.json` 의 `previous_wallpaper` 가 원본 경로인지 확인 |
-| 다중 모니터에서 원하는 화면만 바뀌지 않음 | M1은 `monitor_id` 미지정 시 **전체 모니터**에 동일 적용 | 현재 CLI에는 모니터 지정 옵션이 없습니다(§8 후보 ①) |
-| 테스트가 사용자 배경을 바꿨다 | `--ignored` 옵션 실행 | 기본 `cargo test --workspace` 는 OS 배경을 건드리지 않습니다 |
+| 프로그램이 시작되지 않음 | WebView2 미설치 (구형 Win10) | [WebView2 런타임](https://developer.microsoft.com/microsoft-edge/webview2/) 설치 후 재시작 |
+| 검색 결과가 비어 있음 | 키워드 불일치 · 폴더에 640×480 이상 이미지 부재 · 확장자 미지원 | 키워드를 비우고 전체 목록 확인, `.jpg/.png/.bmp` 확인 |
+| 검색 폴더를 지정해도 결과가 없음 | 경로 오타 · 존재하지 않는 폴더 | 절대 경로 확인 (예: `C:\Users\me\Pictures`) |
+| "이미지 해상도가 너무 낮습니다" | 640×480 미만 이미지 | 더 큰 이미지 선택 |
+| "이미지 디코딩 오류" | 손상된 파일 · 미지원 코덱 | 다른 이미지 사용 |
+| 적용이 실패하고 원래대로 돌아감 | COM·SPI 모두 실패 (파일 잠금·권한) | 다른 이미지로 재시도, 파일이 네트워크 드라이브에 있으면 로컬로 복사 후 시도 |
+| 복원이 안 됨 (`스냅샷 없음`) | 한 번도 적용하지 않음 | 정상 동작 — 적용 후 복원 가능 |
+| 백엔드 배지가 `Fallback`으로 표시됨 | COM API 실패로 SPI 폴백 사용됨 | 기능은 정상. 문제 지속 시 로그 확인 |
+| 창을 닫으면 프로그램이 종료됨 | 현재 버전은 트레이 상주 미지원 | 후속 버전 예정 (§8) |
 
 ---
 
-## 8. 알려진 제약 (M1)
+## 7. 개발자를 위한 빌드·검증
 
-1. **모니터별 개별 지정 미지원** — `set_wallpaper` 코어는 `monitor_id` 파라미터를 받지만, CLI에는 노출된 옵션이 없고 `None`(=전체 모니터 적용)만 사용됩니다.
-2. **SPI 폴백 경로 미실측** — 이 PC에서 COM 1차가 항상 성공해 폴백이 발동하지 않았습니다(컴파일·클리핑만 통과).
-3. **잘못된(손상된) 이미지의 "기존 배경 유지" 시나리오 미실측** — 해상도 하한 거부는 단위 테스트로 확인, 확장자 위장 텍스트 파일은 미실측.
-4. **프롬프트 생성기는 그라디언트 한정** — 사진/AI 이미지가 아닙니다.
-5. **Tauri 런타임 미연결** — `src-ui` 는 현재 동작 데모가 아니라 계약 정의 수준입니다.
-6. **잠금화면(Lock Screen) 배경 미지원**.
-7. **트레이 상주·자동 스케줄러 미구현** — 자동 변경이 필요하면 `set` 을 예약 실행하는 외부 스케줄러를 사용하세요(예: `schtasks`).
-8. **exe/인스톨러 패키징 미수행** — `tauri build` 는 아직 산출물을 만들지 않습니다.
+### 7.1 필수 도구
 
----
+| 항목 | 버전 |
+|---|---|
+| Rust | 1.82 이상 |
+| Node.js | 20 이상 |
+| npm | 10 이상 |
+| Visual Studio Build Tools | C++ 빌드 도구 (Windows SDK 포함) |
 
-## 9. 후속 작업 후보 (우선순위 제안)
-
-아래는 M1 이후 구현 후보 목록입니다. **이번 턴에는 실행하지 않았습니다** (문서화만).
-
-### 9.1 M2 — 데이터/보안 기반
-
-| # | 후보 | 근거·효과 |
-|---|---|---|
-| 1 | `secrets.bin` 저장소 + Windows DPAPI 암호화 | 계획서 §8.5. API 키를 평문으로 두지 않기 위한 선행 작업 |
-| 2 | `config.json` 도입 | 지금은 `state.json` 만 존재. 사용자 설정(배치 스타일 기본값, 자동 변경 주기 등) 분리 |
-| 3 | `credits/<sha>.json` 어트리뷰션 저장소 | 나중에 외부 이미지 API를 붙일 때 저작권 출처 기록 기반 필요 |
-| 4 | `quota.json` 일일 요청 상한 | M3 검색 API 도입 시 비용 0 보장 장치 |
-
-### 9.2 M3 — 이미지 검색 연동
-
-| # | 후보 | 근거 |
-|---|---|---|
-| 5 | `net.rs` 아웃바운드 호스트 화이트리스트 | 계획서 §17.2. **화이트리스트에 `thumb.wikimedia.org` 추가 필수**(§7.3 함정 3) |
-| 6 | Met Museum 어댑터 (`/v1.1/search`, `isPublicDomain` 필터) | 실측 확정된 계약 |
-| 7 | Wikimedia Commons 어댑터 (`imageinfo.width` 기준 판정, `thumburl` 미사용) | 거짓 `thumbwidth` 보고 실측 대응 |
-| 8 | NASA 이미지 어댑터 | 실측된 2800×1400 등 해상도 규칙 반영 |
-| 9 | SHA-256 중복 제거 + 최근 N장 회피 링 버퍼 | 반복 노출 방지 |
-
-### 9.3 M3/M5 — CLI·UX 개선
-
-| # | 후보 | 근거 |
-|---|---|---|
-| 10 | **CLI에 `--monitor <ID>` 옵션 추가** | §8-1의 제약 해소. 코어 `monitor_id` 인자는 이미 존재 |
-| 11 | `list` / `history` 서브커맨드 (적용 이력 조회) | 스냅샷은 1개뿐이라 여러 번 변경 시 원복 대상이 첫 상태로 유지됨 |
-| 12 | `set --no-snapshot` 옵션 | 스냅샷을 덮어쓰지 않고 적용만 하는 용도 |
-| 13 | JSON 출력 모드 (`--json`) | 스크립트/자동화 연동 |
-| 14 | `generate` 의 실제 AI/이미지 소스 연동 옵션 | BYOK 구조(DPAPI 저장) 준비 후 |
-
-### 9.4 M5 — 앱 통합
-
-| # | 후보 | 근거 |
-|---|---|---|
-| 15 | `src-tauri` 에 `tauri`/`tauri-build`/`tauri-plugin-opener` 복원 + `invoke_handler` 연결 | 현재 IPC는 래퍼만 존재. 루트 `[workspace.dependencies]` 에 Tauri 항목은 유지되어 있음 |
-| 16 | 트레이 아이콘 + 상주 | 계획서 핵심 |
-| 17 | 자동 스케줄러(부팅/시간 트리거) | 상시 구동 제품의 핵심 가치 |
-| 18 | 단일 인스턴스 방지 (`single_instance.rs`) | 계획서 §3.3 파일 트리에 이미 명시 |
-
-### 9.5 M8 — 상용화 게이트
-
-| # | 후보 | 근거 |
-|---|---|---|
-| 19 | 자동 업데이트 서명 검증 (`minisign-verify`/`ed25519-dalek` + `updater.rs` + `tests/updater_sig.rs`) | 계획서 §3.2/§3.3에 아직 미기재 |
-| 20 | 자동 시작 옵션 (`HKCU\Run`) — `windows` crate `Win32_System_Registry` feature 필요 | 계획서 §3.2 features에 미포함 |
-| 21 | NSIS 제거 훅 (`src-tauri/installer-hooks.nsh`) — 제거 시 데이터 보존/삭제 선택 | `tauri.conf.json`의 `bundle.windows.nsis.installerHooks` 설정 필요 |
-| 22 | SBOM 생성 (`cyclonedx-bom` 또는 `Cargo.lock` 수기 변환 — **방식 미결정**) | AC-8.7 |
-| 23 | 법률 문서 5종 (`LICENSE`/`PRIVACY`/`SECURITY`/`THIRD_PARTY_NOTICES`/`CODE_SIGNING`) 본문 작성 | 저장소 루트에 아직 없음 |
-
----
-
-## 10. 부록 — 명령 빠른 참조
+### 7.2 검증 명령
 
 ```bash
-# 도움말
-wallmagic-cli --help
-wallmagic-cli -V
+# 전체 테스트 (코어 6 + 앱 3, OS 배경 변경 없음)
+cargo test --workspace
 
-# 조회
-wallmagic-cli get
+# 실제 배경을 변경하는 opt-in 통합 테스트
+cargo test -p wallmagic-core -- --ignored
 
-# 적용
-wallmagic-cli set "C:\Pictures\my.jpg"
-wallmagic-cli set "C:\Pictures\my.jpg" --pos stretch
-wallmagic-cli set "C:\Pictures\my.jpg" --pos tile
+# IPC 계약 검증 (UI invoke 이름 ↔ Rust #[tauri::command] 이름 일치)
+node scripts/verify-ipc-contract.mjs
 
-# 생성
-wallmagic-cli generate "sunset over mountains"
-wallmagic-cli generate "sunset over mountains" --out "%TEMP%\s.bmp"
-wallmagic-cli generate "sunset over mountains" --apply
-
-# 복원
-wallmagic-cli restore
-
-# 진단
-type "%LOCALAPPDATA%\WallMagic\state.json"
+# 웹 번들 빌드 (tsc 타입 검사 + vite 번들)
+npm run build
 ```
+
+### 7.3 테스트 기준선 (v0.2.0)
+
+```
+wallmagic-app  : 3 passed / 0 failed   (IPC 스모크: 검색→생성→적용→복원)
+wallmagic-core : 6 passed / 0 failed / 1 ignored (실제 배경 변경 E2E)
+```
+
+### 7.4 프로젝트 구조
+
+```
+WallMagic/
+├── crates/core/       # 순수 코어 (UI·IPC 무관) — 검색·생성·스테이징·COM/SPI·스냅샷
+├── src-tauri/         # Tauri v2 GUI 셸 — IPC 커맨드 6종 + 진입점
+│   └── capabilities/  # IPC 권한 선언
+└── src-ui/            # React 19 스튜디오 UI (App.tsx + styles.css)
+```
+
+**의존 방향**: `src-ui` —(IPC)→ `src-tauri` —(함수 호출)→ `wallmagic-core`
+코어는 UI·IPC 타입을 참조하지 않습니다.
+
+### 7.5 IPC 커맨드 계약
+
+| 커맨드 | 인자 | 반환 | UI 액션 |
+|---|---|---|---|
+| `search_wallpapers` | `query`, `dir?` | `WallpaperCandidate[]` | ① 검색 |
+| `generate_library_wallpaper` | `prompt` | `WallpaperCandidate` | ② 생성 |
+| `apply_wallpaper` | `path`, `monitor_id?`, `position?` | `WallpaperState` | ③ 적용 |
+| `restore_wallpaper` | `monitor_id?` | `WallpaperState` | ④ 복원 |
+| `list_monitors` | — | `MonitorInfo[]` | 모니터 드롭다운 |
+| `get_app_status` | — | `AppStatus` | 상태 바 |
 
 ---
 
-*본 매뉴얼은 `crates/cli/src/main.rs`, `crates/core/src/wallpaper.rs`, `crates/core/src/lib.rs`, `src-tauri/src/lib.rs`, `src-ui/App.tsx`의 실측 동작을 기준으로 작성되었습니다. M2 이후 기능 추가 시 본 문서를 갱신하십시오.*
+## 8. 알려진 제약 (v0.2.0)
+
+1. **CLI 인터페이스 없음** — 의도된 설계입니다. 모든 기능은 GUI로 제공됩니다.
+2. **트레이 상주 미지원** — 창을 닫으면 종료됩니다.
+3. **자동 스케줄러 미지원** — 자동 배경 교체는 후속 단계입니다.
+4. **원격 이미지 검색 API 미연동** — 현재는 로컬 폴더 검색 + 프롬프트 생성만 지원합니다.
+5. **AI 이미지 생성 미연동** — 프롬프트 생성은 로컬 그라디언트 방식입니다 (비용 0).
+6. **생성 이미지는 그라디언트** — 사진형 사실적 이미지는 아닙니다.
+7. **단일 스냅샷** — 복원 대상은 가장 최근 적용 전 상태 1개뿐입니다.
+8. **Windows 전용** — macOS/Linux 미지원 (의도된 범위).
+9. **코드 서명 미적용** — Windows SmartScreen 경고가 표시될 수 있습니다.
+
+---
+
+## 9. 부록 — 자주 묻는 질문
+
+**Q. 창을 닫으면 배경이 되돌아가나요?**
+A. 아니요. 적용된 배경은 Windows 설정에 영구 저장됩니다. 프로그램은 배경을 변경할 때만 필요합니다.
+
+**Q. 원래 배경으로 되돌리려면?**
+A. 프로그램을 실행한 뒤 **이전 배경으로 복원** 버튼을 클릭하세요. 적용 후 PC를 재시작해도 `state.json`에 스냅샷이 남아 있어 복원됩니다.
+
+**Q. 여러 모니터에 각각 다른 배경을 지정할 수 있나요?**
+A. 가능합니다. 상단 모니터 드롭다운에서 대상을 지정하고 각각 적용하세요.
+
+**Q. 인터넷 연결이 필요한가요?**
+A. 아니요. 모든 기능이 오프라인에서 동작합니다.
+
+**Q. 생성한 이미지는 어디에 저장되나요?**
+A. `%LOCALAPPDATA%\WallMagic\library\` 폴더입니다. 이 폴더는 검색 기본 루트이기도 합니다.
+
+**Q. 비용이 발생하나요?**
+A. 아니요. 외부 API·구독·인앱 결제가 없습니다.

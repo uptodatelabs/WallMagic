@@ -7,14 +7,18 @@
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+pub mod search;
 pub mod wallpaper;
 
-// Public facade: the canonical implementation lives in the `wallpaper` module.
+// Public facade: the canonical implementation lives in the `wallpaper` / `search` modules.
 // Types and functions are re-exported here so downstream crates keep a stable import path.
+pub use search::{
+    generate_library_wallpaper, search_wallpapers, WallpaperCandidate, SUPPORTED_EXTENSIONS,
+};
 pub use wallpaper::{
-    app_data_dir, generate_sample_wallpaper, get_current_wallpaper, is_staged_path, load_state,
-    restore_wallpaper, save_state, set_wallpaper, state_file_path, validate_and_stage_image,
-    WallpaperError, WallpaperPosition, WallpaperState,
+    app_data_dir, generate_sample_wallpaper, get_current_wallpaper, is_staged_path, list_monitors,
+    load_state, restore_wallpaper, save_state, set_wallpaper, state_file_path,
+    validate_and_stage_image, WallpaperError, WallpaperPosition, WallpaperState, MonitorInfo,
 };
 
 // NOTE: The canonical doc comments for the re-exported items live on their definitions
@@ -273,5 +277,63 @@ mod tests {
 
         // Restore the real user wallpaper explicitly (the guard would do it on drop as well).
         drop(os_guard);
+    }
+
+    #[test]
+    fn test_search_wallpapers_filters_by_name_and_resolution() {
+        let guard = DataDirGuard::new("search_filter");
+        let root = guard.dir().join("pics");
+        fs::create_dir_all(root.join("sub")).expect("create search root");
+
+        let big: RgbImage = ImageBuffer::from_pixel(800, 600, Rgb([10, 20, 30]));
+        big.save(root.join("sunset_a.bmp")).expect("save sunset_a");
+        big.save(root.join("aurora_b.bmp")).expect("save aurora_b");
+        let small: RgbImage = ImageBuffer::from_pixel(320, 240, Rgb([10, 20, 30]));
+        small
+            .save(root.join("sunset_small.bmp"))
+            .expect("save sunset_small");
+        big.save(root.join("sub").join("sunset_c.png"))
+            .expect("save sunset_c");
+
+        let results = search_wallpapers("sunset", Some(&root)).expect("search_wallpapers");
+        let names: Vec<String> = results.iter().map(|c| c.file_name.clone()).collect();
+        assert_eq!(
+            names,
+            vec!["sunset_a.bmp".to_string(), "sunset_c.png".to_string()],
+            "search must return only name-matching, decodable, >=640x480 images in sorted order"
+        );
+    }
+
+    #[test]
+    fn test_generate_library_wallpaper_returns_candidate_with_bounded_thumbnail() {
+        let guard = DataDirGuard::new("generate_library");
+        let candidate = generate_library_wallpaper("neon harbor at dusk")
+            .expect("generate_library_wallpaper");
+
+        assert!(
+            Path::new(&candidate.path).exists(),
+            "generated candidate file must exist"
+        );
+        assert!(
+            candidate
+                .path
+                .starts_with(&guard.dir().to_string_lossy().to_string()[..]),
+            "generated candidate must live inside the isolated data dir: {}",
+            candidate.path
+        );
+        assert_eq!(candidate.width, 1920);
+        assert_eq!(candidate.height, 1080);
+
+        use base64::Engine as _;
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(&candidate.thumb_base64)
+            .expect("thumb_base64 must decode");
+        let thumb = image::load_from_memory(&raw).expect("thumbnail must be a decodable image");
+        assert!(
+            thumb.width() <= 320 && thumb.height() <= 320,
+            "thumbnail must be downscaled to <=320px, got {}x{}",
+            thumb.width(),
+            thumb.height()
+        );
     }
 }
