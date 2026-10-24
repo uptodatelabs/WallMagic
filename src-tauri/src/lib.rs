@@ -51,6 +51,79 @@ fn err_to_string(err: WallpaperError) -> String {
     err.to_string()
 }
 
+/// 프론트엔드(Puter.js)가 넘긴 base64 이미지 payload를 디코딩한다.
+///
+/// - `data:image/png;base64,<본문>` 형태의 data URL 접두사를 허용하고 본문만 디코딩한다.
+/// - 비-base64·빈 payload는 조용한 폴스루 없이 명시적 오류 문자열로 실패한다
+///   (Puter SDK 응답이 비었을 때 `set_wallpaper`가 엉뚱한 파일을 읽는 것을 막는다).
+pub fn decode_image_payload(payload: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine as _;
+    let trimmed = payload.trim();
+    let body = match trimmed.find(";base64,") {
+        Some(idx) => trimmed[idx + ";base64,".len()..].trim(),
+        None => trimmed,
+    };
+    if body.is_empty() {
+        return Err("image payload is empty: decoded 0 bytes".to_string());
+    }
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(body.as_bytes())
+        .map_err(|e| format!("invalid base64 image payload: {e}"))?;
+    if decoded.is_empty() {
+        return Err("image payload is empty: decoded 0 bytes".to_string());
+    }
+    Ok(decoded)
+}
+
+/// IPC #10d: 프론트엔드(Puter.js)가 생성한 base64 이미지를 파일로 저장하고 배경에 적용한다.
+///
+/// Puter.js(`https://js.puter.com/v2/`, `puter.ai.txt2img`)는 브라우저 JS SDK + 사용자
+/// 세션 전제라 Rust 백엔드에서 서버 측 REST로 호출할 수 없다. 따라서 생성은 WebView(프론트)가
+/// 담당하고, 이 커맨드는 그 결과(base64 / data URL)를 받아 **검증·스테이징·적용**만 수행한다
+/// (파일 쓰기·해상도 검증·스냅샷 복원 로직을 코어 한 곳에 유지).
+#[tauri::command]
+fn apply_generated_image(
+    image_base64: String,
+    label: Option<String>,
+    position: Option<String>,
+    monitor_id: Option<String>,
+) -> Result<WallpaperState, String> {
+    apply_generated_image_impl(
+        &image_base64,
+        label.as_deref(),
+        position.as_deref(),
+        monitor_id.as_deref(),
+    )
+}
+
+pub fn apply_generated_image_impl(
+    image_base64: &str,
+    label: Option<&str>,
+    position: Option<&str>,
+    monitor_id: Option<&str>,
+) -> Result<WallpaperState, String> {
+    let pos = parse_position_arg(position)?;
+    let bytes = decode_image_payload(image_base64)?;
+
+    let dir = wallmagic_core::app_data_dir().join("online_cache");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create online_cache failed: {e}"))?;
+    let label = label
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("puter");
+    let safe: String = label
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .take(24)
+        .collect();
+    let path = dir.join(format!("puter_{safe}.png"));
+    std::fs::write(&path, &bytes).map_err(|e| format!("write generated image failed: {e}"))?;
+
+    // `set_wallpaper`가 내부에서 디코딩·해상도(640x480) 검증·스테이징을 수행하므로
+    // 손상 payload나 저해상도 이미지는 여기서 명시적 오류로 실패한다 (조용한 폴스루 없음).
+    wallmagic_core::set_wallpaper(&path, monitor_id, pos).map_err(err_to_string)
+}
+
 /// IPC #1 (액션 ① 검색): 키워드로 로컬 배경화면 후보를 검색한다.
 ///
 /// 반환은 `SearchResult`다 — 후보 목록(`candidates`)뿐 아니라 전체 매칭 수
@@ -192,17 +265,29 @@ fn generate_wallpaper_priority(
     prompt: String,
     position: Option<String>,
     monitor_id: Option<String>,
+    provider_order: Option<Vec<wallmagic_core::ImageProvider>>,
 ) -> Result<WallpaperState, String> {
-    generate_wallpaper_priority_impl(&prompt, position.as_deref(), monitor_id.as_deref())
+    generate_wallpaper_priority_impl(
+        &prompt,
+        position.as_deref(),
+        monitor_id.as_deref(),
+        provider_order,
+    )
 }
 
 pub fn generate_wallpaper_priority_impl(
     prompt: &str,
     position: Option<&str>,
     monitor_id: Option<&str>,
+    provider_order: Option<Vec<wallmagic_core::ImageProvider>>,
 ) -> Result<WallpaperState, String> {
     let pos = parse_position_arg(position)?;
-    let settings = wallmagic_core::load_scenario().map_err(err_to_string)?;
+    let mut settings = wallmagic_core::load_scenario().map_err(err_to_string)?;
+    if let Some(order) = provider_order {
+        // 지적 2: 화면 순서를 그대로 전달 — effective_provider_order가
+        // 빈 배열·중복을 정규화하므로 미저장 상태에서도 화면 순서 = 실제 시도 순서.
+        settings.provider_order = order;
+    }
     let dest = wallmagic_core::app_data_dir()
         .join("online_cache")
         .join("priority_manual.jpg");
@@ -324,6 +409,7 @@ pub fn run() {
             save_scenario,
             tick_scenario_now,
             generate_wallpaper_priority,
+            apply_generated_image,
         ])
         .run(tauri::generate_context!())
         .expect("error while running WallMagic application");
@@ -352,6 +438,30 @@ mod tests {
         assert!(
             err.contains("invalid position 'diagonal'"),
             "error must name the offending value: {err}"
+        );
+    }
+
+    /// Puter 경로 회귀 테스트 (Red→Green): 프론트엔드(Puter.js)가 넘긴 base64 이미지
+    /// payload를 백엔드가 디코딩한다. data URL 접두사 허용, 비-base64/빈 payload는
+    /// 조용한 폴스루 없이 명시적 오류를 반환해야 한다.
+    #[test]
+    fn test_decode_image_payload_contract() {
+        // (1) 잘못된 base64 → 명시적 오류
+        let err = decode_image_payload("@@not-base64@@").expect_err("invalid base64 must fail");
+        assert!(
+            err.contains("invalid base64"),
+            "error must name the cause: {err}"
+        );
+
+        // (2) data URL 접두사는 허용하고 본문만 디코딩한다.
+        let decoded = decode_image_payload("data:image/png;base64,aGVsbG8=").expect("data url");
+        assert_eq!(decoded, b"hello".to_vec());
+
+        // (3) 공백/빈 문자열 → 0바이트 오류
+        let err = decode_image_payload("   ").expect_err("empty payload must fail");
+        assert!(
+            err.contains("0 bytes"),
+            "empty payload must be reported: {err}"
         );
     }
 

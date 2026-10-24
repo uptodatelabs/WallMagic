@@ -1,6 +1,56 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
+/* ── Puter.js 전역 선언 (WebView 전용 SDK) ──
+   `index.html`이 `https://js.puter.com/v2/`를 로드하므로 브라우저 전역에 `puter`가 생긴다.
+   Rust 백엔드에는 서버 측 REST 엔드포인트가 없어 생성은 WebView에서만 수행한다.
+   로드 실패(오프라인/차단) 시 `undefined`가 되며, 호출부는 명시적 오류로 실패한다. */
+declare global {
+  interface Window {
+    puter?: {
+      ai?: {
+        txt2img?: (prompt: string, options?: { model?: string }) => Promise<unknown>;
+      };
+    };
+  }
+}
+
+/// Blob → data URL(base64) 변환.
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error("Puter 이미지 base64 변환 실패"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+/// Puter `txt2img` 응답을 백엔드가 요구하는 base64/data URL 문자열로 정규화한다.
+/// SDK 버전에 따라 data URL 문자열 / 원격 URL 문자열 / Blob / HTMLImageElement를
+/// 돌려주므로 순서대로 처리하고, 해석 불가 시 조용한 폴스루 없이 명시적 오류를 던진다.
+async function puterResultToBase64(result: unknown): Promise<string> {
+  if (typeof result === "string") {
+    const value = result.trim();
+    if (value.startsWith("data:")) return value;
+    const resp = await fetch(value);
+    if (!resp.ok) throw new Error(`Puter 이미지 다운로드 실패: HTTP ${resp.status}`);
+    return blobToBase64(await resp.blob());
+  }
+  if (result instanceof Blob) return blobToBase64(result);
+  if (result instanceof HTMLImageElement) {
+    const canvas = document.createElement("canvas");
+    canvas.width = result.naturalWidth || result.width;
+    canvas.height = result.naturalHeight || result.height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("canvas 2d context unavailable");
+    ctx.drawImage(result, 0, 0);
+    return canvas.toDataURL("image/png");
+  }
+  throw new Error(
+    `Puter 응답 형식을 해석할 수 없습니다: ${Object.prototype.toString.call(result)}`,
+  );
+}
+
 /* ── IPC 응답 타입 (Rust 구조체 snake_case 키와 1:1 대응) ── */
 
 export interface WallpaperCandidate {
@@ -100,7 +150,10 @@ export function App(): React.ReactElement {
   const [scUrls, setScUrls] = useState<string>("");
   const [scLocalDir, setScLocalDir] = useState<string>("");
   const [scOrder, setScOrder] = useState<"sequential" | "random">("sequential");
-  const [scProvider, setScProvider] = useState<"pollinations" | "cloudflare-workers-ai" | "openai">("pollinations");
+  // `scProvider`: 수동 생성에 쓸 공급자. "puter"는 WebView 전용(Puter.js 브라우저 SDK)이라
+  // 백엔드 우선순위(`provider_order`)에는 넣지 않는다 — Rust는 브라우저 SDK를 호출할 수 없다.
+  const [scProvider, setScProvider] = useState<"pollinations" | "cloudflare-workers-ai" | "openai" | "puter">("pollinations");
+  // `ProviderId`: 백엔드 `ImageProvider` enum과 1:1 대응하는 3종만 — 우선순위 목록·저장 payload 전용.
   type ProviderId = "pollinations" | "cloudflare-workers-ai" | "openai";
   const FREE_FIRST_ORDER: ProviderId[] = ["pollinations", "cloudflare-workers-ai", "openai"];
   const [scProviderOrder, setScProviderOrder] = useState<ProviderId[]>([...FREE_FIRST_ORDER]);
@@ -281,6 +334,50 @@ export function App(): React.ReactElement {
   };
 
   const handleGenerateAi = async () => {
+    // provider=puter일 때: 생성은 WebView의 Puter.js SDK, 검증·스테이징·적용은
+    // Rust `apply_generated_image`가 담당한다 (코어 한 곳에서 해상도/스냅샷 처리).
+    if (scProvider === "puter") {
+      const aiPrompt = (scPrompt.trim() || prompt).trim();
+      if (!aiPrompt) {
+        reportError("AI 프롬프트를 입력하세요.");
+        return;
+      }
+      const txt2img = window.puter?.ai?.txt2img;
+      if (!txt2img) {
+        reportError(
+          "Puter.js SDK를 불러오지 못했습니다 (오프라인/스크립트 차단). 네트워크 확인 후 새로고침하세요.",
+        );
+        return;
+      }
+      setBusy(true);
+      try {
+        const result = await txt2img(aiPrompt);
+        const dataUrl = await puterResultToBase64(result);
+        const state = await invoke<WallpaperState>("apply_generated_image", {
+          imageBase64: dataUrl,
+          label: "puter",
+          position,
+          monitorId: monitorId.trim() ? monitorId.trim() : null,
+        });
+        setStatus((prev) =>
+          prev
+            ? {
+                ...prev,
+                current_wallpaper: state.current_wallpaper,
+                previous_wallpaper: state.previous_wallpaper,
+                backend_used: state.backend_used,
+              }
+            : prev,
+        );
+        reportOk(`Puter 생성·적용 완료 — 백엔드: ${state.backend_used ?? "unknown"}`);
+        await refreshStatus();
+      } catch (err) {
+        reportError(`Puter 생성 실패 (기존 배경 유지): ${String(err)}`);
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     // provider=openai일 때는 OpenAI 경로로 분기한다 (저장된 api_key 폴백 포함).
     if (scProvider === "openai") {
       const aiPrompt = (scPrompt.trim() || prompt).trim();
@@ -515,6 +612,7 @@ export function App(): React.ReactElement {
         prompt: aiPrompt,
         position,
         monitorId: monitorId.trim() ? monitorId.trim() : null,
+        providerOrder: scProviderOrder,
       });
       setStatus((prev) =>
         prev
@@ -799,12 +897,15 @@ export function App(): React.ReactElement {
                 id="scProvider"
                 value={scProvider}
                 onChange={(e) =>
-                  setScProvider(e.target.value as "pollinations" | "cloudflare-workers-ai" | "openai")
+                  setScProvider(
+                    e.target.value as "pollinations" | "cloudflare-workers-ai" | "openai" | "puter",
+                  )
                 }
               >
                 <option value="pollinations">Pollinations (무료·키 불필요)</option>
                 <option value="cloudflare-workers-ai">Cloudflare Workers AI</option>
                 <option value="openai">OpenAI</option>
+                <option value="puter">Puter (무료·브라우저 SDK)</option>
               </select>
             </div>
             <div className="field">
@@ -939,6 +1040,27 @@ export function App(): React.ReactElement {
                   style={{ marginBottom: "8px" }}
                 >
                   OpenAI로 생성·적용
+                </button>
+              </>
+            )}
+            {scProvider === "puter" && (
+              <>
+                <div className="field">
+                  <label>Puter (무료 · 브라우저 SDK)</label>
+                  <div className="detail">
+                    생성은 WebView의 <b>Puter.js</b>(<code>puter.ai.txt2img</code>)가 수행하고,
+                    결과 이미지는 Rust 커맨드 <code>apply_generated_image</code>가 해상도 검증·스테이징·적용합니다.
+                    API 키 입력은 필요 없습니다 (Puter 세션 사용). SDK 로드 실패 시 명시적 오류가 표시됩니다.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="primary block"
+                  onClick={() => void handleGenerateAi()}
+                  disabled={busy}
+                  style={{ marginBottom: "8px" }}
+                >
+                  Puter로 생성·적용
                 </button>
               </>
             )}

@@ -15,5 +15,6 @@ tauri-build.workspace = true
 
 [dependencies]
 wallmagic-core = { path = "../crates/core" }
+base64.workspace = true
 serde.workspace = true
 tauri.workspace = true

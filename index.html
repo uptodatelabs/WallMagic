@@ -4,6 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>WallMagic — Windows Wallpaper Studio</title>
+    <!-- Puter.js: 브라우저(WebView)에서 무료 이미지 생성을 호출하는 SDK.
+         Rust 백엔드에는 서버 측 REST 엔드포인트가 없어 프론트 전용 경로로만 쓴다.
+         로드 실패(오프라인/차단) 시 window.puter가 undefined가 되고, UI는 명시적 오류를 표시한다. -->
+    <script src="https://js.puter.com/v2/"></script>
   </head>
   <body>
     <div id="root"></div>

@@ -129,11 +129,18 @@ pub fn provider_is_configured(settings: &ScenarioSettings, provider: ImageProvid
 ///   없다. OpenAI 직접 REST(`POST https://api.openai.com/v1/images/generations`) 경로를 유지한다.
 ///   (공식 문서: https://docs.puter.com/AI/txt2img/ — TODO:将来 브라우저 전용 무료 경로가
 ///   필요해지면 프론트 전용 옵션으로 별도 provider 추가를 검토)
-pub fn generate_ai_with_fallback(
+///
+/// 결정적 테스트를 위해 실제 시도 함수는 `attempt` 클로저로 주입받는다.
+/// 네트워크 의존 생성 함수는 이 클로저로 분리되어 단위 테스트에서 모의 가능하다.
+pub fn generate_ai_with_fallback_with<F>(
     settings: &ScenarioSettings,
     prompt: &str,
     dest: &PathBuf,
-) -> Result<(ImageProvider, PathBuf), WallpaperError> {
+    attempt: F,
+) -> Result<(ImageProvider, PathBuf), WallpaperError>
+where
+    F: Fn(ImageProvider, &str, &PathBuf) -> Result<PathBuf, WallpaperError>,
+{
     let trimmed = prompt.trim();
     if trimmed.is_empty() {
         return Err(WallpaperError::CandidateLoad(
@@ -156,26 +163,7 @@ pub fn generate_ai_with_fallback(
             )));
             continue;
         }
-        let attempt: Result<PathBuf, WallpaperError> = match provider {
-            ImageProvider::Pollinations => {
-                crate::wallpaper::generate_online_wallpaper(trimmed, dest)
-            }
-            ImageProvider::CloudflareWorkersAi => {
-                let cf = &settings.cloudflare;
-                generate_cloudflare_wallpaper(
-                    &cf.account_id,
-                    &cf.api_token,
-                    &cf.model,
-                    trimmed,
-                    dest,
-                )
-            }
-            ImageProvider::Openai => {
-                let oa = &settings.openai;
-                generate_openai_wallpaper(&oa.api_key, &oa.model, trimmed, dest)
-            }
-        };
-        match attempt {
+        match attempt(provider, trimmed, dest) {
             Ok(p) => return Ok((provider, p)),
             Err(e) => {
                 last_err = Some(e);
@@ -188,6 +176,32 @@ pub fn generate_ai_with_fallback(
             "all image providers failed (skipped: {skipped})"
         ))
     }))
+}
+
+pub fn generate_ai_with_fallback(
+    settings: &ScenarioSettings,
+    prompt: &str,
+    dest: &PathBuf,
+) -> Result<(ImageProvider, PathBuf), WallpaperError> {
+    generate_ai_with_fallback_with(settings, prompt, dest, |provider, trimmed, dest| match provider {
+        ImageProvider::Pollinations => {
+            crate::wallpaper::generate_online_wallpaper(trimmed, dest)
+        }
+        ImageProvider::CloudflareWorkersAi => {
+            let cf = &settings.cloudflare;
+            generate_cloudflare_wallpaper(
+                &cf.account_id,
+                &cf.api_token,
+                &cf.model,
+                trimmed,
+                dest,
+            )
+        }
+        ImageProvider::Openai => {
+            let oa = &settings.openai;
+            generate_openai_wallpaper(&oa.api_key, &oa.model, trimmed, dest)
+        }
+    })
 }
 
 /// OpenAI 이미지 생성 설정 (주의: api_key는 scenario.json에 평문 저장된다 —
@@ -1002,4 +1016,124 @@ mod tests {
             "expected CandidateLoad, got: {err:?}"
         );
     }
+
+    // ── 검수 지적 [medium](1): 폴백 우선순위 결정 로직의 결정적 테스트 ──
+    // 네트워크 의존 생성 함수는 generate_ai_with_fallback_with의 attempt 클로저로
+    // 주입해 모의하므로, 외부 호출 없이 결정적으로 검증한다.
+    #[test]
+    fn test_default_provider_order_is_free_first() {
+        assert_eq!(
+            default_provider_order(),
+            vec![
+                ImageProvider::Pollinations,
+                ImageProvider::CloudflareWorkersAi,
+                ImageProvider::Openai,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_effective_provider_order_empty_falls_back_to_single_and_dedups() {
+        // 빈 배열(구 scenario.json) → [provider] 단일 시도로 하위호환
+        let mut s = settings_with_urls(&["https://cdn.example.com/w1.jpg"]);
+        s.provider = ImageProvider::Openai;
+        s.provider_order = vec![];
+        assert_eq!(effective_provider_order(&s), vec![ImageProvider::Openai]);
+        // 중복은 첫 등장만 유지
+        s.provider_order = vec![
+            ImageProvider::CloudflareWorkersAi,
+            ImageProvider::Pollinations,
+            ImageProvider::CloudflareWorkersAi,
+            ImageProvider::Openai,
+            ImageProvider::Pollinations,
+        ];
+        assert_eq!(
+            effective_provider_order(&s),
+            vec![
+                ImageProvider::CloudflareWorkersAi,
+                ImageProvider::Pollinations,
+                ImageProvider::Openai,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_provider_is_configured_checks_credentials() {
+        let mut s = ScenarioSettings::default();
+        // Pollinations는 키 불필요라 항상 true
+        assert!(provider_is_configured(&s, ImageProvider::Pollinations));
+        // Cloudflare는 account_id + api_token 모두 필요
+        assert!(!provider_is_configured(
+            &s,
+            ImageProvider::CloudflareWorkersAi
+        ));
+        s.cloudflare.account_id = "acc".to_string();
+        assert!(!provider_is_configured(
+            &s,
+            ImageProvider::CloudflareWorkersAi
+        ));
+        s.cloudflare.api_token = "tok".to_string();
+        assert!(provider_is_configured(
+            &s,
+            ImageProvider::CloudflareWorkersAi
+        ));
+        // OpenAI는 api_key 필요
+        assert!(!provider_is_configured(&s, ImageProvider::Openai));
+        s.openai.api_key = "sk-x".to_string();
+        assert!(provider_is_configured(&s, ImageProvider::Openai));
+    }
+
+    #[test]
+    fn test_fallback_skips_unconfigured_without_network_call() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let mut s = ScenarioSettings::default();
+        // 순서: Cloudflare(키 없음) → OpenAI(키 없음) → Pollinations(항상 시도)
+        s.provider_order = vec![
+            ImageProvider::CloudflareWorkersAi,
+            ImageProvider::Openai,
+            ImageProvider::Pollinations,
+        ];
+        let calls = AtomicUsize::new(0);
+        let dest = PathBuf::from("dummy.jpg");
+        let (used, _) = generate_ai_with_fallback_with(&s, "sunset", &dest, |p, _, d| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            // 자격 미달 공급자가 호출되면 테스트 실패 — 네트워크 없이 스킵되어야 한다
+            assert_eq!(p, ImageProvider::Pollinations);
+            Ok(d.clone())
+        })
+        .expect("pollinations fallback must succeed");
+        assert_eq!(used, ImageProvider::Pollinations);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_fallback_returns_last_error_when_all_fail() {
+        let mut s = ScenarioSettings::default();
+        s.provider_order = vec![ImageProvider::Pollinations];
+        let dest = PathBuf::from("dummy.jpg");
+        let err = generate_ai_with_fallback_with(&s, "sunset", &dest, |_, _, _| {
+            Err(WallpaperError::Network("boom".to_string()))
+        })
+        .expect_err("all-fail must be Err, never Ok fallthrough");
+        assert!(
+            matches!(err, WallpaperError::Network(_)),
+            "expected last error passthrough, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_should_run_false_when_no_configured_provider() {
+        // 프롬프트만 있고 자격 갖춘 공급자가 0개 → false
+        let mut s = settings_with_urls(&[]);
+        s.prompt = "aurora".to_string();
+        // Pollinations는 항상 자격 있음 → true가 되므로, 순서에서 제외해 0개 상태를 만든다
+        s.provider = ImageProvider::CloudflareWorkersAi;
+        s.provider_order = vec![ImageProvider::CloudflareWorkersAi];
+        assert!(!should_run(&s, 1_000_000));
+        // 토큰을 채우면 자격 1개 → true
+        s.cloudflare.account_id = "acc".to_string();
+        s.cloudflare.api_token = "tok".to_string();
+        assert!(should_run(&s, 1_000_000));
+    }
+
 }
