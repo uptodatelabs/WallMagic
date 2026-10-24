@@ -370,6 +370,17 @@ export function App(): React.ReactElement {
         <h1 className="app-title">WallMagic Studio</h1>
         <span className="app-subtitle">Windows Wallpaper Studio</span>
         <div className="header-spacer" />
+        <button
+          type="button"
+          onClick={() =>
+            document
+              .getElementById("scenario-section")
+              ?.scrollIntoView({ behavior: "smooth", block: "start" })
+          }
+          aria-label="Cloudflare 설정으로 이동"
+        >
+          Cloudflare 설정
+        </button>
         {status?.backend_used && (
           <span className="badge ok">{status.backend_used}</span>
         )}
@@ -539,8 +550,8 @@ export function App(): React.ReactElement {
             이전 배경으로 복원
           </button>
 
-          <section>
-            <h2>⑤ 시나리오 (자동 업데이트)</h2>
+          <section id="scenario-section">
+            <h2>⑤ 시나리오 · Cloudflare (자동 업데이트)</h2>
             <div className="field">
               <label htmlFor="scEnabled">자동 업데이트</label>
               <select
