@@ -325,4 +325,118 @@ mod tests {
             "data_dir must be reported to the status bar"
         );
     }
+
+    /// `WALLMAGIC_DATA_DIR`를 격리 임시 디렉터리로 돌리는 가드.
+    /// `scenario.json`이 실제 `%LOCALAPPDATA%\WallMagic`을 건드리지 않게 한다.
+    struct DataDirGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        temp_dir: std::path::PathBuf,
+        previous: Option<String>,
+    }
+
+    fn data_dir_lock() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    impl DataDirGuard {
+        fn new(label: &str) -> Self {
+            let lock = data_dir_lock();
+            let temp_dir = std::env::temp_dir().join(format!("wallmagic_app_test_{label}"));
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            std::fs::create_dir_all(&temp_dir).expect("create isolated test data dir");
+            let previous = std::env::var("WALLMAGIC_DATA_DIR").ok();
+            std::env::set_var("WALLMAGIC_DATA_DIR", &temp_dir);
+            Self {
+                _lock: lock,
+                temp_dir,
+                previous,
+            }
+        }
+    }
+
+    impl Drop for DataDirGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var("WALLMAGIC_DATA_DIR", value),
+                None => std::env::remove_var("WALLMAGIC_DATA_DIR"),
+            }
+            let _ = std::fs::remove_dir_all(&self.temp_dir);
+        }
+    }
+
+    fn scenario_with_token(token: &str, clear_flag: bool) -> ScenarioSettings {
+        ScenarioSettings {
+            enabled: false,
+            interval_minutes: 60,
+            source: wallmagic_core::ScenarioSource {
+                urls: vec![],
+                local_dir: None,
+            },
+            order: wallmagic_core::ScenarioOrder::Sequential,
+            next_index: 0,
+            last_run_at: None,
+            position: "fill".to_string(),
+            provider: wallmagic_core::ImageProvider::default(),
+            cloudflare: wallmagic_core::CloudflareAiConfig {
+                account_id: "acc".to_string(),
+                api_token: token.to_string(),
+                model: wallmagic_core::default_cf_model(),
+                prompt: String::new(),
+            },
+            clear_api_token: clear_flag,
+        }
+    }
+
+    #[test]
+    fn test_get_scenario_masks_api_token() {
+        let _guard = DataDirGuard::new("mask_token");
+        // arrange: 토큰이 든 scenario.json 저장
+        wallmagic_core::save_scenario(&scenario_with_token("secret-123", false))
+            .expect("seed scenario with token");
+        // act: get_scenario_impl()
+        let got = get_scenario_impl().expect("get_scenario_impl");
+        // assert: 조회 응답의 토큰은 항상 빈 문자열
+        assert_eq!(got.cloudflare.api_token, "");
+        // 디스크 원본은 그대로 보존되어야 한다
+        let on_disk = wallmagic_core::load_scenario().expect("load disk scenario");
+        assert_eq!(on_disk.cloudflare.api_token, "secret-123");
+    }
+
+    #[test]
+    fn test_save_scenario_keeps_existing_token_when_empty() {
+        let _guard = DataDirGuard::new("keep_token");
+        wallmagic_core::save_scenario(&scenario_with_token("keep-me", false))
+            .expect("seed scenario with token");
+        // act: clear_api_token=false + api_token="" → 기존 토큰 유지
+        let saved =
+            save_scenario_impl(scenario_with_token("", false)).expect("save_scenario_impl");
+        assert_eq!(saved.cloudflare.api_token, "");
+        let on_disk = wallmagic_core::load_scenario().expect("load disk scenario");
+        assert_eq!(on_disk.cloudflare.api_token, "keep-me");
+        assert!(
+            !on_disk.clear_api_token,
+            "clear_api_token must not persist on disk"
+        );
+    }
+
+    #[test]
+    fn test_save_scenario_clears_token_only_when_flagged() {
+        let _guard = DataDirGuard::new("clear_token");
+        wallmagic_core::save_scenario(&scenario_with_token("to-delete", false))
+            .expect("seed scenario with token");
+        // act: clear_api_token=true → 토큰 비워짐
+        let saved =
+            save_scenario_impl(scenario_with_token("", true)).expect("save_scenario_impl");
+        assert_eq!(saved.cloudflare.api_token, "");
+        let on_disk = wallmagic_core::load_scenario().expect("load disk scenario");
+        assert_eq!(on_disk.cloudflare.api_token, "");
+        assert!(
+            !on_disk.clear_api_token,
+            "saved clear_api_token must be reset to false"
+        );
+    }
 }

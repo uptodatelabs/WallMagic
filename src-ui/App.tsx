@@ -401,11 +401,14 @@ export function App(): React.ReactElement {
       setScInfo(
         `저장됨 · 다음 #${saved.next_index} · ${saved.enabled ? "ON" : "OFF"} · ${saved.interval_minutes}분`,
       );
-      if (scClearToken) {
-        setScClearToken(false);
+      const deletedToken = scClearToken && scCfToken.trim() === "";
+      setScClearToken(false);
+      if (deletedToken) {
         setScCfToken("");
         reportOk("시나리오 저장 완료 — 저장된 API 토큰을 삭제했습니다");
       } else {
+        // scClearToken 체크 + 새 토큰 동시 입력 시 백엔드는 새 토큰을 저장하므로
+        // 입력값을 비우지 않고 일반 저장 메시지를 표시한다.
         reportOk("시나리오 저장 완료");
       }
     } catch (err) {
