@@ -14,8 +14,9 @@ pub mod wallpaper;
 // Public facade: the canonical implementation lives in the `wallpaper` / `search` modules.
 // Types and functions are re-exported here so downstream crates keep a stable import path.
 pub use scenario::{
-    load_scenario, now_unix_secs, pick_next_url, save_scenario, scenario_file_path, should_run,
-    tick_scenario, ScenarioOrder, ScenarioSettings, ScenarioSource,
+    failure_retry_allowed_at, load_scenario, needs_cursor_reset, now_unix_secs, pick_next_url,
+    save_scenario, scenario_file_path, scenario_http_status_error, should_run, tick_scenario,
+    ScenarioOrder, ScenarioSettings, ScenarioSource,
 };
 pub use search::{
     generate_library_wallpaper, online_cache_file_name, search_wallpapers, WallpaperCandidate,

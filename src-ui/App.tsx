@@ -91,8 +91,13 @@ export function App(): React.ReactElement {
   const [scEnabled, setScEnabled] = useState<boolean>(false);
   const [scInterval, setScInterval] = useState<string>("60");
   const [scUrls, setScUrls] = useState<string>("");
+  const [scLocalDir, setScLocalDir] = useState<string>("");
   const [scOrder, setScOrder] = useState<"sequential" | "random">("sequential");
   const [scInfo, setScInfo] = useState<string>("시나리오 미조회");
+  // 자동 틱 연속 실패 횟수 (지적 #4: 에러 은폐 방지용 카운터)
+  const [scAutoFail, setScAutoFail] = useState<number>(0);
+  // 저장 시 커서·시각 보존용 원본 스냅샷 (지적 #2: 하드코딩 방지)
+  const [scPrev, setScPrev] = useState<ScenarioSettings | null>(null);
 
   // 상태
   const [status, setStatus] = useState<AppStatus | null>(null);
@@ -127,10 +132,68 @@ export function App(): React.ReactElement {
     }
   }, []);
 
+  const refreshScenario = useCallback(async () => {
+    try {
+      const sc = await invoke<ScenarioSettings>("get_scenario");
+      setScEnabled(sc.enabled);
+      setScInterval(String(sc.interval_minutes));
+      setScUrls(sc.source.urls.join("\n"));
+      setScLocalDir(sc.source.local_dir ?? "");
+      setScOrder(sc.order);
+      setScPrev(sc);
+      setScInfo(
+        `다음 #${sc.next_index} · 마지막 ${sc.last_run_at ?? "없음"} · ${sc.enabled ? "ON" : "OFF"}`,
+      );
+    } catch (err) {
+      setScInfo(`시나리오 조회 실패: ${String(err)}`);
+    }
+  }, []);
+
   useEffect(() => {
     void refreshStatus();
     void refreshMonitors();
-  }, [refreshStatus, refreshMonitors]);
+    void refreshScenario();
+  }, [refreshStatus, refreshMonitors, refreshScenario]);
+
+  // 지적 #1: 자동 실행 타이머 — 앱이 켜져 있는 동안 60초마다 주기 도래를 확인한다.
+  // tick은 코어 should_run 게이트를 그대로 타므로 OFF/미도래 시 Ok(None)으로 skip된다.
+  // 지적 #4: 자동 틱 실패를 삼키지 않고 console.error + 카운터 + 상태 메시지로 노출한다.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      void (async () => {
+        try {
+          const applied = await invoke<WallpaperState | null>("tick_scenario_now");
+          if (applied) {
+            setScAutoFail(0);
+            setStatus((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    current_wallpaper: applied.current_wallpaper,
+                    previous_wallpaper: applied.previous_wallpaper,
+                    backend_used: applied.backend_used,
+                  }
+                : prev,
+            );
+            reportOk(`시나리오 자동 적용 — 백엔드: ${applied.backend_used ?? "unknown"}`);
+            await refreshScenario();
+            await refreshStatus();
+          }
+        } catch (err) {
+          console.error("scenario auto-tick failed:", err);
+          setScAutoFail((n) => {
+            const next = n + 1;
+            setScInfo(
+              (prev) =>
+                `자동 업데이트 실패(${next}회 연속) — 수동 "지금 실행"으로 상세 확인: ${String(err)} · ${prev}`,
+            );
+            return next;
+          });
+        }
+      })();
+    }, 60_000);
+    return () => clearInterval(timer);
+  }, [refreshScenario, refreshStatus]);
 
   const handleSearch = async () => {
     setBusy(true);
@@ -228,21 +291,6 @@ export function App(): React.ReactElement {
     }
   };
 
-  const refreshScenario = useCallback(async () => {
-    try {
-      const sc = await invoke<ScenarioSettings>("get_scenario");
-      setScEnabled(sc.enabled);
-      setScInterval(String(sc.interval_minutes));
-      setScUrls(sc.source.urls.join("\n"));
-      setScOrder(sc.order);
-      setScInfo(
-        `다음 #${sc.next_index} · 마지막 ${sc.last_run_at ?? "없음"} · ${sc.enabled ? "ON" : "OFF"}`,
-      );
-    } catch (err) {
-      setScInfo(`시나리오 조회 실패: ${String(err)}`);
-    }
-  }, []);
-
   const handleSaveScenario = async () => {
     const minutes = Number.parseInt(scInterval, 10);
     if (!Number.isFinite(minutes) || minutes < 5) {
@@ -253,16 +301,27 @@ export function App(): React.ReactElement {
       .split("\n")
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
+    const localDir = scLocalDir.trim() ? scLocalDir.trim() : null;
+    // 지적 #2: 커서·시각 보존 — 소스 구성이 바뀌어 항목 수가 달라진 경우에만 커서 리셋.
+    const prevUrls = scPrev?.source.urls ?? [];
+    const prevLocalDir = scPrev?.source.local_dir ?? null;
+    const sourceChanged =
+      scPrev == null ||
+      prevUrls.length !== urls.length ||
+      prevUrls.some((u, i) => u !== urls[i]) ||
+      (prevLocalDir ?? null) !== localDir;
+    const nextIndex = sourceChanged ? 0 : (scPrev?.next_index ?? 0);
+    const lastRunAt = sourceChanged ? null : (scPrev?.last_run_at ?? null);
     setBusy(true);
     try {
       const saved = await invoke<ScenarioSettings>("save_scenario", {
         settings: {
           enabled: scEnabled,
           interval_minutes: minutes,
-          source: { urls, local_dir: null },
+          source: { urls, local_dir: localDir },
           order: scOrder,
-          next_index: 0,
-          last_run_at: null,
+          next_index: nextIndex,
+          last_run_at: lastRunAt,
           position,
         },
       });
@@ -513,6 +572,16 @@ export function App(): React.ReactElement {
               />
             </div>
             <div className="field">
+              <label htmlFor="scLocalDir">로컬 폴더 (선택 — URL이 비었을 때 순환)</label>
+              <input
+                id="scLocalDir"
+                type="text"
+                value={scLocalDir}
+                onChange={(e) => setScLocalDir(e.target.value)}
+                placeholder="C:\Users\me\Pictures\auto (비우면 사용 안 함)"
+              />
+            </div>
+            <div className="field">
               <label htmlFor="scOrder">순서</label>
               <select
                 id="scOrder"
@@ -527,6 +596,7 @@ export function App(): React.ReactElement {
             </div>
             <div className="detail" style={{ marginBottom: "8px" }}>
               {scInfo}
+              {scAutoFail > 0 ? ` · 자동 실패 ${scAutoFail}회 연속` : ""}
             </div>
             <button
               type="button"

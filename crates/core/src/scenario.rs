@@ -184,13 +184,67 @@ pub fn pick_next_url(settings: &ScenarioSettings, rand_seed: u64) -> Option<(usi
     Some((idx, settings.source.urls[idx].clone()))
 }
 
+/// HTTP 상태 코드를 보존해 `WallpaperError::HttpStatus`를 만든다 (검수 지적 3).
+/// 날조 금지: 호출자가 받은 실제 `status`를 그대로 담는다.
+pub fn scenario_http_status_error(status: u16, body: String) -> WallpaperError {
+    WallpaperError::HttpStatus { status, body }
+}
+
+/// 소스 구성이 바뀌었으면 순차 커서 리셋이 필요하다 (검수 지적 3, 순수 함수).
+pub fn needs_cursor_reset(
+    prev_urls: &[String],
+    prev_local: Option<&str>,
+    next_urls: &[String],
+    next_local: Option<&str>,
+) -> bool {
+    if prev_urls != next_urls {
+        return true;
+    }
+    fn norm(v: Option<&str>) -> Option<&str> {
+        match v {
+            Some(s) => {
+                let t = s.trim();
+                if t.is_empty() { None } else { Some(t) }
+            }
+            None => None,
+        }
+    }
+    norm(prev_local) != norm(next_local)
+}
+
+/// 다운로드 실패 시각 + 주기 → 다음 재시도 허용 시각 (검수 지적 3, 순수 함수).
+/// `tick_scenario`가 실패 시 `last_run_at=now`를 저장하므로, 다음 틱은 정확히
+/// 한 주기 뒤에 허용된다 (매 틱 재시도 폭주 방지).
+pub fn failure_retry_allowed_at(failed_at_secs: u64, interval_minutes: u64) -> u64 {
+    failed_at_secs.saturating_add(interval_minutes.saturating_mul(60))
+}
+
 /// 원격 URL 1건을 다운로드해 스테이징 전 임시 파일로 저장한다.
+///
+/// 실패 분류:
+/// - `ureq::Error::Status(code, _)` → `HttpStatus { status: code, .. }` (실제 코드 보존).
+/// - 비-200 응답 → `response.status()` 실제 값을 그대로 담는다 (날조 금지).
 fn download_to_temp(url: &str, dest: &PathBuf) -> Result<(), WallpaperError> {
     let response = ureq::get(url)
         .timeout(std::time::Duration::from_secs(60))
         .call()
-        .map_err(|e| WallpaperError::Network(format!("scenario download failed: {e}")))?;
-    if response.status() != 200 {
+        .map_err(|e| match e {
+            ureq::Error::Status(code, resp) => {
+                let body = resp
+                    .into_string()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(200)
+                    .collect::<String>();
+                WallpaperError::HttpStatus {
+                    status: code,
+                    body: format!("scenario image HTTP {code}: {body}"),
+                }
+            }
+            other => WallpaperError::Network(format!("scenario download failed: {other}")),
+        })?;
+    let status = response.status();
+    if status != 200 {
         let body = response
             .into_string()
             .unwrap_or_default()
@@ -198,8 +252,8 @@ fn download_to_temp(url: &str, dest: &PathBuf) -> Result<(), WallpaperError> {
             .take(200)
             .collect::<String>();
         return Err(WallpaperError::HttpStatus {
-            status: 502,
-            body: format!("scenario image HTTP error: {body}"),
+            status,
+            body: format!("scenario image HTTP {status}: {body}"),
         });
     }
     let mut bytes: Vec<u8> = Vec::new();
@@ -246,8 +300,20 @@ pub fn tick_scenario(now_secs: u64) -> Result<Option<WallpaperState>, WallpaperE
         let tmp = app_data_dir()
             .join("online_cache")
             .join(format!("scenario_{idx}.jpg"));
-        download_to_temp(&url, &tmp)?;
-        let state = crate::wallpaper::set_wallpaper(&tmp, None, settings.position_enum())?;
+        // 실패 시 백오프: last_run_at을 갱신하고 저장해 매 틱 재시도 폭주를 막는다.
+        if let Err(e) = download_to_temp(&url, &tmp) {
+            settings.last_run_at = Some(now_secs);
+            let _ = save_scenario(&settings);
+            return Err(e);
+        }
+        let state = match crate::wallpaper::set_wallpaper(&tmp, None, settings.position_enum()) {
+            Ok(s) => s,
+            Err(e) => {
+                settings.last_run_at = Some(now_secs);
+                let _ = save_scenario(&settings);
+                return Err(e);
+            }
+        };
         settings.next_index = settings.next_index.wrapping_add(1) % len.max(1);
         settings.last_run_at = Some(now_secs);
         save_scenario(&settings)?;
@@ -359,5 +425,62 @@ mod tests {
         assert!(s.validate().is_err());
         s.interval_minutes = 5;
         assert!(s.validate().is_ok());
+    }
+
+    // ── 검수 지적 3 (Red→Green): 신규 순수 헬퍼 3종의 회귀 테스트 ──
+    // 구현 전 상태에서는 아래 헬퍼가 없어 컴파일 FAIL(Red)이어야 한다.
+    #[test]
+    fn test_http_status_preserves_code() {
+        let e404 = crate::scenario::scenario_http_status_error(
+            404,
+            "scenario image HTTP 404: not found".to_string(),
+        );
+        let e500 = crate::scenario::scenario_http_status_error(
+            500,
+            "scenario image HTTP 500: boom".to_string(),
+        );
+        match e404 {
+            WallpaperError::HttpStatus { status, .. } => assert_eq!(status, 404),
+            other => panic!("expected HttpStatus for 404, got: {other:?}"),
+        }
+        match e500 {
+            WallpaperError::HttpStatus { status, .. } => assert_eq!(status, 500),
+            other => panic!("expected HttpStatus for 500, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_needs_cursor_reset_detects_source_change() {
+        use crate::scenario::needs_cursor_reset;
+        let prev = vec!["https://cdn.example.com/w1.jpg".to_string()];
+        // 동일 소스 → 리셋 불필요
+        assert!(!needs_cursor_reset(&prev, None, &prev, None));
+        // URL 추가 → 리셋 필요
+        let changed = vec![
+            "https://cdn.example.com/w1.jpg".to_string(),
+            "https://cdn.example.com/w2.jpg".to_string(),
+        ];
+        assert!(needs_cursor_reset(&prev, None, &changed, None));
+        // local_dir 변경 → 리셋 필요
+        assert!(needs_cursor_reset(&prev, None, &prev, Some("C:\\pics")));
+        assert!(needs_cursor_reset(
+            &prev,
+            Some("C:\\pics"),
+            &prev,
+            Some("D:\\other")
+        ));
+    }
+
+    #[test]
+    fn test_failure_backoff_delays_retry() {
+        use crate::scenario::failure_retry_allowed_at;
+        // 실패 시각 now=1_000_000, 주기 60분이면 다음 허용은 +3600초이다.
+        let allowed = failure_retry_allowed_at(1_000_000, 60);
+        assert_eq!(allowed, 1_000_000 + 60 * 60);
+        // 백오프 전(허용 시각 이전)에는 should_run이 false여야 한다.
+        let mut s = settings_with_urls(&["https://cdn.example.com/w1.jpg"]);
+        s.last_run_at = Some(1_000_000);
+        assert!(!should_run(&s, allowed - 1));
+        assert!(should_run(&s, allowed));
     }
 }
