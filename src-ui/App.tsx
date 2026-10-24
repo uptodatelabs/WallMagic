@@ -47,9 +47,13 @@ export interface ScenarioSettings {
   next_index: number;
   last_run_at: number | null;
   position: string;
-  provider: "pollinations" | "cloudflare-workers-ai";
-  cloudflare: { account_id: string; api_token: string; model: string; prompt: string };
+  provider: "pollinations" | "cloudflare-workers-ai" | "openai";
+  provider_order?: ("pollinations" | "cloudflare-workers-ai" | "openai")[];
+  prompt: string;
+  cloudflare: { account_id: string; api_token: string; model: string };
   clear_api_token?: boolean;
+  openai: { api_key: string; model: string };
+  clear_api_key?: boolean;
 }
 
 export type WallpaperPosition =
@@ -96,12 +100,18 @@ export function App(): React.ReactElement {
   const [scUrls, setScUrls] = useState<string>("");
   const [scLocalDir, setScLocalDir] = useState<string>("");
   const [scOrder, setScOrder] = useState<"sequential" | "random">("sequential");
-  const [scProvider, setScProvider] = useState<"pollinations" | "cloudflare-workers-ai">("pollinations");
+  const [scProvider, setScProvider] = useState<"pollinations" | "cloudflare-workers-ai" | "openai">("pollinations");
+  type ProviderId = "pollinations" | "cloudflare-workers-ai" | "openai";
+  const FREE_FIRST_ORDER: ProviderId[] = ["pollinations", "cloudflare-workers-ai", "openai"];
+  const [scProviderOrder, setScProviderOrder] = useState<ProviderId[]>([...FREE_FIRST_ORDER]);
   const [scCfAccount, setScCfAccount] = useState<string>("");
   const [scCfToken, setScCfToken] = useState<string>("");
   const [scCfModel, setScCfModel] = useState<string>("@cf/black-forest-labs/flux-1-schnell");
-  const [scCfPrompt, setScCfPrompt] = useState<string>("");
   const [scClearToken, setScClearToken] = useState<boolean>(false);
+  const [scOpenaiKey, setScOpenaiKey] = useState<string>("");
+  const [scOpenaiModel, setScOpenaiModel] = useState<string>("gpt-image-1");
+  const [scClearKey, setScClearKey] = useState<boolean>(false);
+  const [scPrompt, setScPrompt] = useState<string>("");
   const [scInfo, setScInfo] = useState<string>("시나리오 미조회");
   // 자동 틱 연속 실패 횟수 (지적 #4: 에러 은폐 방지용 카운터)
   const [scAutoFail, setScAutoFail] = useState<number>(0);
@@ -150,15 +160,29 @@ export function App(): React.ReactElement {
       setScLocalDir(sc.source.local_dir ?? "");
       setScOrder(sc.order);
       setScProvider(sc.provider ?? "pollinations");
+      const rawOrd = (sc as unknown as { provider_order?: unknown }).provider_order;
+      if (Array.isArray(rawOrd) && rawOrd.length > 0) {
+        const valid = (rawOrd as string[]).filter((v): v is ProviderId => v === "pollinations" || v === "cloudflare-workers-ai" || v === "openai");
+        const dedup = [...new Set(valid)];
+        if (dedup.length > 0) setScProviderOrder(dedup);
+      } else {
+        // 구 scenario.json(provider_order 없음): 단일 provider 시도로 해석 (하위호환)
+        const single = (sc.provider ?? "pollinations") as ProviderId;
+        setScProviderOrder([single]);
+      }
       setScCfAccount(sc.cloudflare?.account_id ?? "");
-      // 검수 지적 [medium](a): get_scenario 응답의 api_token은 항상 ""(마스킹).
+      // 검수 지적 [medium](a): get_scenario 응답의 api_token/api_key는 항상 ""(마스킹).
       // 빈 문자열로 덮어쓰면 사용자가 입력한 토큰이 지워지므로, 비어 있지 않을 때만 반영한다.
-      // 저장 시에는 scCfToken을 그대로 전달하고, ""이면 Rust 측에서 기존 저장값을 유지한다.
+      // 저장 시에는 scCfToken/scOpenaiKey를 그대로 전달하고, ""이면 Rust 측에서 기존 저장값을 유지한다.
       if (sc.cloudflare?.api_token) {
         setScCfToken(sc.cloudflare.api_token);
       }
       setScCfModel(sc.cloudflare?.model || "@cf/black-forest-labs/flux-1-schnell");
-      setScCfPrompt(sc.cloudflare?.prompt ?? "");
+      if (sc.openai?.api_key) {
+        setScOpenaiKey(sc.openai.api_key);
+      }
+      setScOpenaiModel(sc.openai?.model || "gpt-image-1");
+      setScPrompt(sc.prompt ?? "");
       setScPrev(sc);
       setScInfo(
         `다음 #${sc.next_index} · 마지막 ${sc.last_run_at ?? "없음"} · ${sc.enabled ? "ON" : "OFF"}`,
@@ -257,13 +281,48 @@ export function App(): React.ReactElement {
   };
 
   const handleGenerateAi = async () => {
+    // provider=openai일 때는 OpenAI 경로로 분기한다 (저장된 api_key 폴백 포함).
+    if (scProvider === "openai") {
+      const aiPrompt = (scPrompt.trim() || prompt).trim();
+      if (!aiPrompt) {
+        reportError("AI 프롬프트를 입력하세요.");
+        return;
+      }
+      setBusy(true);
+      try {
+        const state = await invoke<WallpaperState>("generate_wallpaper_openai", {
+          apiKey: scOpenaiKey,
+          model: scOpenaiModel.trim() || "gpt-image-1",
+          prompt: aiPrompt,
+          position,
+          monitorId: monitorId.trim() ? monitorId.trim() : null,
+        });
+        setStatus((prev) =>
+          prev
+            ? {
+                ...prev,
+                current_wallpaper: state.current_wallpaper,
+                previous_wallpaper: state.previous_wallpaper,
+                backend_used: state.backend_used,
+              }
+            : prev,
+        );
+        reportOk(`OpenAI 생성·적용 완료 — 백엔드: ${state.backend_used ?? "unknown"}`);
+        await refreshStatus();
+      } catch (err) {
+        reportError(`OpenAI 생성 실패 (기존 배경 유지): ${String(err)}`);
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     // 검수 지적 [medium](1): 토큰 사전 검사는 account_id만 요구한다.
     // api_token이 비어 있으면 Rust generate_wallpaper_ai_impl이 디스크 저장 토큰으로 폴백한다.
     if (!scCfAccount.trim()) {
       reportError("Cloudflare Account ID를 입력하세요. (API Token은 저장된 토큰 사용 — 미저장 시 입력 필요)");
       return;
     }
-    const aiPrompt = (scCfPrompt.trim() || prompt).trim();
+    const aiPrompt = (scPrompt.trim() || prompt).trim();
     if (!aiPrompt) {
       reportError("AI 프롬프트를 입력하세요.");
       return;
@@ -365,21 +424,28 @@ export function App(): React.ReactElement {
     const provider = scProvider;
     const cfAccount = scCfAccount.trim();
     const cfModel = scCfModel.trim() || "@cf/black-forest-labs/flux-1-schnell";
-    const cfPrompt = scCfPrompt.trim();
+    const openaiModel = scOpenaiModel.trim() || "gpt-image-1";
+    const sharedPrompt = scPrompt.trim();
     // 지적 #2: 커서·시각 보존 — 소스 구성이 바뀌어 항목 수가 달라진 경우에만 커서 리셋.
     const prevUrls = scPrev?.source.urls ?? [];
     const prevLocalDir = scPrev?.source.local_dir ?? null;
     const prevProvider = scPrev?.provider ?? "pollinations";
-    const prevCf = scPrev?.cloudflare ?? { account_id: "", api_token: "", model: "", prompt: "" };
+    const prevOrder = (scPrev as unknown as { provider_order?: string[] } | null)?.provider_order ?? [];
+    const orderChanged = prevOrder.length !== scProviderOrder.length || prevOrder.some((v, i) => v !== scProviderOrder[i]);
+    const prevCf = scPrev?.cloudflare ?? { account_id: "", api_token: "", model: "" };
+    const prevOa = scPrev?.openai ?? { api_key: "", model: "" };
+    const prevPrompt = scPrev?.prompt ?? "";
     const sourceChanged =
       scPrev == null ||
       prevUrls.length !== urls.length ||
       prevUrls.some((u, i) => u !== urls[i]) ||
       (prevLocalDir ?? null) !== localDir ||
       prevProvider !== provider ||
+      orderChanged ||
       (prevCf.account_id ?? "") !== cfAccount ||
       (prevCf.model ?? "") !== cfModel ||
-      (prevCf.prompt ?? "") !== cfPrompt;
+      (prevOa.model ?? "") !== openaiModel ||
+      prevPrompt !== sharedPrompt;
     const nextIndex = sourceChanged ? 0 : (scPrev?.next_index ?? 0);
     const lastRunAt = sourceChanged ? null : (scPrev?.last_run_at ?? null);
     setBusy(true);
@@ -394,18 +460,25 @@ export function App(): React.ReactElement {
           last_run_at: lastRunAt,
           position,
           provider,
-          cloudflare: { account_id: cfAccount, api_token: scCfToken, model: cfModel, prompt: cfPrompt },
+          provider_order: scProviderOrder,
+          prompt: sharedPrompt,
+          cloudflare: { account_id: cfAccount, api_token: scCfToken, model: cfModel },
           clear_api_token: scClearToken,
+          openai: { api_key: scOpenaiKey, model: openaiModel },
+          clear_api_key: scClearKey,
         },
       });
       setScInfo(
         `저장됨 · 다음 #${saved.next_index} · ${saved.enabled ? "ON" : "OFF"} · ${saved.interval_minutes}분`,
       );
       const deletedToken = scClearToken && scCfToken.trim() === "";
+      const deletedKey = scClearKey && scOpenaiKey.trim() === "";
       setScClearToken(false);
-      if (deletedToken) {
-        setScCfToken("");
-        reportOk("시나리오 저장 완료 — 저장된 API 토큰을 삭제했습니다");
+      setScClearKey(false);
+      if (deletedToken || deletedKey) {
+        if (deletedToken) setScCfToken("");
+        if (deletedKey) setScOpenaiKey("");
+        reportOk("시나리오 저장 완료 — 저장된 API 토큰/키를 삭제했습니다");
       } else {
         // scClearToken 체크 + 새 토큰 동시 입력 시 백엔드는 새 토큰을 저장하므로
         // 입력값을 비우지 않고 일반 저장 메시지를 표시한다.
@@ -413,6 +486,50 @@ export function App(): React.ReactElement {
       }
     } catch (err) {
       reportError(`시나리오 저장 실패: ${String(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const moveProviderOrder = (idx: number, dir: -1 | 1) => {
+    setScProviderOrder((prev) => {
+      const next = [...prev];
+      const j = idx + dir;
+      if (j < 0 || j >= next.length) return prev;
+      const tmp = next[idx];
+      next[idx] = next[j];
+      next[j] = tmp;
+      return next;
+    });
+  };
+
+  const handleGeneratePriority = async () => {
+    const aiPrompt = (scPrompt.trim() || prompt).trim();
+    if (!aiPrompt) {
+      reportError("AI 프롬프트를 입력하세요.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const state = await invoke<WallpaperState>("generate_wallpaper_priority", {
+        prompt: aiPrompt,
+        position,
+        monitorId: monitorId.trim() ? monitorId.trim() : null,
+      });
+      setStatus((prev) =>
+        prev
+          ? {
+              ...prev,
+              current_wallpaper: state.current_wallpaper,
+              previous_wallpaper: state.previous_wallpaper,
+              backend_used: state.backend_used,
+            }
+          : prev,
+      );
+      reportOk(`우선순위 생성·적용 완료 — 백엔드: ${state.backend_used ?? "unknown"}`);
+      await refreshStatus();
+    } catch (err) {
+      reportError(`우선순위 생성 실패 (기존 배경 유지): ${String(err)}`);
     } finally {
       setBusy(false);
     }
@@ -452,17 +569,6 @@ export function App(): React.ReactElement {
         <h1 className="app-title">WallMagic Studio</h1>
         <span className="app-subtitle">Windows Wallpaper Studio</span>
         <div className="header-spacer" />
-        <button
-          type="button"
-          onClick={() =>
-            document
-              .getElementById("scenario-section")
-              ?.scrollIntoView({ behavior: "smooth", block: "start" })
-          }
-          aria-label="Cloudflare 설정으로 이동"
-        >
-          Cloudflare 설정
-        </button>
         {status?.backend_used && (
           <span className="badge ok">{status.backend_used}</span>
         )}
@@ -693,12 +799,45 @@ export function App(): React.ReactElement {
                 id="scProvider"
                 value={scProvider}
                 onChange={(e) =>
-                  setScProvider(e.target.value as "pollinations" | "cloudflare-workers-ai")
+                  setScProvider(e.target.value as "pollinations" | "cloudflare-workers-ai" | "openai")
                 }
               >
                 <option value="pollinations">Pollinations (무료·키 불필요)</option>
                 <option value="cloudflare-workers-ai">Cloudflare Workers AI</option>
+                <option value="openai">OpenAI</option>
               </select>
+            </div>
+            <div className="field">
+              <label>이미지 생성 우선순위 (폴백 순서 — 위부터 시도, 실패 시 다음 공급자)</label>
+              {scProviderOrder.map((p, i) => (
+                <div key={p} style={{ display: "flex", gap: "6px", alignItems: "center", marginBottom: "4px" }}>
+                  <span style={{ minWidth: "160px" }}>{i + 1}. {p === "pollinations" ? "Pollinations (무료)" : p === "cloudflare-workers-ai" ? "Cloudflare Workers AI" : "OpenAI"}</span>
+                  <button type="button" onClick={() => moveProviderOrder(i, -1)} disabled={busy || i === 0}>▲</button>
+                  <button type="button" onClick={() => moveProviderOrder(i, 1)} disabled={busy || i === scProviderOrder.length - 1}>▼</button>
+                </div>
+              ))}
+              <div style={{ display: "flex", gap: "6px", marginTop: "4px" }}>
+                <button type="button" onClick={() => setScProviderOrder([...FREE_FIRST_ORDER])} disabled={busy}>무료 우선으로 초기화</button>
+              </div>
+              <div className="detail">기본값: 무료 우선 = Pollinations → Cloudflare → OpenAI (키 없는 공급자는 자동 건너뜀)</div>
+            </div>
+            <button
+              type="button"
+              className="primary block"
+              onClick={() => void handleGeneratePriority()}
+              disabled={busy}
+              style={{ marginBottom: "8px" }}
+            >
+              우선순위로 생성·적용
+            </button>
+            <div className="field">
+              <label htmlFor="scPrompt">프롬프트 (모든 AI 공급자 공통)</label>
+              <textarea
+                id="scPrompt"
+                value={scPrompt}
+                onChange={(e) => setScPrompt(e.target.value)}
+                placeholder="예: aurora over icy mountains, ultra detailed"
+              />
             </div>
             {scProvider === "cloudflare-workers-ai" && (
               <>
@@ -746,13 +885,50 @@ export function App(): React.ReactElement {
                     autoComplete="off"
                   />
                 </div>
+                <button
+                  type="button"
+                  className="primary block"
+                  onClick={() => void handleGenerateAi()}
+                  disabled={busy}
+                  style={{ marginBottom: "8px" }}
+                >
+                  Cloudflare AI로 생성·적용
+                </button>
+              </>
+            )}
+            {scProvider === "openai" && (
+              <>
                 <div className="field">
-                  <label htmlFor="scCfPrompt">프롬프트 (시나리오)</label>
-                  <textarea
-                    id="scCfPrompt"
-                    value={scCfPrompt}
-                    onChange={(e) => setScCfPrompt(e.target.value)}
-                    placeholder="예: aurora over icy mountains, ultra detailed"
+                  <label htmlFor="scOpenaiKey">OpenAI API Key</label>
+                  <input
+                    id="scOpenaiKey"
+                    type="password"
+                    value={scOpenaiKey}
+                    onChange={(e) => setScOpenaiKey(e.target.value)}
+                    placeholder="sk-..."
+                    autoComplete="off"
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor="scClearKey">
+                    <input
+                      id="scClearKey"
+                      type="checkbox"
+                      checked={scClearKey}
+                      onChange={(e) => setScClearKey(e.target.checked)}
+                    />{" "}
+                    저장된 API 키 삭제 (체크 후 저장 시 삭제)
+                  </label>
+                </div>
+                <div className="field">
+                  <label htmlFor="scOpenaiModel">모델</label>
+                  <input
+                    id="scOpenaiModel"
+                    type="text"
+                    value={scOpenaiModel}
+                    onChange={(e) => setScOpenaiModel(e.target.value)}
+                    placeholder="gpt-image-1"
+                    autoComplete="off"
                   />
                 </div>
                 <button
@@ -762,7 +938,7 @@ export function App(): React.ReactElement {
                   disabled={busy}
                   style={{ marginBottom: "8px" }}
                 >
-                  Cloudflare AI로 생성·적용
+                  OpenAI로 생성·적용
                 </button>
               </>
             )}

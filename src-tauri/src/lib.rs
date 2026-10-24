@@ -136,6 +136,82 @@ pub fn generate_wallpaper_ai_impl(
     wallmagic_core::set_wallpaper(&generated, monitor_id, pos).map_err(err_to_string)
 }
 
+/// IPC #10b: OpenAI Images 이미지 생성 → 디코드 → 배경 적용.
+/// - `POST https://api.openai.com/v1/images/generations` + `Authorization: Bearer {api_key}`
+/// - 키는 이 Rust 커맨드 안에서만 `Authorization` 헤더에 사용한다
+///   (프론트에서 직접 fetch 금지 — 반드시 이 커맨드 경유).
+/// - 빈 키면 디스크 scenario.json의 저장 키로 폴백한다 (CF와 동일 패턴).
+/// - 실패(401/429/네트워크/디코드) 시 기존 배경을 유지하고 오류 문자열을 반환한다.
+#[tauri::command]
+fn generate_wallpaper_openai(
+    api_key: String,
+    model: String,
+    prompt: String,
+    position: Option<String>,
+    monitor_id: Option<String>,
+) -> Result<WallpaperState, String> {
+    generate_wallpaper_openai_impl(
+        &api_key,
+        &model,
+        &prompt,
+        position.as_deref(),
+        monitor_id.as_deref(),
+    )
+}
+
+pub fn generate_wallpaper_openai_impl(
+    api_key: &str,
+    model: &str,
+    prompt: &str,
+    position: Option<&str>,
+    monitor_id: Option<&str>,
+) -> Result<WallpaperState, String> {
+    let pos = parse_position_arg(position)?;
+    let effective_key: String = if api_key.trim().is_empty() {
+        wallmagic_core::load_scenario()
+            .map(|s| s.openai.api_key)
+            .unwrap_or_default()
+    } else {
+        api_key.to_string()
+    };
+    let dest = wallmagic_core::app_data_dir()
+        .join("online_cache")
+        .join("openai_manual.jpg");
+    let generated =
+        wallmagic_core::generate_openai_wallpaper(&effective_key, model, prompt, &dest)
+            .map_err(err_to_string)?;
+    wallmagic_core::set_wallpaper(&generated, monitor_id, pos).map_err(err_to_string)
+}
+
+/// IPC #10c: 우선순위 순서대로 이미지 생성 후 적용.
+/// - 공용 프롬프트 하나로 설정된 순서(effective_provider_order)대로 시도하고 실패 시 다음 공급자로 폴백한다.
+/// - 기본값 무료 우선 = Pollinations -> Cloudflare -> OpenAI. 키 없는 공급자는 자동 건너뜀.
+/// - 전부 실패 시 마지막 오류를 반환해 기존 배경을 유지한다 (조용한 폴스루 금지).
+#[tauri::command]
+fn generate_wallpaper_priority(
+    prompt: String,
+    position: Option<String>,
+    monitor_id: Option<String>,
+) -> Result<WallpaperState, String> {
+    generate_wallpaper_priority_impl(&prompt, position.as_deref(), monitor_id.as_deref())
+}
+
+pub fn generate_wallpaper_priority_impl(
+    prompt: &str,
+    position: Option<&str>,
+    monitor_id: Option<&str>,
+) -> Result<WallpaperState, String> {
+    let pos = parse_position_arg(position)?;
+    let settings = wallmagic_core::load_scenario().map_err(err_to_string)?;
+    let dest = wallmagic_core::app_data_dir()
+        .join("online_cache")
+        .join("priority_manual.jpg");
+    let (_used, path) =
+        wallmagic_core::generate_ai_with_fallback(&settings, prompt, &dest)
+            .map_err(err_to_string)?;
+    wallmagic_core::set_wallpaper(&path, monitor_id, pos).map_err(err_to_string)
+}
+
 /// IPC #3 (액션 ③ 적용): 선택한 이미지를 검증·스테이징 후 바탕화면에 적용한다.
 #[tauri::command]
 fn apply_wallpaper(
@@ -185,9 +261,10 @@ fn get_scenario() -> Result<ScenarioSettings, String> {
 
 pub fn get_scenario_impl() -> Result<ScenarioSettings, String> {
     // 검수 지적 [medium]: api_token 마스킹 — 디스크 평문 토큰을 프론트로 되돌려보내지 않는다.
-    // 프론트는 저장 시에만 토큰을 전달하고, 조회 응답의 api_token은 항상 ""이다.
+    // 프론트는 저장 시에만 토큰을 전달하고, 조회 응답의 api_token/api_key는 항상 ""이다.
     let mut settings = wallmagic_core::load_scenario().map_err(err_to_string)?;
     settings.cloudflare.api_token = String::new();
+    settings.openai.api_key = String::new();
     Ok(settings)
 }
 
@@ -208,9 +285,19 @@ pub fn save_scenario_impl(mut settings: ScenarioSettings) -> Result<ScenarioSett
             settings.cloudflare.api_token = existing.cloudflare.api_token;
         }
     }
+    // OpenAI api_key도 동일 패턴: clear_api_key=true일 때만 빈 키로 덮어쓰고,
+    // 그 외 빈 키는 기존 저장값 유지. 플래그는 저장 전 false로 리셋한다.
+    let clear_key_requested = settings.clear_api_key;
+    settings.clear_api_key = false;
+    if settings.openai.api_key.is_empty() && !clear_key_requested {
+        if let Ok(existing) = wallmagic_core::load_scenario() {
+            settings.openai.api_key = existing.openai.api_key;
+        }
+    }
     wallmagic_core::save_scenario(&settings).map_err(err_to_string)?;
     let mut saved = wallmagic_core::load_scenario().map_err(err_to_string)?;
     saved.cloudflare.api_token = String::new();
+    saved.openai.api_key = String::new();
     Ok(saved)
 }
 
@@ -221,13 +308,14 @@ fn tick_scenario_now() -> Result<Option<WallpaperState>, String> {
     wallmagic_core::tick_scenario(now).map_err(err_to_string)
 }
 
-/// Tauri v2 애플리케이션 진입 — 메인 창을 띄우고 IPC 커맨드 10종을 배선한다.
+/// Tauri v2 애플리케이션 진입 — 메인 창을 띄우고 IPC 커맨드 11종을 배선한다.
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             search_wallpapers,
             generate_library_wallpaper,
             generate_wallpaper_ai,
+            generate_wallpaper_openai,
             apply_wallpaper,
             restore_wallpaper,
             list_monitors,
@@ -235,6 +323,7 @@ pub fn run() {
             get_scenario,
             save_scenario,
             tick_scenario_now,
+            generate_wallpaper_priority,
         ])
         .run(tauri::generate_context!())
         .expect("error while running WallMagic application");
@@ -381,13 +470,16 @@ mod tests {
             last_run_at: None,
             position: "fill".to_string(),
             provider: wallmagic_core::ImageProvider::default(),
+            provider_order: wallmagic_core::default_provider_order(),
+            prompt: String::new(),
             cloudflare: wallmagic_core::CloudflareAiConfig {
                 account_id: "acc".to_string(),
                 api_token: token.to_string(),
                 model: wallmagic_core::default_cf_model(),
-                prompt: String::new(),
             },
             clear_api_token: clear_flag,
+            openai: wallmagic_core::OpenAiConfig::default(),
+            clear_api_key: false,
         }
     }
 
@@ -437,6 +529,71 @@ mod tests {
         assert!(
             !on_disk.clear_api_token,
             "saved clear_api_token must be reset to false"
+        );
+    }
+
+    #[test]
+    fn test_get_scenario_masks_openai_api_key() {
+        let _guard = DataDirGuard::new("mask_openai_key");
+        let mut seed = scenario_with_token("secret-123", false);
+        seed.prompt = "aurora".to_string();
+        seed.openai = wallmagic_core::OpenAiConfig {
+            api_key: "sk-test-abc".to_string(),
+            model: wallmagic_core::default_openai_model(),
+        };
+        wallmagic_core::save_scenario(&seed).expect("seed scenario with openai key");
+        let got = get_scenario_impl().expect("get_scenario_impl");
+        assert_eq!(got.openai.api_key, "");
+        let on_disk = wallmagic_core::load_scenario().expect("load disk scenario");
+        assert_eq!(on_disk.openai.api_key, "sk-test-abc");
+    }
+
+    #[test]
+    fn test_save_scenario_keeps_openai_key_when_empty() {
+        let _guard = DataDirGuard::new("keep_openai_key");
+        let mut seed = scenario_with_token("keep-me", false);
+        seed.openai = wallmagic_core::OpenAiConfig {
+            api_key: "sk-keep".to_string(),
+            model: wallmagic_core::default_openai_model(),
+        };
+        wallmagic_core::save_scenario(&seed).expect("seed scenario with openai key");
+        let mut input = scenario_with_token("", false);
+        input.openai = wallmagic_core::OpenAiConfig {
+            api_key: String::new(),
+            model: wallmagic_core::default_openai_model(),
+        };
+        let saved = save_scenario_impl(input).expect("save_scenario_impl");
+        assert_eq!(saved.openai.api_key, "");
+        let on_disk = wallmagic_core::load_scenario().expect("load disk scenario");
+        assert_eq!(on_disk.openai.api_key, "sk-keep");
+        assert!(
+            !on_disk.clear_api_key,
+            "clear_api_key must not persist on disk"
+        );
+    }
+
+    #[test]
+    fn test_save_scenario_clears_openai_key_only_when_flagged() {
+        let _guard = DataDirGuard::new("clear_openai_key");
+        let mut seed = scenario_with_token("to-delete", false);
+        seed.openai = wallmagic_core::OpenAiConfig {
+            api_key: "sk-del".to_string(),
+            model: wallmagic_core::default_openai_model(),
+        };
+        wallmagic_core::save_scenario(&seed).expect("seed scenario with openai key");
+        let mut input = scenario_with_token("", false);
+        input.openai = wallmagic_core::OpenAiConfig {
+            api_key: String::new(),
+            model: wallmagic_core::default_openai_model(),
+        };
+        input.clear_api_key = true;
+        let saved = save_scenario_impl(input).expect("save_scenario_impl");
+        assert_eq!(saved.openai.api_key, "");
+        let on_disk = wallmagic_core::load_scenario().expect("load disk scenario");
+        assert_eq!(on_disk.openai.api_key, "");
+        assert!(
+            !on_disk.clear_api_key,
+            "saved clear_api_key must be reset to false"
         );
     }
 }

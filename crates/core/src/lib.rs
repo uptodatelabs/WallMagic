@@ -14,11 +14,13 @@ pub mod wallpaper;
 // Public facade: the canonical implementation lives in the `wallpaper` / `search` modules.
 // Types and functions are re-exported here so downstream crates keep a stable import path.
 pub use scenario::{
-    cloudflare_ai_url, default_cf_model, failure_retry_allowed_at,
-    generate_cloudflare_wallpaper, load_scenario, needs_cursor_reset, now_unix_secs,
-    parse_cf_image_response, pick_next_url, save_scenario, scenario_file_path,
-    scenario_http_status_error, should_run, tick_scenario, CloudflareAiConfig, ImageProvider,
-    ScenarioOrder, ScenarioSettings, ScenarioSource,
+    cloudflare_ai_url, default_cf_model, default_openai_model, default_provider_order,
+    effective_provider_order, failure_retry_allowed_at, generate_ai_with_fallback, provider_is_configured,
+    generate_cloudflare_wallpaper, generate_openai_wallpaper, load_scenario, needs_cursor_reset,
+    now_unix_secs, openai_images_url, parse_cf_image_response, parse_openai_image_response,
+    pick_next_url, save_scenario, scenario_file_path, scenario_http_status_error, should_run,
+    tick_scenario, CloudflareAiConfig, ImageProvider, OpenAiConfig, ScenarioOrder,
+    ScenarioSettings, ScenarioSource,
 };
 pub use search::{
     generate_library_wallpaper, online_cache_file_name, search_wallpapers, WallpaperCandidate,

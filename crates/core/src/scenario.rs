@@ -52,6 +52,7 @@ pub enum ImageProvider {
     #[default]
     Pollinations,
     CloudflareWorkersAi,
+    Openai,
 }
 
 /// Cloudflare Workers AI 설정 (주의: api_token은 scenario.json에 평문 저장된다 —
@@ -65,12 +66,139 @@ pub struct CloudflareAiConfig {
     pub api_token: String,
     #[serde(default = "default_cf_model")]
     pub model: String,
-    #[serde(default)]
-    pub prompt: String,
 }
 
 pub fn default_cf_model() -> String {
     "@cf/black-forest-labs/flux-1-schnell".to_string()
+}
+
+pub fn default_openai_model() -> String {
+    "gpt-image-1".to_string()
+}
+
+/// 기본 이미지 생성 우선순위(폴백 순서): 무료 우선.
+/// Pollinations(키 불필요) → Cloudflare → OpenAI(유료 키) 순으로 시도한다.
+pub fn default_provider_order() -> Vec<ImageProvider> {
+    vec![
+        ImageProvider::Pollinations,
+        ImageProvider::CloudflareWorkersAi,
+        ImageProvider::Openai,
+    ]
+}
+
+/// 저장된 우선순위(폴백 순서)를 해석한다.
+/// - 비어 있으면(구 scenario.json) `[provider]` 단일 시도로 해석해 하위호환을 유지한다.
+/// - 중복은 첫 등장만 유지한다.
+pub fn effective_provider_order(settings: &ScenarioSettings) -> Vec<ImageProvider> {
+    let raw = if settings.provider_order.is_empty() {
+        vec![settings.provider]
+    } else {
+        settings.provider_order.clone()
+    };
+    let mut out: Vec<ImageProvider> = Vec::new();
+    for p in raw {
+        if !out.contains(&p) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// 해당 공급자를 지금 시도할 자격이 있는가 (키/토큰 유무).
+/// - Pollinations는 키 불필요라 항상 true.
+/// - Cloudflare는 account_id + api_token이 모두 필요.
+/// - OpenAI는 api_key가 필요.
+pub fn provider_is_configured(settings: &ScenarioSettings, provider: ImageProvider) -> bool {
+    match provider {
+        ImageProvider::Pollinations => true,
+        ImageProvider::CloudflareWorkersAi => {
+            !settings.cloudflare.account_id.trim().is_empty()
+                && !settings.cloudflare.api_token.trim().is_empty()
+        }
+        ImageProvider::Openai => !settings.openai.api_key.trim().is_empty(),
+    }
+}
+
+/// 우선순위 순서대로 이미지 1건을 생성한다. 성공한 공급자와 파일 경로를 반환한다.
+/// - 설정된 순서(`effective_provider_order`)대로 시도하고, 실패하면 다음 공급자로 폴백한다.
+/// - 자격 미달(키 없음) 공급자는 네트워크 호출 없이 건너뛴다.
+/// - 전부 실패하면 마지막 오류를 반환한다 (조용한 폴스루 금지).
+/// - Puter 경유 OpenAI 호출은 채택하지 않는다 — 이유:
+///   Puter.js(`https://js.puter.com/v2/`, `puter.ai.txt2img`)는 브라우저 JS SDK + 사용자
+///   로그인 세션 전제라 Rust 백엔드(Tauri 커맨드)에서 서버 측 REST로 호출할 엔드포인트가
+///   없다. OpenAI 직접 REST(`POST https://api.openai.com/v1/images/generations`) 경로를 유지한다.
+///   (공식 문서: https://docs.puter.com/AI/txt2img/ — TODO:将来 브라우저 전용 무료 경로가
+///   필요해지면 프론트 전용 옵션으로 별도 provider 추가를 검토)
+pub fn generate_ai_with_fallback(
+    settings: &ScenarioSettings,
+    prompt: &str,
+    dest: &PathBuf,
+) -> Result<(ImageProvider, PathBuf), WallpaperError> {
+    let trimmed = prompt.trim();
+    if trimmed.is_empty() {
+        return Err(WallpaperError::CandidateLoad(
+            "empty prompt: image generation needs a text prompt".to_string(),
+        ));
+    }
+    let order = effective_provider_order(settings);
+    if order.is_empty() {
+        return Err(WallpaperError::CandidateLoad(
+            "no image provider configured".to_string(),
+        ));
+    }
+    let mut last_err: Option<WallpaperError> = None;
+    let mut skipped = 0usize;
+    for provider in order {
+        if !provider_is_configured(settings, provider) {
+            skipped += 1;
+            last_err = Some(WallpaperError::CandidateLoad(format!(
+                "{provider:?} skipped: missing credentials"
+            )));
+            continue;
+        }
+        let attempt: Result<PathBuf, WallpaperError> = match provider {
+            ImageProvider::Pollinations => {
+                crate::wallpaper::generate_online_wallpaper(trimmed, dest)
+            }
+            ImageProvider::CloudflareWorkersAi => {
+                let cf = &settings.cloudflare;
+                generate_cloudflare_wallpaper(
+                    &cf.account_id,
+                    &cf.api_token,
+                    &cf.model,
+                    trimmed,
+                    dest,
+                )
+            }
+            ImageProvider::Openai => {
+                let oa = &settings.openai;
+                generate_openai_wallpaper(&oa.api_key, &oa.model, trimmed, dest)
+            }
+        };
+        match attempt {
+            Ok(p) => return Ok((provider, p)),
+            Err(e) => {
+                last_err = Some(e);
+                continue;
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| {
+        WallpaperError::CandidateLoad(format!(
+            "all image providers failed (skipped: {skipped})"
+        ))
+    }))
+}
+
+/// OpenAI 이미지 생성 설정 (주의: api_key는 scenario.json에 평문 저장된다 —
+/// 디스크 평문 존재를 전제로 다룰 것. get_scenario 응답의 api_key는 항상 ""
+/// (마스킹)이며, 프론트는 저장 시에만 키를 전달한다. 직접 fetch는 Tauri 커맨드 경유만 허용).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct OpenAiConfig {
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default = "default_openai_model")]
+    pub model: String,
 }
 
 /// 시나리오 설정 전체.
@@ -92,12 +220,25 @@ pub struct ScenarioSettings {
     pub position: String,
     #[serde(default)]
     pub provider: ImageProvider,
+    /// 이미지 생성 우선순위(폴백 순서). 비어 있으면(구 scenario.json) `[provider]` 단일 시도로
+    /// 해석한다. 기본값 = 무료 우선(Pollinations → Cloudflare → OpenAI).
+    #[serde(default)]
+    pub provider_order: Vec<ImageProvider>,
+    /// 공용 생성 프롬프트 — Pollinations/Cloudflare/OpenAI 3개 공급자가 모두 참조한다.
+    /// 구 `cloudflare.prompt`/`openai.prompt`는 제거되고 이 필드로 단일화되었다.
+    #[serde(default)]
+    pub prompt: String,
     #[serde(default)]
     pub cloudflare: CloudflareAiConfig,
+    #[serde(default)]
+    pub openai: OpenAiConfig,
     /// 검수 지적 [medium](b): 토큰 명시적 삭제 플래그. true일 때만 빈 토큰으로
     /// 덮어쓰고, 저장 전 false로 리셋하므로 scenario.json에 잔류하지 않는다.
     #[serde(default)]
     pub clear_api_token: bool,
+    /// OpenAI api_key 명시적 삭제 플래그 (clear_api_token과 동일 패턴).
+    #[serde(default)]
+    pub clear_api_key: bool,
 }
 
 fn default_interval() -> u64 {
@@ -119,8 +260,12 @@ impl Default for ScenarioSettings {
             last_run_at: None,
             position: default_position_string(),
             provider: ImageProvider::default(),
+            prompt: String::new(),
             cloudflare: CloudflareAiConfig::default(),
+            openai: OpenAiConfig::default(),
+            provider_order: default_provider_order(),
             clear_api_token: false,
+            clear_api_key: false,
         }
     }
 }
@@ -193,8 +338,12 @@ pub fn should_run(settings: &ScenarioSettings, now_secs: u64) -> bool {
     if !settings.enabled {
         return false;
     }
-    let has_cf_source = matches!(settings.provider, ImageProvider::CloudflareWorkersAi)
-        && !settings.cloudflare.prompt.trim().is_empty();
+    // 공용 프롬프트 단일 게이트: 3개 공급자(Pollinations/Cloudflare/OpenAI) 모두
+    // `settings.prompt` 하나로 실행 가능 여부를 판단한다.
+    let has_ai_source = !settings.prompt.trim().is_empty()
+        && effective_provider_order(settings)
+            .iter()
+            .any(|p| provider_is_configured(settings, *p));
     if settings.source.urls.is_empty()
         && settings
             .source
@@ -202,7 +351,7 @@ pub fn should_run(settings: &ScenarioSettings, now_secs: u64) -> bool {
             .as_deref()
             .map(|s| s.trim().is_empty())
             .unwrap_or(true)
-        && !has_cf_source
+        && !has_ai_source
     {
         return false;
     }
@@ -446,46 +595,164 @@ pub fn generate_cloudflare_wallpaper(
     Ok(dest.clone())
 }
 
+/// OpenAI Images API 호출 URL을 만든다 (순수 함수 — 네트워크 없이 테스트).
+/// `POST https://api.openai.com/v1/images/generations`
+pub fn openai_images_url() -> String {
+    "https://api.openai.com/v1/images/generations".to_string()
+}
+
+/// OpenAI Images JSON 응답에서 base64 이미지를 꺼내 디코드한다 (순수 함수).
+/// gpt-image-1 규격: `{"data":[{"b64_json":"<base64 PNG>"}]}`.
+/// 변형으로 `b64_json` 대신 `url`이 온 경우 다운로드하지 않고 명확한 에러로 실패시킨다
+/// (조용한 폴스루 금지 — 호출자가 WallpaperError로 인지하게 한다).
+pub fn parse_openai_image_response(body: &serde_json::Value) -> Result<Vec<u8>, WallpaperError> {
+    let b64 = body
+        .pointer("/data/0/b64_json")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            if body.pointer("/data/0/url").and_then(|v| v.as_str()).is_some() {
+                WallpaperError::CandidateLoad(
+                    "openai response has only data[0].url (no b64_json): request b64_json format"
+                        .to_string(),
+                )
+            } else {
+                WallpaperError::CandidateLoad(
+                    "openai response has no data[0].b64_json".to_string(),
+                )
+            }
+        })?;
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(b64.trim())
+        .map_err(|e| WallpaperError::CandidateLoad(format!("openai image base64 decode: {e}")))
+}
+
+/// OpenAI 이미지 생성으로 이미지를 생성해 `dest`에 저장한다.
+///
+/// - `POST https://api.openai.com/v1/images/generations` + `Authorization: Bearer {api_key}`
+///   + JSON `{"model": ..., "prompt": ..., "n": 1, "size": "1536x1024"}`.
+/// - Cloudflare 구현과 동일 구조: 빈 키/모델/프롬프트 검증 → HTTP 상태 보존 → JSON 파싱 →
+///   `normalize_to_hd`로 1920x1080 기준 맞춤 → 저장.
+/// - 실패(401/429/네트워크/디코드)는 `HttpStatus`/`Network`/`CandidateLoad`로 그대로 반환해
+///   호출자(커맨드·tick)가 기존 배경을 유지하고 오류 메시지를 내보내게 한다.
+pub fn generate_openai_wallpaper(
+    api_key: &str,
+    model: &str,
+    prompt: &str,
+    dest: &PathBuf,
+) -> Result<PathBuf, WallpaperError> {
+    if api_key.trim().is_empty() {
+        return Err(WallpaperError::CandidateLoad(
+            "openai api_key is empty".to_string(),
+        ));
+    }
+    if prompt.trim().is_empty() {
+        return Err(WallpaperError::CandidateLoad(
+            "empty prompt: image generation needs a text prompt".to_string(),
+        ));
+    }
+    let model = if model.trim().is_empty() {
+        default_openai_model()
+    } else {
+        model.trim().to_string()
+    };
+    let url = openai_images_url();
+    let req_body = serde_json::json!({
+        "model": model,
+        "prompt": prompt.trim(),
+        "n": 1,
+        "size": "1536x1024",
+    })
+    .to_string();
+    let response = ureq::post(&url)
+        .timeout(std::time::Duration::from_secs(90))
+        .set("Authorization", &format!("Bearer {}", api_key.trim()))
+        .set("Content-Type", "application/json")
+        .send_string(&req_body)
+        .map_err(|e| match e {
+            ureq::Error::Status(code, resp) => {
+                let body = resp
+                    .into_string()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(300)
+                    .collect::<String>();
+                WallpaperError::HttpStatus {
+                    status: code,
+                    body: format!("openai images HTTP {code}: {body}"),
+                }
+            }
+            other => WallpaperError::Network(format!("openai request failed: {other}")),
+        })?;
+    let status = response.status();
+    if status != 200 {
+        let body = response
+            .into_string()
+            .unwrap_or_default()
+            .chars()
+            .take(300)
+            .collect::<String>();
+        return Err(WallpaperError::HttpStatus { status, body });
+    }
+    let text = response
+        .into_string()
+        .map_err(|e| WallpaperError::Network(format!("reading openai response failed: {e}")))?;
+    let json: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+        WallpaperError::CandidateLoad(format!("openai response parse failed: {e}"))
+    })?;
+    let bytes = parse_openai_image_response(&json)?;
+    if bytes.is_empty() {
+        return Err(WallpaperError::Network(
+            "openai returned empty image body".to_string(),
+        ));
+    }
+    let img = image::load_from_memory(&bytes).map_err(|e| {
+        WallpaperError::CandidateLoad(format!("openai image decode failed: {e}"))
+    })?;
+    let img_hd = crate::wallpaper::normalize_to_hd(img)?;
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    img_hd.save(dest)?;
+    Ok(dest.clone())
+}
+
 pub fn tick_scenario(now_secs: u64) -> Result<Option<WallpaperState>, WallpaperError> {
     let mut settings = load_scenario()?;
     if !should_run(&settings, now_secs) {
         return Ok(None);
     }
 
-    // Cloudflare Workers AI provider: 시나리오 프롬프트로 이미지 생성 후 적용.
-    // 실패 시 기존 배경 유지 + 오류 반환 (호출자가 last_run_at 백오프로 처리).
-    if matches!(settings.provider, ImageProvider::CloudflareWorkersAi) {
-        let cf = settings.cloudflare.clone();
-        if !cf.prompt.trim().is_empty() {
-            let tmp = app_data_dir().join("online_cache").join("scenario_cf.jpg");
-            let gen = generate_cloudflare_wallpaper(
-                &cf.account_id,
-                &cf.api_token,
-                &cf.model,
-                &cf.prompt,
-                &tmp,
-            );
-            let tmp = match gen {
-                Ok(p) => p,
-                Err(e) => {
+    // AI image providers: priority order with fallback.
+    // Order = effective_provider_order (default free-first: Pollinations -> Cloudflare -> OpenAI).
+    // Same shared prompt for all providers. First success is applied; all-fail returns last error.
+    if !settings.prompt.trim().is_empty() {
+        let order = effective_provider_order(&settings);
+        if order.iter().any(|pr| provider_is_configured(&settings, *pr)) {
+            let tmp = app_data_dir().join("online_cache").join("scenario_ai.jpg");
+            let prompt_owned = settings.prompt.clone();
+            match generate_ai_with_fallback(&settings, &prompt_owned, &tmp) {
+                Ok((_used, path)) => {
+                    match crate::wallpaper::set_wallpaper(&path, None, settings.position_enum()) {
+                        Ok(st) => {
+                            settings.next_index = settings.next_index.wrapping_add(1);
+                            settings.last_run_at = Some(now_secs);
+                            save_scenario(&settings)?;
+                            return Ok(Some(st));
+                        }
+                        Err(er) => {
+                            settings.last_run_at = Some(now_secs);
+                            let _ = save_scenario(&settings);
+                            return Err(er);
+                        }
+                    }
+                }
+                Err(er) => {
                     settings.last_run_at = Some(now_secs);
                     let _ = save_scenario(&settings);
-                    return Err(e);
+                    return Err(er);
                 }
-            };
-            let state = match crate::wallpaper::set_wallpaper(&tmp, None, settings.position_enum())
-            {
-                Ok(s) => s,
-                Err(e) => {
-                    settings.last_run_at = Some(now_secs);
-                    let _ = save_scenario(&settings);
-                    return Err(e);
-                }
-            };
-            settings.next_index = settings.next_index.wrapping_add(1);
-            settings.last_run_at = Some(now_secs);
-            save_scenario(&settings)?;
-            return Ok(Some(state));
+            }
         }
     }
 
@@ -573,8 +840,12 @@ mod tests {
             last_run_at: None,
             position: "fill".to_string(),
             provider: ImageProvider::default(),
+            prompt: String::new(),
             cloudflare: CloudflareAiConfig::default(),
+            openai: OpenAiConfig::default(),
+            provider_order: default_provider_order(),
             clear_api_token: false,
+            clear_api_key: false,
         }
     }
 
