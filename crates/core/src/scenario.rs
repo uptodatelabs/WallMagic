@@ -94,6 +94,10 @@ pub struct ScenarioSettings {
     pub provider: ImageProvider,
     #[serde(default)]
     pub cloudflare: CloudflareAiConfig,
+    /// 검수 지적 [medium](b): 토큰 명시적 삭제 플래그. true일 때만 빈 토큰으로
+    /// 덮어쓰고, 저장 전 false로 리셋하므로 scenario.json에 잔류하지 않는다.
+    #[serde(default)]
+    pub clear_api_token: bool,
 }
 
 fn default_interval() -> u64 {
@@ -116,6 +120,7 @@ impl Default for ScenarioSettings {
             position: default_position_string(),
             provider: ImageProvider::default(),
             cloudflare: CloudflareAiConfig::default(),
+            clear_api_token: false,
         }
     }
 }
@@ -569,6 +574,7 @@ mod tests {
             position: "fill".to_string(),
             provider: ImageProvider::default(),
             cloudflare: CloudflareAiConfig::default(),
+            clear_api_token: false,
         }
     }
 

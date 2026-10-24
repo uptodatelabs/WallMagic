@@ -49,6 +49,7 @@ export interface ScenarioSettings {
   position: string;
   provider: "pollinations" | "cloudflare-workers-ai";
   cloudflare: { account_id: string; api_token: string; model: string; prompt: string };
+  clear_api_token?: boolean;
 }
 
 export type WallpaperPosition =
@@ -100,6 +101,7 @@ export function App(): React.ReactElement {
   const [scCfToken, setScCfToken] = useState<string>("");
   const [scCfModel, setScCfModel] = useState<string>("@cf/black-forest-labs/flux-1-schnell");
   const [scCfPrompt, setScCfPrompt] = useState<string>("");
+  const [scClearToken, setScClearToken] = useState<boolean>(false);
   const [scInfo, setScInfo] = useState<string>("시나리오 미조회");
   // 자동 틱 연속 실패 횟수 (지적 #4: 에러 은폐 방지용 카운터)
   const [scAutoFail, setScAutoFail] = useState<number>(0);
@@ -255,8 +257,10 @@ export function App(): React.ReactElement {
   };
 
   const handleGenerateAi = async () => {
-    if (!scCfAccount.trim() || !scCfToken.trim()) {
-      reportError("Cloudflare Account ID와 API Token을 입력하세요.");
+    // 검수 지적 [medium](1): 토큰 사전 검사는 account_id만 요구한다.
+    // api_token이 비어 있으면 Rust generate_wallpaper_ai_impl이 디스크 저장 토큰으로 폴백한다.
+    if (!scCfAccount.trim()) {
+      reportError("Cloudflare Account ID를 입력하세요. (API Token은 저장된 토큰 사용 — 미저장 시 입력 필요)");
       return;
     }
     const aiPrompt = (scCfPrompt.trim() || prompt).trim();
@@ -391,12 +395,19 @@ export function App(): React.ReactElement {
           position,
           provider,
           cloudflare: { account_id: cfAccount, api_token: scCfToken, model: cfModel, prompt: cfPrompt },
+          clear_api_token: scClearToken,
         },
       });
       setScInfo(
         `저장됨 · 다음 #${saved.next_index} · ${saved.enabled ? "ON" : "OFF"} · ${saved.interval_minutes}분`,
       );
-      reportOk("시나리오 저장 완료");
+      if (scClearToken) {
+        setScClearToken(false);
+        setScCfToken("");
+        reportOk("시나리오 저장 완료 — 저장된 API 토큰을 삭제했습니다");
+      } else {
+        reportOk("시나리오 저장 완료");
+      }
     } catch (err) {
       reportError(`시나리오 저장 실패: ${String(err)}`);
     } finally {
@@ -709,6 +720,17 @@ export function App(): React.ReactElement {
                     placeholder="Workers AI 권한 토큰"
                     autoComplete="off"
                   />
+                </div>
+                <div className="field">
+                  <label htmlFor="scClearToken">
+                    <input
+                      id="scClearToken"
+                      type="checkbox"
+                      checked={scClearToken}
+                      onChange={(e) => setScClearToken(e.target.checked)}
+                    />{" "}
+                    저장된 API 토큰 삭제 (체크 후 저장 시 삭제)
+                  </label>
                 </div>
                 <div className="field">
                   <label htmlFor="scCfModel">모델</label>

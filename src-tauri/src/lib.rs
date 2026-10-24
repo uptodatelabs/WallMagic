@@ -112,11 +112,25 @@ pub fn generate_wallpaper_ai_impl(
     monitor_id: Option<&str>,
 ) -> Result<WallpaperState, String> {
     let pos = parse_position_arg(position)?;
+    // 검수 지적 [medium](1): api_token이 비어 있으면 디스크 scenario.json의 저장 토큰으로
+    // 폴백한다. get_scenario 응답은 마스킹("")이므로 앱 재시작 후 프론트 토큰이 비어도
+    // 저장된 토큰으로 수동 AI 생성이 동작한다.
+    let effective_token: String = if api_token.trim().is_empty() {
+        wallmagic_core::load_scenario()
+            .map(|s| s.cloudflare.api_token)
+            .unwrap_or_default()
+    } else {
+        api_token.to_string()
+    };
     let dest = wallmagic_core::app_data_dir()
         .join("online_cache")
         .join("cf_manual.jpg");
     let generated = wallmagic_core::generate_cloudflare_wallpaper(
-        account_id, api_token, model, prompt, &dest,
+        account_id,
+        &effective_token,
+        model,
+        prompt,
+        &dest,
     )
     .map_err(err_to_string)?;
     wallmagic_core::set_wallpaper(&generated, monitor_id, pos).map_err(err_to_string)
@@ -184,9 +198,12 @@ fn save_scenario(settings: ScenarioSettings) -> Result<ScenarioSettings, String>
 }
 
 pub fn save_scenario_impl(mut settings: ScenarioSettings) -> Result<ScenarioSettings, String> {
-    // 검수 지적 [medium](a): api_token 마스킹 흐름 — 조회 응답은 항상 ""이므로,
-    // 저장 시 토큰이 비어 있으면 "기존 저장값 유지"로 해석해 디스크 토큰을 덮어쓰지 않는다.
-    if settings.cloudflare.api_token.is_empty() {
+    // 검수 지적 [medium](2): 명시적 삭제 플래그 — clear_api_token=true일 때만 빈 토큰으로
+    // 덮어쓰고, 그 외 빈 토큰은 "기존 저장값 유지"로 해석한다. 플래그는 저장 전 false로
+    // 리셋하므로 scenario.json에 잔류하지 않는다.
+    let clear_requested = settings.clear_api_token;
+    settings.clear_api_token = false;
+    if settings.cloudflare.api_token.is_empty() && !clear_requested {
         if let Ok(existing) = wallmagic_core::load_scenario() {
             settings.cloudflare.api_token = existing.cloudflare.api_token;
         }
