@@ -39,6 +39,16 @@ export interface AppStatus {
   data_dir: string;
 }
 
+export interface ScenarioSettings {
+  enabled: boolean;
+  interval_minutes: number;
+  source: { urls: string[]; local_dir: string | null };
+  order: "sequential" | "random";
+  next_index: number;
+  last_run_at: number | null;
+  position: string;
+}
+
 export type WallpaperPosition =
   | "center"
   | "tile"
@@ -76,6 +86,13 @@ export function App(): React.ReactElement {
   const [position, setPosition] = useState<WallpaperPosition>("fill");
   const [monitors, setMonitors] = useState<MonitorInfo[]>([]);
   const [monitorId, setMonitorId] = useState<string>("");
+
+  // ⑤ 시나리오(자동 업데이트) — scenario.json 스키마와 1:1 대응
+  const [scEnabled, setScEnabled] = useState<boolean>(false);
+  const [scInterval, setScInterval] = useState<string>("60");
+  const [scUrls, setScUrls] = useState<string>("");
+  const [scOrder, setScOrder] = useState<"sequential" | "random">("sequential");
+  const [scInfo, setScInfo] = useState<string>("시나리오 미조회");
 
   // 상태
   const [status, setStatus] = useState<AppStatus | null>(null);
@@ -206,6 +223,83 @@ export function App(): React.ReactElement {
       reportOk(`복원 완료 — 백엔드: ${state.backend_used ?? "unknown"}`);
     } catch (err) {
       reportError(`복원 실패: ${String(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const refreshScenario = useCallback(async () => {
+    try {
+      const sc = await invoke<ScenarioSettings>("get_scenario");
+      setScEnabled(sc.enabled);
+      setScInterval(String(sc.interval_minutes));
+      setScUrls(sc.source.urls.join("\n"));
+      setScOrder(sc.order);
+      setScInfo(
+        `다음 #${sc.next_index} · 마지막 ${sc.last_run_at ?? "없음"} · ${sc.enabled ? "ON" : "OFF"}`,
+      );
+    } catch (err) {
+      setScInfo(`시나리오 조회 실패: ${String(err)}`);
+    }
+  }, []);
+
+  const handleSaveScenario = async () => {
+    const minutes = Number.parseInt(scInterval, 10);
+    if (!Number.isFinite(minutes) || minutes < 5) {
+      reportError("주기는 5분 이상 숫자로 입력하세요.");
+      return;
+    }
+    const urls = scUrls
+      .split("\n")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    setBusy(true);
+    try {
+      const saved = await invoke<ScenarioSettings>("save_scenario", {
+        settings: {
+          enabled: scEnabled,
+          interval_minutes: minutes,
+          source: { urls, local_dir: null },
+          order: scOrder,
+          next_index: 0,
+          last_run_at: null,
+          position,
+        },
+      });
+      setScInfo(
+        `저장됨 · 다음 #${saved.next_index} · ${saved.enabled ? "ON" : "OFF"} · ${saved.interval_minutes}분`,
+      );
+      reportOk("시나리오 저장 완료");
+    } catch (err) {
+      reportError(`시나리오 저장 실패: ${String(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleTickScenario = async () => {
+    setBusy(true);
+    try {
+      const applied = await invoke<WallpaperState | null>("tick_scenario_now");
+      if (applied) {
+        setStatus((prev) =>
+          prev
+            ? {
+                ...prev,
+                current_wallpaper: applied.current_wallpaper,
+                previous_wallpaper: applied.previous_wallpaper,
+                backend_used: applied.backend_used,
+              }
+            : prev,
+        );
+        reportOk(`시나리오 적용 — 백엔드: ${applied.backend_used ?? "unknown"}`);
+      } else {
+        reportOk("시나리오: 아직 주기가 안 됐거나 OFF/소스 없음");
+      }
+      await refreshScenario();
+      await refreshStatus();
+    } catch (err) {
+      reportError(`시나리오 실행 실패: ${String(err)}`);
     } finally {
       setBusy(false);
     }
@@ -381,9 +475,77 @@ export function App(): React.ReactElement {
             className="block"
             onClick={() => void handleRestore()}
             disabled={busy}
+            style={{ marginBottom: "12px" }}
           >
             이전 배경으로 복원
           </button>
+
+          <section>
+            <h2>⑤ 시나리오 (자동 업데이트)</h2>
+            <div className="field">
+              <label htmlFor="scEnabled">자동 업데이트</label>
+              <select
+                id="scEnabled"
+                value={scEnabled ? "on" : "off"}
+                onChange={(e) => setScEnabled(e.target.value === "on")}
+              >
+                <option value="off">OFF</option>
+                <option value="on">ON</option>
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="scInterval">주기 (분, 최소 5)</label>
+              <input
+                id="scInterval"
+                type="number"
+                min={5}
+                value={scInterval}
+                onChange={(e) => setScInterval(e.target.value)}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="scUrls">이미지 URL 목록 (줄바꿈 구분, R2 권장)</label>
+              <textarea
+                id="scUrls"
+                value={scUrls}
+                onChange={(e) => setScUrls(e.target.value)}
+                placeholder="https://cdn.example.com/w1.jpg"
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="scOrder">순서</label>
+              <select
+                id="scOrder"
+                value={scOrder}
+                onChange={(e) =>
+                  setScOrder(e.target.value as "sequential" | "random")
+                }
+              >
+                <option value="sequential">순차 (sequential)</option>
+                <option value="random">랜덤 (random)</option>
+              </select>
+            </div>
+            <div className="detail" style={{ marginBottom: "8px" }}>
+              {scInfo}
+            </div>
+            <button
+              type="button"
+              className="primary block"
+              onClick={() => void handleSaveScenario()}
+              disabled={busy}
+              style={{ marginBottom: "8px" }}
+            >
+              시나리오 저장
+            </button>
+            <button
+              type="button"
+              className="block"
+              onClick={() => void handleTickScenario()}
+              disabled={busy}
+            >
+              지금 실행
+            </button>
+          </section>
         </aside>
       </div>
 

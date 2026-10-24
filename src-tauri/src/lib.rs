@@ -18,8 +18,8 @@
 use serde::Serialize;
 use std::path::PathBuf;
 use wallmagic_core::{
-    MonitorInfo, SearchResult, WallpaperCandidate, WallpaperError, WallpaperPosition,
-    WallpaperState, VERSION,
+    MonitorInfo, ScenarioSettings, SearchResult, WallpaperCandidate, WallpaperError,
+    WallpaperPosition, WallpaperState, VERSION,
 };
 
 /// 상태바용 앱 상태 스냅샷 (IPC #6 `get_app_status`).
@@ -120,7 +120,35 @@ fn get_app_status() -> AppStatus {
     }
 }
 
-/// Tauri v2 애플리케이션 진입 — 메인 창을 띄우고 IPC 커맨드 6종을 배선한다.
+/// IPC #7: 시나리오 설정 조회 (`scenario.json`, 없으면 기본값).
+#[tauri::command]
+fn get_scenario() -> Result<ScenarioSettings, String> {
+    get_scenario_impl()
+}
+
+pub fn get_scenario_impl() -> Result<ScenarioSettings, String> {
+    wallmagic_core::load_scenario().map_err(err_to_string)
+}
+
+/// IPC #8: 시나리오 설정 저장 (UI 토글·주기·소스·순서).
+#[tauri::command]
+fn save_scenario(settings: ScenarioSettings) -> Result<ScenarioSettings, String> {
+    save_scenario_impl(settings)
+}
+
+pub fn save_scenario_impl(settings: ScenarioSettings) -> Result<ScenarioSettings, String> {
+    wallmagic_core::save_scenario(&settings).map_err(err_to_string)?;
+    wallmagic_core::load_scenario().map_err(err_to_string)
+}
+
+/// IPC #9: 시나리오 스케줄러 틱 (주기 도래 시 다음 이미지 적용).
+#[tauri::command]
+fn tick_scenario_now() -> Result<Option<WallpaperState>, String> {
+    let now = wallmagic_core::now_unix_secs();
+    wallmagic_core::tick_scenario(now).map_err(err_to_string)
+}
+
+/// Tauri v2 애플리케이션 진입 — 메인 창을 띄우고 IPC 커맨드 9종을 배선한다.
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -130,6 +158,9 @@ pub fn run() {
             restore_wallpaper,
             list_monitors,
             get_app_status,
+            get_scenario,
+            save_scenario,
+            tick_scenario_now,
         ])
         .run(tauri::generate_context!())
         .expect("error while running WallMagic application");
