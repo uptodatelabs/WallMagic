@@ -58,27 +58,44 @@ async function puterResultToBase64(result: unknown): Promise<string> {
 /// `puter.auth.isSignedIn` 안전 호출 래퍼 — SDK 버전에 따라 동기 boolean을
 /// 반환할 수도 있어 `.catch()`를 직접 체이닝하면 TypeError가 난다.
 /// Promise.resolve로 정규화하고 try/catch로 감싸 동기·비동기 양쪽에 안전하다.
-/// Puter 로그인 팝업 차단 시 대체 오픈 경로 (2단계 시도).
+/// Puter 로그인 페이지 주소 — 안내 모달에 표시하고 [바로가기]에서 연다.
+const PUTER_LOGIN_URL = "https://puter.com/auth/";
+
+/// 팝업 차단 안내 모달을 띄우기 위한 컴포넌트 등록 지점.
+/// 모듈 스코프 함수(openPuterLoginFallback)는 React 상태에 접근할 수 없으므로,
+/// 컴포넌트가 마운트되며 자기 setState를 여기에 등록한다.
+let showPuterLoginPrompt: ((url: string) => void) | null = null;
+
+/// 팝업이 차단되면 **브라우저를 즉시 열지 않고** URL + [URL 복사] + [바로가기] 버튼을 가진
+/// 안내 모달을 먼저 띄운다. 실제 브라우저 열기는 사용자가 [바로가기]를 눌렀을 때만
+/// openPuterLoginInBrowser()로 수행한다 (사용자 선택 우선).
+/// 모달 등록 전(비정상 경로)에는 조용히 넘어가지 않고 명시적 오류로 알린다.
+function openPuterLoginFallback(): void {
+  if (showPuterLoginPrompt) {
+    showPuterLoginPrompt(PUTER_LOGIN_URL);
+    return;
+  }
+  throw new Error("Puter 로그인 안내 창을 표시할 수 없습니다 — 잠시 후 다시 시도하세요.");
+}
+
+/// [바로가기] 버튼 핸들러 — 사용자가 명시적으로 눌렀을 때만 실행된다 (2단계 시도).
 /// 1차: Tauri `open_external_url`(rundll32 FileProtocolHandler)로 시스템 기본 브라우저 열기.
 /// 2차: WebView 안에서 `<a target="_blank">` 클릭 폴백 — 창이 실제로 열렸는지 반환값으로
 ///      판정할 수 없는 API(window.open 은 noopener 에서 항상 null)라서 "시도"로만 기록한다.
 /// 두 경로 모두 실패하면 예외를 던져 호출부가 "열지 못했다"를 사용자에게 알린다.
-/// (이전 코드는 폴백 실패를 빈 catch 로 삼켜 성공/실패를 구분할 수 없었고, 실패해도
-///  "브라우저를 열었습니다" 라고 안내해 사용자 신고의 원인이 되었다.)
 /// 참고: 외부 브라우저에서 로그인해도 앱(WebView)의 Puter 세션은 별개이므로,
 /// 앱에서는 팝업을 허용한 뒤 다시 로그인해야 한다.
-async function openPuterLoginFallback(): Promise<void> {
-  const loginUrl = "https://puter.com/auth/";
+async function openPuterLoginInBrowser(): Promise<void> {
   const errors: string[] = [];
   try {
-    await invoke("open_external_url", { url: loginUrl });
+    await invoke("open_external_url", { url: PUTER_LOGIN_URL });
     return;
   } catch (err) {
     errors.push(`셸 오픈 실패: ${formatErr(err)}`);
   }
   try {
     const anchor = document.createElement("a");
-    anchor.href = loginUrl;
+    anchor.href = PUTER_LOGIN_URL;
     anchor.target = "_blank";
     anchor.rel = "noopener noreferrer";
     anchor.style.display = "none";
@@ -102,15 +119,16 @@ async function puterSignIn(auth: any): Promise<void> {
     const msg = formatErr(err);
     if (/popup/i.test(msg)) {
       try {
-        await openPuterLoginFallback();
+        openPuterLoginFallback();
       } catch (fallbackErr) {
-        // 폴백마저 실패 — 성공 위장 금지. 원인을 포함해 호출부로 그대로 던진다.
+        // 모달 표시마저 실패 — 성공 위장 금지. 원인을 포함해 호출부로 그대로 던진다.
         throw new Error(
-          `팝업이 차단되었고 자동 열기에도 실패했습니다 (${formatErr(fallbackErr)}) — 이 사이트의 팝업을 허용한 뒤 다시 시도하세요.`
+          `팝업이 차단되었습니다 — 안내 창을 표시하지 못했습니다 (${formatErr(fallbackErr)})`
         );
       }
+      // 브라우저는 사용자가 [바로가기]를 눌렀을 때만 열린다 (즉시 열지 않음).
       throw new Error(
-        "팝업이 차단되어 브라우저에서 Puter 로그인 페이지를 열었습니다 — 외부 브라우저 로그인은 앱 세션과 별개이므로, 앱에서는 이 사이트의 팝업을 허용한 뒤 다시 시도하세요."
+        "팝업이 차단되었습니다 — 화면에 표시된 안내 창에서 [URL 복사] 또는 [바로가기]를 선택하세요."
       );
     }
     throw err;
@@ -336,6 +354,10 @@ export function App(): React.ReactElement {
   const [statusMsg, setStatusMsg] = useState<string>("준비됨");
   const [statusKind, setStatusKind] = useState<"ok" | "error" | "info">("info");
   const [busy, setBusy] = useState<boolean>(false);
+  /// 팝업 차단 안내 모달 상태 — null 이면 닫힘, 문자열이면 그 URL을 담은 모달이 열린다.
+  const [puterPromptUrl, setPuterPromptUrl] = useState<string | null>(null);
+  /// 모달 안에 표시되는 복사/열기 결과 피드백(토스트 역할).
+  const [puterCopyMsg, setPuterCopyMsg] = useState<string>("");
 
   const reportOk = (msg: string) => {
     setStatusMsg(msg);
@@ -344,6 +366,52 @@ export function App(): React.ReactElement {
   const reportError = (msg: string) => {
     setStatusMsg(msg);
     setStatusKind("error");
+  };
+
+  // 팝업 차단 안내 모달 등록 — 모듈 스코프 openPuterLoginFallback()은 React 상태에 접근할 수
+  // 없으므로, 컴포넌트 마운트 시 setState를 여기에 등록하고 언마운트 시 해제한다.
+  useEffect(() => {
+    showPuterLoginPrompt = (url: string) => {
+      setPuterPromptUrl(url);
+      setPuterCopyMsg("");
+    };
+    return () => {
+      showPuterLoginPrompt = null;
+    };
+  }, []);
+
+  // [URL 복사] — 클립보드 복사 결과를 모달 안에 표시한다(실패도 조용히 삼키지 않음).
+  // navigator.clipboard가 없는 환경(비보안 컨텍스트)은 textarea + execCommand로 대체한다.
+  const handleCopyPuterUrl = async () => {
+    const url = puterPromptUrl ?? PUTER_LOGIN_URL;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(url);
+      } else {
+        const area = document.createElement("textarea");
+        area.value = url;
+        area.style.position = "fixed";
+        area.style.opacity = "0";
+        document.body.appendChild(area);
+        area.select();
+        const okCopy = document.execCommand("copy");
+        area.remove();
+        if (!okCopy) throw new Error("execCommand('copy') 실패");
+      }
+      setPuterCopyMsg("URL을 클립보드에 복사했습니다");
+    } catch (err) {
+      setPuterCopyMsg(`URL 복사 실패: ${formatErr(err)}`);
+    }
+  };
+
+  // [바로가기] — 사용자가 명시적으로 눌렀을 때만 실제 브라우저 열기를 시도한다.
+  const handleOpenPuterUrl = async () => {
+    try {
+      await openPuterLoginInBrowser();
+      setPuterCopyMsg("브라우저에서 로그인 페이지를 열었습니다");
+    } catch (err) {
+      setPuterCopyMsg(`브라우저 열기 실패: ${formatErr(err)}`);
+    }
   };
 
   const refreshStatus = useCallback(async () => {
@@ -1319,6 +1387,53 @@ export function App(): React.ReactElement {
           {busy ? "처리 중..." : statusMsg}
         </span>
       </footer>
+
+      {/* ── Puter 로그인 안내 모달 (팝업 차단 시) ── */}
+      {puterPromptUrl && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={() => setPuterPromptUrl(null)}
+        >
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="puter-modal-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 id="puter-modal-title">Puter 로그인 — 팝업이 차단되었습니다</h3>
+            <p className="modal-desc">
+              아래 주소를 복사해 브라우저에서 열거나, [바로가기]를 눌러 기본 브라우저로
+              이동하세요. 외부 브라우저 로그인은 앱 세션과 별개이므로, 앱에서 생성하려면
+              이 사이트의 팝업을 허용한 뒤 다시 시도해야 합니다.
+            </p>
+            <div className="modal-url">
+              <code>{puterPromptUrl}</code>
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="block" onClick={() => void handleCopyPuterUrl()}>
+                URL 복사
+              </button>
+              <button
+                type="button"
+                className="primary block"
+                onClick={() => void handleOpenPuterUrl()}
+              >
+                바로가기 (브라우저 열기)
+              </button>
+            </div>
+            <p className="modal-note" role="status">
+              {puterCopyMsg}
+            </p>
+            <div className="modal-actions">
+              <button type="button" className="block" onClick={() => setPuterPromptUrl(null)}>
+                닫기
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

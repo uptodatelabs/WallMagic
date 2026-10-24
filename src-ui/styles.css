@@ -306,3 +306,71 @@ button.block {
 .statusbar .msg.ok {
   color: var(--ok);
 }
+
+/* ── Puter 로그인 안내 모달 ────────────────── */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(6, 9, 14, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 100;
+}
+
+.modal {
+  width: 100%;
+  max-width: 460px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+}
+
+.modal h3 {
+  margin: 0 0 10px;
+  font-size: 15px;
+  color: var(--text);
+}
+
+.modal .modal-desc {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+
+.modal .modal-url {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  margin-bottom: 12px;
+  overflow-x: auto;
+}
+
+.modal .modal-url code {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.modal .modal-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.modal .modal-actions > * {
+  flex: 1;
+}
+
+.modal .modal-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
