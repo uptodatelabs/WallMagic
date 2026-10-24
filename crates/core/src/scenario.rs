@@ -45,6 +45,34 @@ pub enum ScenarioOrder {
     Random,
 }
 
+/// 이미지 공급자 (시나리오 자동 업데이트·수동 생성 공용).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ImageProvider {
+    #[default]
+    Pollinations,
+    CloudflareWorkersAi,
+}
+
+/// Cloudflare Workers AI 설정 (주의: api_token은 scenario.json에 평문 저장된다 —
+/// 디스크 평문 존재를 전제로 다룰 것. get_scenario 응답의 api_token은 항상 ""
+/// (마스킹)이며, 프론트는 저장 시에만 토큰을 전달한다. 직접 fetch는 Tauri 커맨드 경유만 허용).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct CloudflareAiConfig {
+    #[serde(default)]
+    pub account_id: String,
+    #[serde(default)]
+    pub api_token: String,
+    #[serde(default = "default_cf_model")]
+    pub model: String,
+    #[serde(default)]
+    pub prompt: String,
+}
+
+pub fn default_cf_model() -> String {
+    "@cf/black-forest-labs/flux-1-schnell".to_string()
+}
+
 /// 시나리오 설정 전체.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScenarioSettings {
@@ -62,6 +90,10 @@ pub struct ScenarioSettings {
     pub last_run_at: Option<u64>,
     #[serde(default = "default_position_string")]
     pub position: String,
+    #[serde(default)]
+    pub provider: ImageProvider,
+    #[serde(default)]
+    pub cloudflare: CloudflareAiConfig,
 }
 
 fn default_interval() -> u64 {
@@ -82,6 +114,8 @@ impl Default for ScenarioSettings {
             next_index: 0,
             last_run_at: None,
             position: default_position_string(),
+            provider: ImageProvider::default(),
+            cloudflare: CloudflareAiConfig::default(),
         }
     }
 }
@@ -154,6 +188,8 @@ pub fn should_run(settings: &ScenarioSettings, now_secs: u64) -> bool {
     if !settings.enabled {
         return false;
     }
+    let has_cf_source = matches!(settings.provider, ImageProvider::CloudflareWorkersAi)
+        && !settings.cloudflare.prompt.trim().is_empty();
     if settings.source.urls.is_empty()
         && settings
             .source
@@ -161,6 +197,7 @@ pub fn should_run(settings: &ScenarioSettings, now_secs: u64) -> bool {
             .as_deref()
             .map(|s| s.trim().is_empty())
             .unwrap_or(true)
+        && !has_cf_source
     {
         return false;
     }
@@ -284,10 +321,167 @@ fn download_to_temp(url: &str, dest: &PathBuf) -> Result<(), WallpaperError> {
 /// - URL이 비고 `local_dir`이 있으면 해당 폴더에서 파일명 순환 1건 적용.
 /// - 아직 주기가 안 됐으면 `Ok(None)` (아무 일도 안 함).
 /// - `enabled=false`이거나 소스가 비었으면 `Ok(None)`.
+/// Cloudflare Workers AI 호출 URL을 만든다 (순수 함수 — 네트워크 없이 테스트).
+pub fn cloudflare_ai_url(account_id: &str, model: &str) -> String {
+    format!(
+        "https://api.cloudflare.com/client/v4/accounts/{}/ai/run/{}",
+        account_id.trim(),
+        model.trim()
+    )
+}
+
+/// Workers AI JSON 응답에서 base64 이미지를 꺼내 디코드한다 (순수 함수).
+/// flux-1-schnell 규격: `{"result":{"image":"<base64 JPEG>"}}`.
+/// 변형으로 `result` 자체가 문자열인 경우도 허용한다.
+pub fn parse_cf_image_response(body: &serde_json::Value) -> Result<Vec<u8>, WallpaperError> {
+    let b64 = body
+        .pointer("/result/image")
+        .and_then(|v| v.as_str())
+        .or_else(|| body.pointer("/result").and_then(|v| v.as_str()))
+        .ok_or_else(|| {
+            WallpaperError::CandidateLoad("cloudflare response has no result.image".to_string())
+        })?;
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(b64.trim())
+        .map_err(|e| WallpaperError::CandidateLoad(format!("cloudflare image base64 decode: {e}")))
+}
+
+/// Cloudflare Workers AI로 이미지를 생성해 `dest`에 저장한다.
+///
+/// - `POST {url}` + `Authorization: Bearer {api_token}` + JSON `{"prompt": ...}`.
+/// - `api_token`은 Tauri 커맨드 인자로 전달받아 이 Rust 함수 안에서만
+///   `Authorization` 헤더에 사용한다 (프론트에서 직접 fetch 금지 — 반드시 이 커맨드 경유).
+///   단, 토큰은 호출 시점 프론트 메모리(password input value)와
+///   `scenario.json`에 평문으로 존재한다 — `get_scenario` 응답은 마스킹("")되나
+///   디스크 평문 저장은 잔존 제약이다.
+/// - 401/429/네트워크 실패는 `HttpStatus`/`Network`로 그대로 반환해,
+///   호출자(커맨드·tick)가 기존 배경을 유지하고 오류 메시지를 내보내게 한다.
+/// - 저해상도 응답은 `normalize_to_hd`로 1920x1080 기준에 맞춘다.
+pub fn generate_cloudflare_wallpaper(
+    account_id: &str,
+    api_token: &str,
+    model: &str,
+    prompt: &str,
+    dest: &PathBuf,
+) -> Result<PathBuf, WallpaperError> {
+    if account_id.trim().is_empty() {
+        return Err(WallpaperError::CandidateLoad(
+            "cloudflare account_id is empty".to_string(),
+        ));
+    }
+    if api_token.trim().is_empty() {
+        return Err(WallpaperError::CandidateLoad(
+            "cloudflare api_token is empty".to_string(),
+        ));
+    }
+    if prompt.trim().is_empty() {
+        return Err(WallpaperError::CandidateLoad(
+            "empty prompt: image generation needs a text prompt".to_string(),
+        ));
+    }
+    let model = if model.trim().is_empty() {
+        default_cf_model()
+    } else {
+        model.trim().to_string()
+    };
+    let url = cloudflare_ai_url(account_id, &model);
+    let req_body =
+        serde_json::json!({"prompt": prompt.trim()}).to_string();
+    let response = ureq::post(&url)
+        .timeout(std::time::Duration::from_secs(90))
+        .set("Authorization", &format!("Bearer {}", api_token.trim()))
+        .set("Content-Type", "application/json")
+        .send_string(&req_body)
+        .map_err(|e| match e {
+            ureq::Error::Status(code, resp) => {
+                let body = resp
+                    .into_string()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(300)
+                    .collect::<String>();
+                WallpaperError::HttpStatus {
+                    status: code,
+                    body: format!("cloudflare workers ai HTTP {code}: {body}"),
+                }
+            }
+            other => WallpaperError::Network(format!("cloudflare request failed: {other}")),
+        })?;
+    let status = response.status();
+    if status != 200 {
+        let body = response
+            .into_string()
+            .unwrap_or_default()
+            .chars()
+            .take(300)
+            .collect::<String>();
+        return Err(WallpaperError::HttpStatus { status, body });
+    }
+    let text = response
+        .into_string()
+        .map_err(|e| WallpaperError::Network(format!("reading cloudflare response failed: {e}")))?;
+    let json: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+        WallpaperError::CandidateLoad(format!("cloudflare response parse failed: {e}"))
+    })?;
+    let bytes = parse_cf_image_response(&json)?;
+    if bytes.is_empty() {
+        return Err(WallpaperError::Network(
+            "cloudflare returned empty image body".to_string(),
+        ));
+    }
+    let img = image::load_from_memory(&bytes).map_err(|e| {
+        WallpaperError::CandidateLoad(format!("cloudflare image decode failed: {e}"))
+    })?;
+    let img_hd = crate::wallpaper::normalize_to_hd(img)?;
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    img_hd.save(dest)?;
+    Ok(dest.clone())
+}
+
 pub fn tick_scenario(now_secs: u64) -> Result<Option<WallpaperState>, WallpaperError> {
     let mut settings = load_scenario()?;
     if !should_run(&settings, now_secs) {
         return Ok(None);
+    }
+
+    // Cloudflare Workers AI provider: 시나리오 프롬프트로 이미지 생성 후 적용.
+    // 실패 시 기존 배경 유지 + 오류 반환 (호출자가 last_run_at 백오프로 처리).
+    if matches!(settings.provider, ImageProvider::CloudflareWorkersAi) {
+        let cf = settings.cloudflare.clone();
+        if !cf.prompt.trim().is_empty() {
+            let tmp = app_data_dir().join("online_cache").join("scenario_cf.jpg");
+            let gen = generate_cloudflare_wallpaper(
+                &cf.account_id,
+                &cf.api_token,
+                &cf.model,
+                &cf.prompt,
+                &tmp,
+            );
+            let tmp = match gen {
+                Ok(p) => p,
+                Err(e) => {
+                    settings.last_run_at = Some(now_secs);
+                    let _ = save_scenario(&settings);
+                    return Err(e);
+                }
+            };
+            let state = match crate::wallpaper::set_wallpaper(&tmp, None, settings.position_enum())
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    settings.last_run_at = Some(now_secs);
+                    let _ = save_scenario(&settings);
+                    return Err(e);
+                }
+            };
+            settings.next_index = settings.next_index.wrapping_add(1);
+            settings.last_run_at = Some(now_secs);
+            save_scenario(&settings)?;
+            return Ok(Some(state));
+        }
     }
 
     if !settings.source.urls.is_empty() {
@@ -373,6 +567,8 @@ mod tests {
             next_index: 0,
             last_run_at: None,
             position: "fill".to_string(),
+            provider: ImageProvider::default(),
+            cloudflare: CloudflareAiConfig::default(),
         }
     }
 
@@ -482,5 +678,51 @@ mod tests {
         s.last_run_at = Some(1_000_000);
         assert!(!should_run(&s, allowed - 1));
         assert!(should_run(&s, allowed));
+    }
+
+    #[test]
+    fn cf_url_format() {
+        assert_eq!(
+            cloudflare_ai_url(" acc ", " @cf/x "),
+            "https://api.cloudflare.com/client/v4/accounts/acc/ai/run/@cf/x"
+        );
+    }
+
+    #[test]
+    fn cf_parse_result_image_ok() {
+        use base64::Engine as _;
+        let raw = b"fake-jpeg-bytes";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(raw);
+        let v = serde_json::json!({"result": {"image": b64}});
+        assert_eq!(parse_cf_image_response(&v).expect("parse"), raw.to_vec());
+    }
+
+    #[test]
+    fn cf_parse_result_string_variant_ok() {
+        use base64::Engine as _;
+        let raw = b"variant-bytes";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(raw);
+        let v = serde_json::json!({"result": b64});
+        assert_eq!(parse_cf_image_response(&v).expect("parse"), raw.to_vec());
+    }
+
+    #[test]
+    fn cf_parse_missing_image_errors() {
+        let v = serde_json::json!({"result": {}});
+        let err = parse_cf_image_response(&v).expect_err("must fail without result.image");
+        assert!(
+            matches!(err, WallpaperError::CandidateLoad(_)),
+            "expected CandidateLoad, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn cf_parse_bad_base64_errors() {
+        let v = serde_json::json!({"result": {"image": "!!!not-base64!!!"}});
+        let err = parse_cf_image_response(&v).expect_err("must fail on bad base64");
+        assert!(
+            matches!(err, WallpaperError::CandidateLoad(_)),
+            "expected CandidateLoad, got: {err:?}"
+        );
     }
 }

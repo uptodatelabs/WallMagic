@@ -47,6 +47,8 @@ export interface ScenarioSettings {
   next_index: number;
   last_run_at: number | null;
   position: string;
+  provider: "pollinations" | "cloudflare-workers-ai";
+  cloudflare: { account_id: string; api_token: string; model: string; prompt: string };
 }
 
 export type WallpaperPosition =
@@ -93,6 +95,11 @@ export function App(): React.ReactElement {
   const [scUrls, setScUrls] = useState<string>("");
   const [scLocalDir, setScLocalDir] = useState<string>("");
   const [scOrder, setScOrder] = useState<"sequential" | "random">("sequential");
+  const [scProvider, setScProvider] = useState<"pollinations" | "cloudflare-workers-ai">("pollinations");
+  const [scCfAccount, setScCfAccount] = useState<string>("");
+  const [scCfToken, setScCfToken] = useState<string>("");
+  const [scCfModel, setScCfModel] = useState<string>("@cf/black-forest-labs/flux-1-schnell");
+  const [scCfPrompt, setScCfPrompt] = useState<string>("");
   const [scInfo, setScInfo] = useState<string>("시나리오 미조회");
   // 자동 틱 연속 실패 횟수 (지적 #4: 에러 은폐 방지용 카운터)
   const [scAutoFail, setScAutoFail] = useState<number>(0);
@@ -140,6 +147,16 @@ export function App(): React.ReactElement {
       setScUrls(sc.source.urls.join("\n"));
       setScLocalDir(sc.source.local_dir ?? "");
       setScOrder(sc.order);
+      setScProvider(sc.provider ?? "pollinations");
+      setScCfAccount(sc.cloudflare?.account_id ?? "");
+      // 검수 지적 [medium](a): get_scenario 응답의 api_token은 항상 ""(마스킹).
+      // 빈 문자열로 덮어쓰면 사용자가 입력한 토큰이 지워지므로, 비어 있지 않을 때만 반영한다.
+      // 저장 시에는 scCfToken을 그대로 전달하고, ""이면 Rust 측에서 기존 저장값을 유지한다.
+      if (sc.cloudflare?.api_token) {
+        setScCfToken(sc.cloudflare.api_token);
+      }
+      setScCfModel(sc.cloudflare?.model || "@cf/black-forest-labs/flux-1-schnell");
+      setScCfPrompt(sc.cloudflare?.prompt ?? "");
       setScPrev(sc);
       setScInfo(
         `다음 #${sc.next_index} · 마지막 ${sc.last_run_at ?? "없음"} · ${sc.enabled ? "ON" : "OFF"}`,
@@ -237,6 +254,45 @@ export function App(): React.ReactElement {
     }
   };
 
+  const handleGenerateAi = async () => {
+    if (!scCfAccount.trim() || !scCfToken.trim()) {
+      reportError("Cloudflare Account ID와 API Token을 입력하세요.");
+      return;
+    }
+    const aiPrompt = (scCfPrompt.trim() || prompt).trim();
+    if (!aiPrompt) {
+      reportError("AI 프롬프트를 입력하세요.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const state = await invoke<WallpaperState>("generate_wallpaper_ai", {
+        accountId: scCfAccount.trim(),
+        apiToken: scCfToken,
+        model: scCfModel.trim() || "@cf/black-forest-labs/flux-1-schnell",
+        prompt: aiPrompt,
+        position,
+        monitorId: monitorId.trim() ? monitorId.trim() : null,
+      });
+      setStatus((prev) =>
+        prev
+          ? {
+              ...prev,
+              current_wallpaper: state.current_wallpaper,
+              previous_wallpaper: state.previous_wallpaper,
+              backend_used: state.backend_used,
+            }
+          : prev,
+      );
+      reportOk(`Cloudflare AI 생성·적용 완료 — 백엔드: ${state.backend_used ?? "unknown"}`);
+      await refreshStatus();
+    } catch (err) {
+      reportError(`Cloudflare AI 생성 실패 (기존 배경 유지): ${String(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleApply = async () => {
     if (!selected) {
       reportError("적용할 이미지를 먼저 선택하세요.");
@@ -302,14 +358,24 @@ export function App(): React.ReactElement {
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
     const localDir = scLocalDir.trim() ? scLocalDir.trim() : null;
+    const provider = scProvider;
+    const cfAccount = scCfAccount.trim();
+    const cfModel = scCfModel.trim() || "@cf/black-forest-labs/flux-1-schnell";
+    const cfPrompt = scCfPrompt.trim();
     // 지적 #2: 커서·시각 보존 — 소스 구성이 바뀌어 항목 수가 달라진 경우에만 커서 리셋.
     const prevUrls = scPrev?.source.urls ?? [];
     const prevLocalDir = scPrev?.source.local_dir ?? null;
+    const prevProvider = scPrev?.provider ?? "pollinations";
+    const prevCf = scPrev?.cloudflare ?? { account_id: "", api_token: "", model: "", prompt: "" };
     const sourceChanged =
       scPrev == null ||
       prevUrls.length !== urls.length ||
       prevUrls.some((u, i) => u !== urls[i]) ||
-      (prevLocalDir ?? null) !== localDir;
+      (prevLocalDir ?? null) !== localDir ||
+      prevProvider !== provider ||
+      (prevCf.account_id ?? "") !== cfAccount ||
+      (prevCf.model ?? "") !== cfModel ||
+      (prevCf.prompt ?? "") !== cfPrompt;
     const nextIndex = sourceChanged ? 0 : (scPrev?.next_index ?? 0);
     const lastRunAt = sourceChanged ? null : (scPrev?.last_run_at ?? null);
     setBusy(true);
@@ -323,6 +389,8 @@ export function App(): React.ReactElement {
           next_index: nextIndex,
           last_run_at: lastRunAt,
           position,
+          provider,
+          cloudflare: { account_id: cfAccount, api_token: scCfToken, model: cfModel, prompt: cfPrompt },
         },
       });
       setScInfo(
@@ -605,6 +673,74 @@ export function App(): React.ReactElement {
                 <option value="random">랜덤 (random)</option>
               </select>
             </div>
+            <div className="field">
+              <label htmlFor="scProvider">이미지 공급자</label>
+              <select
+                id="scProvider"
+                value={scProvider}
+                onChange={(e) =>
+                  setScProvider(e.target.value as "pollinations" | "cloudflare-workers-ai")
+                }
+              >
+                <option value="pollinations">Pollinations (무료·키 불필요)</option>
+                <option value="cloudflare-workers-ai">Cloudflare Workers AI</option>
+              </select>
+            </div>
+            {scProvider === "cloudflare-workers-ai" && (
+              <>
+                <div className="field">
+                  <label htmlFor="scCfAccount">Cloudflare Account ID</label>
+                  <input
+                    id="scCfAccount"
+                    type="text"
+                    value={scCfAccount}
+                    onChange={(e) => setScCfAccount(e.target.value)}
+                    placeholder="예: a1b2c3d4..."
+                    autoComplete="off"
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor="scCfToken">Cloudflare API Token (Workers AI 권한)</label>
+                  <input
+                    id="scCfToken"
+                    type="password"
+                    value={scCfToken}
+                    onChange={(e) => setScCfToken(e.target.value)}
+                    placeholder="Workers AI 권한 토큰"
+                    autoComplete="off"
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor="scCfModel">모델</label>
+                  <input
+                    id="scCfModel"
+                    type="text"
+                    value={scCfModel}
+                    onChange={(e) => setScCfModel(e.target.value)}
+                    placeholder="@cf/black-forest-labs/flux-1-schnell"
+                    autoComplete="off"
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor="scCfPrompt">프롬프트 (시나리오)</label>
+                  <textarea
+                    id="scCfPrompt"
+                    value={scCfPrompt}
+                    onChange={(e) => setScCfPrompt(e.target.value)}
+                    placeholder="예: aurora over icy mountains, ultra detailed"
+                  />
+                </div>
+                <button
+                  type="button"
+                  className="primary block"
+                  onClick={() => void handleGenerateAi()}
+                  disabled={busy}
+                  style={{ marginBottom: "8px" }}
+                >
+                  Cloudflare AI로 생성·적용
+                </button>
+              </>
+            )}
             <div className="detail" style={{ marginBottom: "8px" }}>
               {scInfo}
               {scAutoFail > 0 ? ` · 자동 실패 ${scAutoFail}회 연속` : ""}

@@ -79,6 +79,49 @@ pub fn generate_library_wallpaper_impl(prompt: &str) -> Result<WallpaperCandidat
     wallmagic_core::generate_library_wallpaper(prompt).map_err(err_to_string)
 }
 
+/// IPC #10: Cloudflare Workers AI 이미지 생성 → 디코드 → 배경 적용.
+/// - `POST https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model}`
+/// - 토큰은 이 Rust 커맨드 안에서만 `Authorization: Bearer`로 사용한다
+///   (프론트에서 직접 fetch 금지 — 반드시 이 커맨드 경유).
+/// - 실패(401/429/네트워크/디코드) 시 기존 배경을 유지하고 오류 문자열을 반환한다.
+#[tauri::command]
+fn generate_wallpaper_ai(
+    account_id: String,
+    api_token: String,
+    model: String,
+    prompt: String,
+    position: Option<String>,
+    monitor_id: Option<String>,
+) -> Result<WallpaperState, String> {
+    generate_wallpaper_ai_impl(
+        &account_id,
+        &api_token,
+        &model,
+        &prompt,
+        position.as_deref(),
+        monitor_id.as_deref(),
+    )
+}
+
+pub fn generate_wallpaper_ai_impl(
+    account_id: &str,
+    api_token: &str,
+    model: &str,
+    prompt: &str,
+    position: Option<&str>,
+    monitor_id: Option<&str>,
+) -> Result<WallpaperState, String> {
+    let pos = parse_position_arg(position)?;
+    let dest = wallmagic_core::app_data_dir()
+        .join("online_cache")
+        .join("cf_manual.jpg");
+    let generated = wallmagic_core::generate_cloudflare_wallpaper(
+        account_id, api_token, model, prompt, &dest,
+    )
+    .map_err(err_to_string)?;
+    wallmagic_core::set_wallpaper(&generated, monitor_id, pos).map_err(err_to_string)
+}
+
 /// IPC #3 (액션 ③ 적용): 선택한 이미지를 검증·스테이징 후 바탕화면에 적용한다.
 #[tauri::command]
 fn apply_wallpaper(
@@ -127,7 +170,11 @@ fn get_scenario() -> Result<ScenarioSettings, String> {
 }
 
 pub fn get_scenario_impl() -> Result<ScenarioSettings, String> {
-    wallmagic_core::load_scenario().map_err(err_to_string)
+    // 검수 지적 [medium]: api_token 마스킹 — 디스크 평문 토큰을 프론트로 되돌려보내지 않는다.
+    // 프론트는 저장 시에만 토큰을 전달하고, 조회 응답의 api_token은 항상 ""이다.
+    let mut settings = wallmagic_core::load_scenario().map_err(err_to_string)?;
+    settings.cloudflare.api_token = String::new();
+    Ok(settings)
 }
 
 /// IPC #8: 시나리오 설정 저장 (UI 토글·주기·소스·순서).
@@ -136,9 +183,18 @@ fn save_scenario(settings: ScenarioSettings) -> Result<ScenarioSettings, String>
     save_scenario_impl(settings)
 }
 
-pub fn save_scenario_impl(settings: ScenarioSettings) -> Result<ScenarioSettings, String> {
+pub fn save_scenario_impl(mut settings: ScenarioSettings) -> Result<ScenarioSettings, String> {
+    // 검수 지적 [medium](a): api_token 마스킹 흐름 — 조회 응답은 항상 ""이므로,
+    // 저장 시 토큰이 비어 있으면 "기존 저장값 유지"로 해석해 디스크 토큰을 덮어쓰지 않는다.
+    if settings.cloudflare.api_token.is_empty() {
+        if let Ok(existing) = wallmagic_core::load_scenario() {
+            settings.cloudflare.api_token = existing.cloudflare.api_token;
+        }
+    }
     wallmagic_core::save_scenario(&settings).map_err(err_to_string)?;
-    wallmagic_core::load_scenario().map_err(err_to_string)
+    let mut saved = wallmagic_core::load_scenario().map_err(err_to_string)?;
+    saved.cloudflare.api_token = String::new();
+    Ok(saved)
 }
 
 /// IPC #9: 시나리오 스케줄러 틱 (주기 도래 시 다음 이미지 적용).
@@ -148,12 +204,13 @@ fn tick_scenario_now() -> Result<Option<WallpaperState>, String> {
     wallmagic_core::tick_scenario(now).map_err(err_to_string)
 }
 
-/// Tauri v2 애플리케이션 진입 — 메인 창을 띄우고 IPC 커맨드 9종을 배선한다.
+/// Tauri v2 애플리케이션 진입 — 메인 창을 띄우고 IPC 커맨드 10종을 배선한다.
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             search_wallpapers,
             generate_library_wallpaper,
+            generate_wallpaper_ai,
             apply_wallpaper,
             restore_wallpaper,
             list_monitors,
