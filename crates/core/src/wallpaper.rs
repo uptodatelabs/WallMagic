@@ -4,7 +4,9 @@
 use image::{ImageBuffer, Rgb, RgbImage};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use thiserror::Error;
 
 /// Wallpaper placement style across monitors
@@ -37,7 +39,7 @@ pub enum WallpaperError {
     #[error("image decode error: {0}")]
     ImageDecode(#[from] image::ImageError),
 
-    #[error("image resolution too low ({width}x{height}); minimum is 640x480")]
+    #[error("image resolution too low ({width}x{height}); below required minimum")]
     ResolutionTooLow { width: u32, height: u32 },
 
     #[error("io error: {0}")]
@@ -54,6 +56,12 @@ pub enum WallpaperError {
 
     #[error("Windows API error: {0}")]
     WindowsApi(String),
+
+    #[error("network error: {0}")]
+    Network(String),
+
+    #[error("image API HTTP {status}: {body}")]
+    HttpStatus { status: u16, body: String },
 }
 
 /// Returns the application data directory.
@@ -192,6 +200,83 @@ pub fn generate_sample_wallpaper(
     });
 
     img.save(output_path)?;
+    Ok(output_path.to_path_buf())
+}
+
+/// 온라인 생성 응답을 HD 품질 기준으로 정규화한다.
+///
+/// - 640x480 미만이면 `ResolutionTooLow` 실패 (저해상도 응답을 후보로 내보내지 않음).
+/// - 1280x720 미만(예: Classic 무료 티어의 1024x576 응답)이면 Lanczos3로 1920x1080 업스케일.
+/// - 그 이상이면 원본 그대로 반환.
+///
+/// 순수 함수로 분리해 네트워크 없이 단위 테스트로 검증한다.
+pub fn normalize_to_hd(img: image::DynamicImage) -> Result<image::DynamicImage, WallpaperError> {
+    if img.width() < 640 || img.height() < 480 {
+        return Err(WallpaperError::ResolutionTooLow {
+            width: img.width(),
+            height: img.height(),
+        });
+    }
+    Ok(if img.width() < 1280 || img.height() < 720 {
+        img.resize_exact(1920, 1080, image::imageops::FilterType::Lanczos3)
+    } else {
+        img
+    })
+}
+
+/// Generate a wallpaper via the free Pollinations image API (no key needed).
+///
+/// GETs a JPEG from image.pollinations.ai and saves it to `output_path`.
+/// Failures are returned as Network/HttpStatus/CandidateLoad so the UI
+/// can show a clear error instead of a silent offline gradient.
+pub fn generate_online_wallpaper(
+    prompt: &str,
+    output_path: &Path,
+) -> Result<PathBuf, WallpaperError> {
+    let trimmed = prompt.trim();
+    if trimmed.is_empty() {
+        return Err(WallpaperError::CandidateLoad(
+            "empty prompt: image generation needs a text prompt".to_string(),
+        ));
+    }
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let encoded = urlencoding::encode(trimmed);
+    let url = format!(
+        "https://image.pollinations.ai/prompt/{encoded}?width=1920&height=1080&nologo=true"
+    );
+    let response = ureq::get(&url)
+        .timeout(Duration::from_secs(90))
+        .call()
+        .map_err(|e| WallpaperError::Network(format!("image generation request failed: {e}")))?;
+    let status = response.status();
+    if status != 200 {
+        let body = response
+            .into_string()
+            .unwrap_or_default()
+            .chars()
+            .take(300)
+            .collect::<String>();
+        return Err(WallpaperError::HttpStatus { status, body });
+    }
+    let mut bytes: Vec<u8> = Vec::new();
+    response
+        .into_reader()
+        .read_to_end(&mut bytes)
+        .map_err(|e| WallpaperError::Network(format!("reading generated image failed: {e}")))?;
+    if bytes.is_empty() {
+        return Err(WallpaperError::Network(
+            "image generation API returned an empty body".to_string(),
+        ));
+    }
+    let img = image::load_from_memory(&bytes).map_err(|e| {
+        WallpaperError::CandidateLoad(format!("generated image decode failed: {e}"))
+    })?;
+    // AI 배경화면 품질 기준은 `normalize_to_hd`에 일원화한다 (1024x576 등 저해상도
+    // 응답 → Lanczos3 1920x1080 업스케일, 640x480 미만 → ResolutionTooLow 실패).
+    let img_hd = normalize_to_hd(img)?;
+    img_hd.save(output_path)?;
     Ok(output_path.to_path_buf())
 }
 

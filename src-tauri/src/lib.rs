@@ -163,7 +163,9 @@ mod tests {
 
     /// GUI 핵심 4개 액션의 IPC 래퍼가 코어와 실제로 연결되는 스모크 테스트.
     /// ①검색 → ②생성 → ③적용 → ④복원 순서로 수행하고 마지막에 원래 배경으로 되돌린다.
+    /// (네트워크 + 실제 OS 배경 변경 — `cargo test -p wallmagic-app -- --ignored`로 opt-in)
     #[test]
+    #[ignore = "requires network access and changes the real OS wallpaper; run explicitly with `cargo test -- --ignored`"]
     fn test_ipc_smoke_search_generate_apply_restore() {
         // ② 생성: 라이브러리에 배경을 만들고 후보(썸네일 포함)를 받는다.
         let candidate = generate_library_wallpaper_impl("tauri gui smoke theme")

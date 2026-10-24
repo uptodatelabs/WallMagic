@@ -13,13 +13,14 @@ pub mod wallpaper;
 // Public facade: the canonical implementation lives in the `wallpaper` / `search` modules.
 // Types and functions are re-exported here so downstream crates keep a stable import path.
 pub use search::{
-    generate_library_wallpaper, search_wallpapers, WallpaperCandidate, SearchResult,
-    SUPPORTED_EXTENSIONS,
+    generate_library_wallpaper, online_cache_file_name, search_wallpapers, WallpaperCandidate,
+    SearchResult, SUPPORTED_EXTENSIONS,
 };
 pub use wallpaper::{
-    app_data_dir, generate_sample_wallpaper, get_current_wallpaper, is_staged_path, list_monitors,
-    load_state, restore_wallpaper, save_state, set_wallpaper, state_file_path,
-    validate_and_stage_image, WallpaperError, WallpaperPosition, WallpaperState, MonitorInfo,
+    app_data_dir, generate_online_wallpaper, generate_sample_wallpaper, get_current_wallpaper,
+    is_staged_path, list_monitors, load_state, normalize_to_hd, restore_wallpaper, save_state,
+    set_wallpaper, state_file_path, validate_and_stage_image, WallpaperError, WallpaperPosition,
+    WallpaperState, MonitorInfo,
 };
 
 // NOTE: The canonical doc comments for the re-exported items live on their definitions
@@ -368,6 +369,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires network access to the image generation API"]
     fn test_generate_library_wallpaper_returns_candidate_with_bounded_thumbnail() {
         let guard = DataDirGuard::new("generate_library");
         let candidate = generate_library_wallpaper("neon harbor at dusk")
@@ -384,8 +386,12 @@ mod tests {
             "generated candidate must live inside the isolated data dir: {}",
             candidate.path
         );
-        assert_eq!(candidate.width, 1920);
-        assert_eq!(candidate.height, 1080);
+        assert!(
+            candidate.width >= 1280 && candidate.height >= 720,
+            "generated candidate must be at least 1280x720, got {}x{}",
+            candidate.width,
+            candidate.height
+        );
 
         use base64::Engine as _;
         let raw = base64::engine::general_purpose::STANDARD
@@ -397,6 +403,115 @@ mod tests {
             "thumbnail must be downscaled to <=320px, got {}x{}",
             thumb.width(),
             thumb.height()
+        );
+    }
+
+    /// 회귀 테스트 (결함 #1: "생성 결과가 너무 엉망"):
+    /// "생성"이 프롬프트 해시로 만든 오프라인 그라디언트 합성이라면 이미지 생성 API가
+    /// 호출되지 않은 것이다. 생성 결과는 실제 생성 API 응답에서 나와야 하고, 저장된
+    /// 파일은 손상 없이 디코딩되어야 한다.
+    /// (네트워크 필요 — `cargo test -p wallmagic-core -- --ignored <name>`으로 opt-in)
+    #[test]
+    #[ignore = "requires network access to the image generation API"]
+    fn test_online_generate_is_not_offline_gradient_stub() {
+        let _guard = DataDirGuard::new("online_generate");
+        let prompt = "a vivid photo of a mountain lake at sunrise";
+        let candidate = generate_library_wallpaper(prompt).expect("generate_library_wallpaper");
+        assert!(
+            Path::new(&candidate.path).exists(),
+            "generated file must exist: {}",
+            candidate.path
+        );
+
+        // 오프라인 스텁(그라디언트) 산출물과 바이트가 같으면 = 생성 API 미호출.
+        let stub_path = std::env::temp_dir().join("wallmagic_test_stub_gradient.bmp");
+        generate_sample_wallpaper(prompt, &stub_path).expect("generate offline stub");
+        let generated_bytes = fs::read(&candidate.path).expect("read generated");
+        let stub_bytes = fs::read(&stub_path).expect("read stub");
+        let _ = fs::remove_file(&stub_path);
+        assert!(
+            generated_bytes != stub_bytes,
+            "generated image is byte-identical to the offline gradient stub \
+             — the image generation API was never called"
+        );
+
+        // 손상 없이 디코딩되어야 한다 (트렁케이트·오손상 응답 차단).
+        let decoded = image::open(&candidate.path).expect("generated image must decode cleanly");
+        assert!(
+            decoded.width() >= 640 && decoded.height() >= 480,
+            "generated image must be at least 640x480, got {}x{}",
+            decoded.width(),
+            decoded.height()
+        );
+    }
+
+    /// 회귀 테스트 (결함 #2: "검색 결과가 없어"):
+    /// 로컬 폴더에 일치 이미지가 없어도 검색은 0건으로 끝나면 안 되고, 온라인 공개 이미지
+    /// 검색으로 폴백해 실제 후보를 내려받아 돌려줘야 한다. 폴백도 실패하면 명시적 오류.
+    /// (네트워크 필요 — `cargo test -p wallmagic-core -- --ignored <name>`으로 opt-in)
+    #[test]
+    #[ignore = "requires network access to the online image search API"]
+    fn test_online_search_falls_back_when_local_has_no_matches() {
+        let guard = DataDirGuard::new("online_search");
+        let empty_root = guard.dir().join("empty_pictures");
+        fs::create_dir_all(&empty_root).expect("create empty search root");
+
+        let results = search_wallpapers("aurora borealis", Some(&empty_root)).expect("search");
+        assert!(
+            !results.candidates.is_empty(),
+            "local 0 results must fall back to online search — an empty list is the reported defect"
+        );
+        for candidate in &results.candidates {
+            assert!(
+                Path::new(&candidate.path).exists(),
+                "online candidates must be downloaded locally before they are offered: {}",
+                candidate.path
+            );
+            assert!(
+                !candidate.thumb_base64.is_empty(),
+                "thumbnail must be present for the result grid"
+            );
+        }
+    }
+
+    /// 검수 지적 1: `normalize_to_hd` 해상도 정규화 경로의 오프라인 검증.
+    /// 1024x576(Classic 무료 티어 응답 크기) 입력이면 1920x1080 업스케일을 반환한다.
+    #[test]
+    fn test_normalize_upscales_1024x576_to_hd() {
+        let small = image::DynamicImage::ImageRgb8(image::ImageBuffer::from_pixel(
+            1024,
+            576,
+            image::Rgb([1, 2, 3]),
+        ));
+        let hd = normalize_to_hd(small).expect("upscale");
+        assert_eq!((hd.width(), hd.height()), (1920, 1080));
+    }
+
+    /// 검수 지적 1: 640x480 미만 입력이면 `ResolutionTooLow` 실패를 반환한다.
+    #[test]
+    fn test_normalize_rejects_below_minimum() {
+        let tiny = image::DynamicImage::ImageRgb8(image::ImageBuffer::from_pixel(
+            320,
+            240,
+            image::Rgb([9, 9, 9]),
+        ));
+        assert!(matches!(
+            normalize_to_hd(tiny),
+            Err(WallpaperError::ResolutionTooLow {
+                width: 320,
+                height: 240
+            })
+        ));
+    }
+
+    /// 검수 지적 2: 앞 20자가 같은 서로 다른 쿼리가 같은 캐시 파일을 공유하면 안 된다.
+    #[test]
+    fn test_online_cache_file_name_separates_prefix_collisions() {
+        let a = crate::search::online_cache_file_name("sunset over mountains", 0);
+        let b = crate::search::online_cache_file_name("sunset over mountain lake", 0);
+        assert_ne!(
+            a, b,
+            "same 20-char prefix queries must not share a cache file"
         );
     }
 }

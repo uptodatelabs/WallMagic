@@ -10,7 +10,8 @@
 //! 필터)만 수행해 `total_matched`(매칭 전체 수)를 정확히 센다 — Pictures에 이미지가
 //! 수천 장이어도 IPC 페이로드와 디코딩 시간은 상한으로 묶인다.
 
-use crate::wallpaper::{generate_sample_wallpaper, WallpaperError};
+use crate::wallpaper::{generate_online_wallpaper, WallpaperError};
+use std::time::Duration;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use image::ImageFormat;
 use serde::{Deserialize, Serialize};
@@ -151,6 +152,139 @@ fn collect_matching_paths(dir: &Path, query_lower: &str, out: &mut Vec<PathBuf>,
     }
 }
 
+/// 온라인 폴백이 한 번에 내려받는 최대 이미지 수 (IPC 페이로드·대기시간 보호).
+const ONLINE_FALLBACK_LIMIT: usize = 8;
+
+/// 온라인 검색 캐시 파일명을 쿼리별로 분리해 생성한다.
+///
+/// 쿼리 전체(trimmed)에 대한 해시를 포함하므로, 앞 20자가 같은 서로 다른 쿼리
+/// (예: 'sunset over mountains' / 'sunset over mountain lake')가 같은 캐시 파일을
+/// 공유해 엉뚱한 이미지를 반환하는 충돌이 발생하지 않는다.
+/// 순수 함수로 분리해 네트워크 없이 단위 테스트로 검증한다.
+pub fn online_cache_file_name(query: &str, idx: usize) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    query.trim().hash(&mut h);
+    format!("online_{:016x}_{idx}.jpg", h.finish())
+}
+
+/// Wikimedia Commons 무료 이미지 검색으로 폴백한다 (키 불필요).
+///
+/// - `query`가 비어 있으면 호출하지 않는다 (호출자가 보장).
+/// - 검색 API에서 원본 URL을 받아 `app_data_dir()/online_cache`에 내려받은 뒤
+///   `load_candidate`로 후보화한다. 1건 이상 성공하면 `SearchResult`로 반환한다.
+/// - API 오류·다운로드 전멸 시 `Network`/`HttpStatus`를 그대로 반환해 UI에 노출한다 —
+///   빈 목록으로 조용히 끝나지 않는다.
+fn search_online_wallpapers(query: &str) -> Result<SearchResult, WallpaperError> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return Ok(SearchResult {
+            candidates: Vec::new(),
+            total_matched: 0,
+            truncated: false,
+        });
+    }
+    let encoded = urlencoding::encode(trimmed);
+    let url = format!(
+        "https://commons.wikimedia.org/w/api.php?action=query&format=json&generator=search&gsrsearch={encoded}&gsrnamespace=6&gsrlimit=10&prop=imageinfo&iiprop=url%7Csize&iiurlwidth=1280&formatversion=2"
+    );
+    let response = ureq::get(&url)
+        .timeout(Duration::from_secs(30))
+        .call()
+        .map_err(|e| WallpaperError::Network(format!("online image search failed: {e}")))?;
+    let status = response.status();
+    if status != 200 {
+        let body = response
+            .into_string()
+            .unwrap_or_default()
+            .chars()
+            .take(300)
+            .collect::<String>();
+        return Err(WallpaperError::HttpStatus { status, body });
+    }
+    let body = response
+        .into_string()
+        .map_err(|e| WallpaperError::Network(format!("reading search response failed: {e}")))?;
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
+        WallpaperError::CandidateLoad(format!("search response parse failed: {e}"))
+    })?;
+    let pages = json
+        .pointer("/query/pages")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let cache_dir = crate::wallpaper::app_data_dir().join("online_cache");
+    std::fs::create_dir_all(&cache_dir)?;
+
+    let mut candidates = Vec::new();
+    let mut failures = 0usize;
+    for (idx, page) in pages.iter().enumerate() {
+        if candidates.len() >= ONLINE_FALLBACK_LIMIT {
+            break;
+        }
+        let img_url = page
+            .pointer("/imageinfo/0/thumburl")
+            .and_then(|v| v.as_str())
+            .or_else(|| page.pointer("/imageinfo/0/url").and_then(|v| v.as_str()));
+        let Some(img_url) = img_url
+        else {
+            failures += 1;
+            continue;
+        };
+        let file_name = online_cache_file_name(trimmed, idx);
+        let dest = cache_dir.join(file_name);
+        // 캐시가 있으면 재사용 (같은 키워드 반복 검색 시 네트워크 절약).
+        if !dest.exists() {
+            let img_resp = ureq::get(img_url)
+                .timeout(Duration::from_secs(30))
+                .call()
+                .map_err(|e| {
+                    WallpaperError::Network(format!("image download failed: {e}"))
+                })?;
+            if img_resp.status() != 200 {
+                failures += 1;
+                continue;
+            }
+            let mut bytes: Vec<u8> = Vec::new();
+            use std::io::Read as _;
+            if img_resp
+                .into_reader()
+                .read_to_end(&mut bytes)
+                .is_err()
+                || bytes.is_empty()
+            {
+                failures += 1;
+                continue;
+            }
+            if image::load_from_memory(&bytes).is_err() {
+                failures += 1;
+                continue;
+            }
+            if std::fs::write(&dest, &bytes).is_err() {
+                failures += 1;
+                continue;
+            }
+        }
+        if let Some(candidate) = load_candidate(&dest) {
+            candidates.push(candidate);
+        } else {
+            failures += 1;
+        }
+    }
+    if candidates.is_empty() {
+        return Err(WallpaperError::Network(format!(
+            "online search found no downloadable images for '{trimmed}' (failures: {failures})"
+        )));
+    }
+    let total = candidates.len();
+    Ok(SearchResult {
+        candidates,
+        total_matched: total,
+        truncated: false,
+    })
+}
+
 /// 키워드로 로컬 배경화면 후보를 검색한다.
 ///
 /// - `root`가 주어지면 그 폴더만, 없으면 `default_search_roots()`(앱 라이브러리 + Pictures)를 탐색한다.
@@ -162,6 +296,9 @@ pub fn search_wallpapers(
     root: Option<&Path>,
 ) -> Result<SearchResult, WallpaperError> {
     let query_lower = query.trim().to_lowercase();
+    // 명시적 root 여부와 무관하게 로컬 0건이면 온라인 폴백한다.
+    // 회귀 결함 #2: 명시적 빈 폴더 지정 시 폴백 게이트(`!has_explicit_root`)가
+    // 온라인 검색을 차단해 빈 목록을 반환했음 — 사용자가 보는 "검색 결과 없음" 증상.
     let roots: Vec<PathBuf> = match root {
         Some(root) => vec![root.to_path_buf()],
         None => default_search_roots(),
@@ -182,6 +319,10 @@ pub fn search_wallpapers(
         name(a).cmp(&name(b))
     });
 
+    if matched_paths.is_empty() && !query_lower.is_empty() {
+        return search_online_wallpapers(&query_lower);
+    }
+
     let total_matched = matched_paths.len();
     let mut candidates = Vec::new();
     // 조기 중단: 상한 초과 경로는 디코딩 자체를 수행하지 않는다.
@@ -198,7 +339,8 @@ pub fn search_wallpapers(
     })
 }
 
-/// 프롬프트 기반으로 배경화면을 생성해 앱 라이브러리(`app_data_dir()/library`)에 저장하고,
+/// 프롬프트 기반으로 배경화면을 생성(Pollinations 무료 이미지 API, 키 불필요)해
+/// 앱 라이브러리(`app_data_dir()/library`)에 저장하고,
 /// GUI가 바로 선택·적용할 수 있는 `WallpaperCandidate`(썸네일 포함)로 반환한다.
 pub fn generate_library_wallpaper(prompt: &str) -> Result<WallpaperCandidate, WallpaperError> {
     let library = crate::wallpaper::app_data_dir().join("library");
@@ -215,10 +357,10 @@ pub fn generate_library_wallpaper(prompt: &str) -> Result<WallpaperCandidate, Wa
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .take(24)
         .collect();
-    let file_name = format!("generated_{slug}_{hash:08x}.bmp");
+    let file_name = format!("generated_{slug}_{hash:08x}.jpg");
     let out_path = library.join(file_name);
 
-    generate_sample_wallpaper(prompt, &out_path)?;
+    generate_online_wallpaper(prompt, &out_path)?;
     load_candidate(&out_path).ok_or_else(|| {
         WallpaperError::CandidateLoad(out_path.to_string_lossy().to_string())
     })
