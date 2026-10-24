@@ -51,6 +51,81 @@ fn err_to_string(err: WallpaperError) -> String {
     err.to_string()
 }
 
+/// 외부 URL 스킴 검증 — http/https만 허용하고 그 외(`file://`, 임의 명령 등)는 거부한다.
+/// 참고: 오프너는 셸(`cmd /c start`)을 거치지 않고 rundll32 FileProtocolHandler로
+/// argv 하나를 그대로 전달하므로, URL의 `&`, `|`, `^` 메타문자가 cmd.exe 재파싱으로
+/// 추가 명령이 되지 않는다. 이 검증은 1차 방어(비-Web 스킴 차단)다.
+pub fn validate_external_url(url: &str) -> Result<String, String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return Err("invalid url scheme: empty url".to_string());
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if !(lower.starts_with("https://") || lower.starts_with("http://")) {
+        return Err(format!(
+            "invalid url scheme (expected http/https): {trimmed}"
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+/// IPC: 시스템 기본 브라우저로 URL을 연다.
+/// Puter 로그인 팝업이 차단되었을 때 안내에 그치지 않고 실제 열기를 시도하는 대체 경로.
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    let validated = validate_external_url(&url)?;
+    #[cfg(windows)]
+    {
+        // 보안(지적 1): `cmd /c start`를 쓰지 않는다 — cmd.exe가 명령줄을 재파싱해
+        // URL의 `&`, `|`, `^` 메타문자가 추가 명령이 된다. rundll32 FileProtocolHandler는
+        // URL을 argv 하나로 그대로 전달하므로 재파싱 경로가 존재하지 않는다.
+        std::process::Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", &validated])
+            .spawn()
+            .map_err(|e| format!("failed to open external browser: {e}"))?;
+    }
+    #[cfg(not(windows))]
+    {
+        return Err("open_external_url: unsupported platform".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod external_url_tests {
+    use super::validate_external_url;
+
+    /// 수용: http/https 스킴은 trim 후 그대로 통과
+    #[test]
+    fn test_validate_external_url_accepts_http_https() {
+        assert_eq!(
+            validate_external_url("  https://puter.com/auth/  ").unwrap(),
+            "https://puter.com/auth/"
+        );
+        assert!(validate_external_url("http://example.com").is_ok());
+    }
+
+    /// 거부: 빈 값·비-Web 스킴은 명시적 오류로 실패 (조용한 폴스루 금지)
+    #[test]
+    fn test_validate_external_url_rejects_bad_scheme() {
+        assert!(validate_external_url("").is_err());
+        assert!(validate_external_url("   ").is_err());
+        assert!(validate_external_url("file:///c:/windows/system32").is_err());
+        assert!(validate_external_url("cmd /c calc").is_err());
+    }
+
+    /// 메타문자(&)가 포함된 URL은 오프너가 셸을 거치지 않으므로(argv 1개 전달)
+    /// 추가 명령이 되지 않는다 — `https://a&calc`는 정상 http 스킴으로 통과하고,
+    /// 실제 오픈은 rundll32 FileProtocolHandler가 수행한다 (cmd.exe 재파싱 경로 없음).
+    #[test]
+    fn test_validate_external_url_meta_char_url_no_shell() {
+        assert_eq!(
+            validate_external_url("https://a&calc").unwrap(),
+            "https://a&calc"
+        );
+    }
+}
+
 /// 프론트엔드(Puter.js)가 넘긴 base64 이미지 payload를 디코딩한다.
 ///
 /// - `data:image/png;base64,<본문>` 형태의 data URL 접두사를 허용하고 본문만 디코딩한다.
@@ -410,6 +485,7 @@ pub fn run() {
             tick_scenario_now,
             generate_wallpaper_priority,
             apply_generated_image,
+            open_external_url,
         ])
         .run(tauri::generate_context!())
         .expect("error while running WallMagic application");

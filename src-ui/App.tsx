@@ -11,6 +11,10 @@ declare global {
       ai?: {
         txt2img?: (prompt: string, options?: { model?: string }) => Promise<unknown>;
       };
+      auth?: {
+        isSignedIn?: () => boolean | Promise<boolean>;
+        signIn?: () => Promise<unknown>;
+      };
     };
   }
 }
@@ -49,6 +53,153 @@ async function puterResultToBase64(result: unknown): Promise<string> {
   throw new Error(
     `Puter 응답 형식을 해석할 수 없습니다: ${Object.prototype.toString.call(result)}`,
   );
+}
+
+/// `puter.auth.isSignedIn` 안전 호출 래퍼 — SDK 버전에 따라 동기 boolean을
+/// 반환할 수도 있어 `.catch()`를 직접 체이닝하면 TypeError가 난다.
+/// Promise.resolve로 정규화하고 try/catch로 감싸 동기·비동기 양쪽에 안전하다.
+/// Puter 로그인 팝업 차단 시 대체 오픈 경로 (2단계 시도).
+/// 1차: Tauri `open_external_url`(rundll32 FileProtocolHandler)로 시스템 기본 브라우저 열기.
+/// 2차: WebView 안에서 `<a target="_blank">` 클릭 폴백 — 창이 실제로 열렸는지 반환값으로
+///      판정할 수 없는 API(window.open 은 noopener 에서 항상 null)라서 "시도"로만 기록한다.
+/// 두 경로 모두 실패하면 예외를 던져 호출부가 "열지 못했다"를 사용자에게 알린다.
+/// (이전 코드는 폴백 실패를 빈 catch 로 삼켜 성공/실패를 구분할 수 없었고, 실패해도
+///  "브라우저를 열었습니다" 라고 안내해 사용자 신고의 원인이 되었다.)
+/// 참고: 외부 브라우저에서 로그인해도 앱(WebView)의 Puter 세션은 별개이므로,
+/// 앱에서는 팝업을 허용한 뒤 다시 로그인해야 한다.
+async function openPuterLoginFallback(): Promise<void> {
+  const loginUrl = "https://puter.com/auth/";
+  const errors: string[] = [];
+  try {
+    await invoke("open_external_url", { url: loginUrl });
+    return;
+  } catch (err) {
+    errors.push(`셸 오픈 실패: ${formatErr(err)}`);
+  }
+  try {
+    const anchor = document.createElement("a");
+    anchor.href = loginUrl;
+    anchor.target = "_blank";
+    anchor.rel = "noopener noreferrer";
+    anchor.style.display = "none";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    return;
+  } catch (err) {
+    errors.push(`링크 폴백 실패: ${formatErr(err)}`);
+  }
+  throw new Error(errors.join(" · "));
+}
+
+/// Puter 로그인 팝업 호출. 브라우저/WebView가 팝업을 차단하면 'popup_blocked' 계열 오류가
+/// 그대로 올라오므로, 사용자에게 조치 방법을 안내하는 명확한 메시지로 바꿔 던진다.
+/// 차단 시 안내에 그치지 않고 openPuterLoginFallback()으로 실제 열기를 시도한다.
+async function puterSignIn(auth: any): Promise<void> {
+  try {
+    await auth.signIn();
+  } catch (err) {
+    const msg = formatErr(err);
+    if (/popup/i.test(msg)) {
+      try {
+        await openPuterLoginFallback();
+      } catch (fallbackErr) {
+        // 폴백마저 실패 — 성공 위장 금지. 원인을 포함해 호출부로 그대로 던진다.
+        throw new Error(
+          `팝업이 차단되었고 자동 열기에도 실패했습니다 (${formatErr(fallbackErr)}) — 이 사이트의 팝업을 허용한 뒤 다시 시도하세요.`
+        );
+      }
+      throw new Error(
+        "팝업이 차단되어 브라우저에서 Puter 로그인 페이지를 열었습니다 — 외부 브라우저 로그인은 앱 세션과 별개이므로, 앱에서는 이 사이트의 팝업을 허용한 뒤 다시 시도하세요."
+      );
+    }
+    throw err;
+  }
+}
+
+async function puterIsSignedIn(
+  isSignedIn: (() => boolean | Promise<boolean>) | undefined,
+): Promise<boolean> {
+  if (!isSignedIn) return false;
+  try {
+    return !!(await Promise.resolve(isSignedIn()));
+  } catch {
+    return false;
+  }
+}
+
+/// 에러 객체를 사람이 읽을 수 있는 문자열로 정규화한다.
+/// `String(err)`는 일반 객체에서 "[object Object]"가 되므로
+/// `err.message` → `err.error.message` → `err.error` → `JSON.stringify(err)` 순으로 추출한다.
+function formatErr(err: unknown): string {
+  if (typeof err === "string") return err;
+  if (err instanceof Error) return err.message || String(err);
+  if (typeof err === "object" && err !== null) {
+    const e = err as Record<string, unknown>;
+    if (typeof e.message === "string" && e.message) return e.message;
+    const inner = e.error;
+    if (typeof inner === "object" && inner !== null) {
+      const m = (inner as Record<string, unknown>).message;
+      if (typeof m === "string" && m) return m;
+    }
+    if (typeof e.error === "string" && e.error) return e.error as string;
+    try {
+      return JSON.stringify(e);
+    } catch {
+      // 순환 참조 등으로 stringify가 실패하면 String(err)은 "[object Object]"로
+      // 원래 버그가 부분 재발하므로, 키 목록·식별자 기반 대체 요약을 반환한다.
+      const keys = Object.keys(e);
+      const fallback = e.code ?? e.name;
+      if (typeof fallback === "string" && fallback) {
+        return keys.length > 0 ? `${fallback} (keys: ${keys.join(", ")})` : fallback;
+      }
+      if (keys.length > 0) return `알 수 없는 오류 (keys: ${keys.join(", ")})`;
+      return "알 수 없는 오류";
+    }
+  }
+  return String(err);
+}
+
+/// Puter 세션을 보장한다 — 미인증이면 `puter.auth.signIn()` 로그인 팝업을 띄워
+/// 세션을 연결한 뒤 원래 생성 요청을 이어갈 수 있게 한다. (auth 미제공 SDK는 생성이 응답에서 요구)
+async function ensurePuterSession(): Promise<void> {
+  const txt2img = window.puter?.ai?.txt2img;
+  if (!txt2img) {
+    throw new Error("Puter.js SDK를 불러오지 못했습니다 (오프라인/스크립트 차단).");
+  }
+  const auth = window.puter?.auth;
+  if (!auth?.isSignedIn) return;
+  // 동기 boolean이면 await 없이 판정해, 사용자 클릭 제스처가 끊긴 뒤 signIn이 호출되어 팝업이 차단되는 것을 막는다.
+  let raw: boolean | Promise<boolean> = false;
+  try {
+    raw = auth.isSignedIn ? auth.isSignedIn() : false;
+  } catch {
+    raw = false;
+  }
+  const signedIn =
+    typeof raw === "boolean" ? raw : await puterIsSignedIn(() => raw as Promise<boolean>);
+  if (signedIn) return;
+  if (!auth.signIn) {
+    throw new Error("Puter 로그인(auth.signIn)을 사용할 수 없습니다 — SDK 버전을 확인하세요.");
+  }
+  await puterSignIn(auth); // 로그인 팝업 → 세션 연결 후 원래 생성 흐름 재개 (popup_blocked 안내 변환 포함)
+}
+
+/// 세션 보장 후 생성 요청. 인증 오류 감지 시 로그인 팝업으로 세션 재연결 후 원래 생성 요청을 1회 재시도한다.
+async function puterGenerateWithAuth(produce: string): Promise<unknown> {
+  const txt2img = window.puter?.ai?.txt2img;
+  if (!txt2img) {
+    throw new Error("Puter.js SDK를 불러오지 못했습니다 (오프라인/스크립트 차단).");
+  }
+  await ensurePuterSession();
+  try {
+    return await txt2img(produce);
+  } catch (err) {
+    const message = formatErr(err);
+    if (!/401|403|auth|sign|login|인증|로그인/i.test(message)) throw err;
+    await ensurePuterSession();
+    return await txt2img(produce);
+  }
 }
 
 /* ── IPC 응답 타입 (Rust 구조체 snake_case 키와 1:1 대응) ── */
@@ -150,12 +301,21 @@ export function App(): React.ReactElement {
   const [scUrls, setScUrls] = useState<string>("");
   const [scLocalDir, setScLocalDir] = useState<string>("");
   const [scOrder, setScOrder] = useState<"sequential" | "random">("sequential");
-  // `scProvider`: 수동 생성에 쓸 공급자. "puter"는 WebView 전용(Puter.js 브라우저 SDK)이라
-  // 백엔드 우선순위(`provider_order`)에는 넣지 않는다 — Rust는 브라우저 SDK를 호출할 수 없다.
-  const [scProvider, setScProvider] = useState<"pollinations" | "cloudflare-workers-ai" | "openai" | "puter">("pollinations");
-  // `ProviderId`: 백엔드 `ImageProvider` enum과 1:1 대응하는 3종만 — 우선순위 목록·저장 payload 전용.
-  type ProviderId = "pollinations" | "cloudflare-workers-ai" | "openai";
-  const FREE_FIRST_ORDER: ProviderId[] = ["pollinations", "cloudflare-workers-ai", "openai"];
+  // `ProviderId`: 이미지 공급자 전체 집합(4종) — select 옵션·우선순위 목록이 같은 PROVIDERS 상수에서 파생된다.
+  type ProviderId = "pollinations" | "puter" | "cloudflare-workers-ai" | "openai";
+  const PROVIDERS: { id: ProviderId; label: string; backend: boolean }[] = [
+    { id: "pollinations", label: "Pollinations (무료·키 불필요)", backend: true },
+    { id: "puter", label: "Puter (무료·브라우저 SDK)", backend: false },
+    { id: "cloudflare-workers-ai", label: "Cloudflare Workers AI", backend: true },
+    { id: "openai", label: "OpenAI", backend: true },
+  ];
+  const FREE_FIRST_ORDER: ProviderId[] = PROVIDERS.map((p) => p.id);
+  const providerLabel = (id: ProviderId): string => PROVIDERS.find((p) => p.id === id)?.label ?? id;
+  // Puter는 WebView 전용(Puter.js 브라우저 SDK)이라 Rust 백엔드 `ImageProvider`가 모른다 —
+  // 저장 payload와 우선순위 생성(provider_order)에는 backend:true인 공급자만 전달한다.
+  const backendOrderIds = (order: ProviderId[]): ProviderId[] =>
+    order.filter((id) => PROVIDERS.find((p) => p.id === id)?.backend);
+  const [scProvider, setScProvider] = useState<ProviderId>("pollinations");
   const [scProviderOrder, setScProviderOrder] = useState<ProviderId[]>([...FREE_FIRST_ORDER]);
   const [scCfAccount, setScCfAccount] = useState<string>("");
   const [scCfToken, setScCfToken] = useState<string>("");
@@ -164,7 +324,7 @@ export function App(): React.ReactElement {
   const [scOpenaiKey, setScOpenaiKey] = useState<string>("");
   const [scOpenaiModel, setScOpenaiModel] = useState<string>("gpt-image-1");
   const [scClearKey, setScClearKey] = useState<boolean>(false);
-  const [scPrompt, setScPrompt] = useState<string>("");
+  // 프롬프트는 좌측 ②의 단일 #prompt를 모든 AI 공급자에 공통 적용한다(중복 입력 제거).
   const [scInfo, setScInfo] = useState<string>("시나리오 미조회");
   // 자동 틱 연속 실패 횟수 (지적 #4: 에러 은폐 방지용 카운터)
   const [scAutoFail, setScAutoFail] = useState<number>(0);
@@ -191,7 +351,7 @@ export function App(): React.ReactElement {
       const s = await invoke<AppStatus>("get_app_status");
       setStatus(s);
     } catch (err) {
-      reportError(`상태 조회 실패: ${String(err)}`);
+      reportError(`상태 조회 실패: ${formatErr(err)}`);
     }
   }, []);
 
@@ -200,7 +360,7 @@ export function App(): React.ReactElement {
       const list = await invoke<MonitorInfo[]>("list_monitors");
       setMonitors(list);
     } catch (err) {
-      reportError(`모니터 조회 실패: ${String(err)}`);
+      reportError(`모니터 조회 실패: ${formatErr(err)}`);
     }
   }, []);
 
@@ -217,7 +377,11 @@ export function App(): React.ReactElement {
       if (Array.isArray(rawOrd) && rawOrd.length > 0) {
         const valid = (rawOrd as string[]).filter((v): v is ProviderId => v === "pollinations" || v === "cloudflare-workers-ai" || v === "openai");
         const dedup = [...new Set(valid)];
-        if (dedup.length > 0) setScProviderOrder(dedup);
+        if (dedup.length > 0) {
+          // 저장된 순서(백엔드 3종) + 화면 전용(Puter) 누락분을 뒤에 보태 4종 집합을 유지한다.
+          const missing = FREE_FIRST_ORDER.filter((id) => !dedup.includes(id));
+          setScProviderOrder([...dedup, ...missing]);
+        }
       } else {
         // 구 scenario.json(provider_order 없음): 단일 provider 시도로 해석 (하위호환)
         const single = (sc.provider ?? "pollinations") as ProviderId;
@@ -235,13 +399,13 @@ export function App(): React.ReactElement {
         setScOpenaiKey(sc.openai.api_key);
       }
       setScOpenaiModel(sc.openai?.model || "gpt-image-1");
-      setScPrompt(sc.prompt ?? "");
+      if (sc.prompt) setPrompt(sc.prompt);
       setScPrev(sc);
       setScInfo(
         `다음 #${sc.next_index} · 마지막 ${sc.last_run_at ?? "없음"} · ${sc.enabled ? "ON" : "OFF"}`,
       );
     } catch (err) {
-      setScInfo(`시나리오 조회 실패: ${String(err)}`);
+      setScInfo(`시나리오 조회 실패: ${formatErr(err)}`);
     }
   }, []);
 
@@ -281,7 +445,7 @@ export function App(): React.ReactElement {
             const next = n + 1;
             setScInfo(
               (prev) =>
-                `자동 업데이트 실패(${next}회 연속) — 수동 "지금 실행"으로 상세 확인: ${String(err)} · ${prev}`,
+                `자동 업데이트 실패(${next}회 연속) — 수동 "지금 실행"으로 상세 확인: ${formatErr(err)} · ${prev}`,
             );
             return next;
           });
@@ -306,7 +470,7 @@ export function App(): React.ReactElement {
           : `검색 완료: ${result.candidates.length}개 후보`,
       );
     } catch (err) {
-      reportError(`검색 실패: ${String(err)}`);
+      reportError(`검색 실패: ${formatErr(err)}`);
     } finally {
       setBusy(false);
     }
@@ -327,7 +491,7 @@ export function App(): React.ReactElement {
       setSelected(candidate);
       reportOk(`생성 완료: ${candidate.file_name}`);
     } catch (err) {
-      reportError(`생성 실패: ${String(err)}`);
+      reportError(`생성 실패: ${formatErr(err)}`);
     } finally {
       setBusy(false);
     }
@@ -337,21 +501,15 @@ export function App(): React.ReactElement {
     // provider=puter일 때: 생성은 WebView의 Puter.js SDK, 검증·스테이징·적용은
     // Rust `apply_generated_image`가 담당한다 (코어 한 곳에서 해상도/스냅샷 처리).
     if (scProvider === "puter") {
-      const aiPrompt = (scPrompt.trim() || prompt).trim();
+      const aiPrompt = prompt.trim();
       if (!aiPrompt) {
         reportError("AI 프롬프트를 입력하세요.");
         return;
       }
-      const txt2img = window.puter?.ai?.txt2img;
-      if (!txt2img) {
-        reportError(
-          "Puter.js SDK를 불러오지 못했습니다 (오프라인/스크립트 차단). 네트워크 확인 후 새로고침하세요.",
-        );
-        return;
-      }
       setBusy(true);
       try {
-        const result = await txt2img(aiPrompt);
+        // 세션 보장(auth.isSignedIn → 미인증 시 signIn 로그인 팝업) 후 생성 + 인증 오류 시 1회 재시도
+        const result = await puterGenerateWithAuth(aiPrompt);
         const dataUrl = await puterResultToBase64(result);
         const state = await invoke<WallpaperState>("apply_generated_image", {
           imageBase64: dataUrl,
@@ -372,7 +530,7 @@ export function App(): React.ReactElement {
         reportOk(`Puter 생성·적용 완료 — 백엔드: ${state.backend_used ?? "unknown"}`);
         await refreshStatus();
       } catch (err) {
-        reportError(`Puter 생성 실패 (기존 배경 유지): ${String(err)}`);
+        reportError(`Puter 생성 실패 (기존 배경 유지): ${formatErr(err)}`);
       } finally {
         setBusy(false);
       }
@@ -380,7 +538,7 @@ export function App(): React.ReactElement {
     }
     // provider=openai일 때는 OpenAI 경로로 분기한다 (저장된 api_key 폴백 포함).
     if (scProvider === "openai") {
-      const aiPrompt = (scPrompt.trim() || prompt).trim();
+      const aiPrompt = prompt.trim();
       if (!aiPrompt) {
         reportError("AI 프롬프트를 입력하세요.");
         return;
@@ -407,7 +565,7 @@ export function App(): React.ReactElement {
         reportOk(`OpenAI 생성·적용 완료 — 백엔드: ${state.backend_used ?? "unknown"}`);
         await refreshStatus();
       } catch (err) {
-        reportError(`OpenAI 생성 실패 (기존 배경 유지): ${String(err)}`);
+        reportError(`OpenAI 생성 실패 (기존 배경 유지): ${formatErr(err)}`);
       } finally {
         setBusy(false);
       }
@@ -419,7 +577,7 @@ export function App(): React.ReactElement {
       reportError("Cloudflare Account ID를 입력하세요. (API Token은 저장된 토큰 사용 — 미저장 시 입력 필요)");
       return;
     }
-    const aiPrompt = (scPrompt.trim() || prompt).trim();
+    const aiPrompt = prompt.trim();
     if (!aiPrompt) {
       reportError("AI 프롬프트를 입력하세요.");
       return;
@@ -447,7 +605,7 @@ export function App(): React.ReactElement {
       reportOk(`Cloudflare AI 생성·적용 완료 — 백엔드: ${state.backend_used ?? "unknown"}`);
       await refreshStatus();
     } catch (err) {
-      reportError(`Cloudflare AI 생성 실패 (기존 배경 유지): ${String(err)}`);
+      reportError(`Cloudflare AI 생성 실패 (기존 배경 유지): ${formatErr(err)}`);
     } finally {
       setBusy(false);
     }
@@ -477,7 +635,7 @@ export function App(): React.ReactElement {
       );
       reportOk(`적용 완료 — 백엔드: ${state.backend_used ?? "unknown"}`);
     } catch (err) {
-      reportError(`적용 실패: ${String(err)}`);
+      reportError(`적용 실패: ${formatErr(err)}`);
     } finally {
       setBusy(false);
     }
@@ -501,7 +659,7 @@ export function App(): React.ReactElement {
       );
       reportOk(`복원 완료 — 백엔드: ${state.backend_used ?? "unknown"}`);
     } catch (err) {
-      reportError(`복원 실패: ${String(err)}`);
+      reportError(`복원 실패: ${formatErr(err)}`);
     } finally {
       setBusy(false);
     }
@@ -518,11 +676,18 @@ export function App(): React.ReactElement {
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
     const localDir = scLocalDir.trim() ? scLocalDir.trim() : null;
-    const provider = scProvider;
+    // Puter는 WebView 전용 SDK라 백엔드 ImageProvider("pollinations"|"cloudflare-workers-ai"|"openai")로
+    // 역직렬화할 수 없다 — 그대로 저장하면 scenario.json 로드 시 실패한다. 저장을 명시적으로 차단한다.
+    if (scProvider === "puter") {
+      reportError("Puter는 WebView 전용 생성 경로라 시나리오 공급자로 저장할 수 없습니다. Pollinations/Cloudflare/OpenAI 중 선택 후 저장하세요.");
+      return;
+    }
+    // 위 puter 가드에서 early return했으므로 Exclude<ProviderId, "puter">로 좁혀진다.
+    const provider = scProvider as Exclude<ProviderId, "puter">;
     const cfAccount = scCfAccount.trim();
     const cfModel = scCfModel.trim() || "@cf/black-forest-labs/flux-1-schnell";
     const openaiModel = scOpenaiModel.trim() || "gpt-image-1";
-    const sharedPrompt = scPrompt.trim();
+    const sharedPrompt = prompt.trim();
     // 지적 #2: 커서·시각 보존 — 소스 구성이 바뀌어 항목 수가 달라진 경우에만 커서 리셋.
     const prevUrls = scPrev?.source.urls ?? [];
     const prevLocalDir = scPrev?.source.local_dir ?? null;
@@ -557,7 +722,7 @@ export function App(): React.ReactElement {
           last_run_at: lastRunAt,
           position,
           provider,
-          provider_order: scProviderOrder,
+          provider_order: backendOrderIds(scProviderOrder),
           prompt: sharedPrompt,
           cloudflare: { account_id: cfAccount, api_token: scCfToken, model: cfModel },
           clear_api_token: scClearToken,
@@ -582,7 +747,7 @@ export function App(): React.ReactElement {
         reportOk("시나리오 저장 완료");
       }
     } catch (err) {
-      reportError(`시나리오 저장 실패: ${String(err)}`);
+      reportError(`시나리오 저장 실패: ${formatErr(err)}`);
     } finally {
       setBusy(false);
     }
@@ -601,33 +766,79 @@ export function App(): React.ReactElement {
   };
 
   const handleGeneratePriority = async () => {
-    const aiPrompt = (scPrompt.trim() || prompt).trim();
+    const aiPrompt = prompt.trim();
     if (!aiPrompt) {
       reportError("AI 프롬프트를 입력하세요.");
       return;
     }
+    const monitor = monitorId.trim() ? monitorId.trim() : null;
     setBusy(true);
     try {
-      const state = await invoke<WallpaperState>("generate_wallpaper_priority", {
-        prompt: aiPrompt,
-        position,
-        monitorId: monitorId.trim() ? monitorId.trim() : null,
-        providerOrder: scProviderOrder,
-      });
+      // 화면 순서 = 실제 시도 순서: 화면 순서대로 1개씩 시도한다.
+      // 백엔드 호출마다 providerOrder: [id]를 전달해 (Tauri v2 camelCase → Rust provider_order)
+      // 저장하지 않은 순서 변경도 그대로 반영한다. puter 자리는 프론트 SDK로 시도한다.
+      const order = [...scProviderOrder];
+      let state: WallpaperState | null = null;
+      let usedProvider: ProviderId | null = null;
+      let lastErr: unknown = null;
+      for (const id of order) {
+        try {
+          if (id === "puter") {
+            const result = await puterGenerateWithAuth(aiPrompt);
+            const dataUrl = await puterResultToBase64(result);
+            state = await invoke<WallpaperState>("apply_generated_image", {
+              imageBase64: dataUrl,
+              label: "puter",
+              position,
+              monitorId: monitor,
+            });
+          } else {
+            state = await invoke<WallpaperState>("generate_wallpaper_priority", {
+              prompt: aiPrompt,
+              position,
+              monitorId: monitor,
+              providerOrder: [id],
+            });
+          }
+          usedProvider = id;
+          break;
+        } catch (err) {
+          lastErr = err;
+        }
+      }
+      if (!state || !usedProvider) {
+        throw lastErr ?? new Error("시도 가능한 이미지 공급자가 없습니다.");
+      }
+      const applied = state;
       setStatus((prev) =>
         prev
           ? {
               ...prev,
-              current_wallpaper: state.current_wallpaper,
-              previous_wallpaper: state.previous_wallpaper,
-              backend_used: state.backend_used,
+              current_wallpaper: applied.current_wallpaper,
+              previous_wallpaper: applied.previous_wallpaper,
+              backend_used: applied.backend_used,
             }
           : prev,
       );
-      reportOk(`우선순위 생성·적용 완료 — 백엔드: ${state.backend_used ?? "unknown"}`);
+      reportOk(
+        `우선순위 생성·적용 완료 — 공급자: ${providerLabel(usedProvider)} · 백엔드: ${applied.backend_used ?? "unknown"}`,
+      );
       await refreshStatus();
     } catch (err) {
-      reportError(`우선순위 생성 실패 (기존 배경 유지): ${String(err)}`);
+      reportError(`우선순위 생성 실패 (기존 배경 유지): ${formatErr(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handlePuterSignIn = async () => {
+    setBusy(true);
+    try {
+      await ensurePuterSession();
+      reportOk("Puter 세션 연결 완료 — 이제 이미지 생성을 사용할 수 있습니다");
+    } catch (err) {
+      console.error("Puter 로그인 원본 에러:", (() => { try { return JSON.stringify(err, Object.getOwnPropertyNames(err as object)); } catch { return String(err); } })());
+      reportError(`Puter 로그인 실패: ${formatErr(err)}`);
     } finally {
       setBusy(false);
     }
@@ -655,7 +866,7 @@ export function App(): React.ReactElement {
       await refreshScenario();
       await refreshStatus();
     } catch (err) {
-      reportError(`시나리오 실행 실패: ${String(err)}`);
+      reportError(`시나리오 실행 실패: ${formatErr(err)}`);
     } finally {
       setBusy(false);
     }
@@ -726,7 +937,7 @@ export function App(): React.ReactElement {
           <section>
             <h2>② 생성</h2>
             <div className="field">
-              <label htmlFor="prompt">프롬프트 (테마)</label>
+              <label htmlFor="prompt">프롬프트 (테마 — 모든 AI 이미지 생성에 공통 적용)</label>
               <textarea
                 id="prompt"
                 value={prompt}
@@ -902,17 +1113,21 @@ export function App(): React.ReactElement {
                   )
                 }
               >
-                <option value="pollinations">Pollinations (무료·키 불필요)</option>
-                <option value="cloudflare-workers-ai">Cloudflare Workers AI</option>
-                <option value="openai">OpenAI</option>
-                <option value="puter">Puter (무료·브라우저 SDK)</option>
+                {PROVIDERS.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}
+                  </option>
+                ))}
               </select>
             </div>
             <div className="field">
               <label>이미지 생성 우선순위 (폴백 순서 — 위부터 시도, 실패 시 다음 공급자)</label>
               {scProviderOrder.map((p, i) => (
                 <div key={p} style={{ display: "flex", gap: "6px", alignItems: "center", marginBottom: "4px" }}>
-                  <span style={{ minWidth: "160px" }}>{i + 1}. {p === "pollinations" ? "Pollinations (무료)" : p === "cloudflare-workers-ai" ? "Cloudflare Workers AI" : "OpenAI"}</span>
+                  <span style={{ minWidth: "160px" }}>
+                    {i + 1}. {providerLabel(p)}
+                    {p === "puter" ? " — 백엔드 폴백 제외(WebView 전용)" : ""}
+                  </span>
                   <button type="button" onClick={() => moveProviderOrder(i, -1)} disabled={busy || i === 0}>▲</button>
                   <button type="button" onClick={() => moveProviderOrder(i, 1)} disabled={busy || i === scProviderOrder.length - 1}>▼</button>
                 </div>
@@ -920,7 +1135,10 @@ export function App(): React.ReactElement {
               <div style={{ display: "flex", gap: "6px", marginTop: "4px" }}>
                 <button type="button" onClick={() => setScProviderOrder([...FREE_FIRST_ORDER])} disabled={busy}>무료 우선으로 초기화</button>
               </div>
-              <div className="detail">기본값: 무료 우선 = Pollinations → Cloudflare → OpenAI (키 없는 공급자는 자동 건너뜀)</div>
+              <div className="detail">
+                기본값: 무료 우선 = Pollinations → Puter → Cloudflare → OpenAI.
+                키 없는 공급자는 자동 건너뛰고, Puter는 브라우저 전용이라 백엔드 폴백(시나리오 자동 실행)에서 제외됩니다.
+              </div>
             </div>
             <button
               type="button"
@@ -931,15 +1149,6 @@ export function App(): React.ReactElement {
             >
               우선순위로 생성·적용
             </button>
-            <div className="field">
-              <label htmlFor="scPrompt">프롬프트 (모든 AI 공급자 공통)</label>
-              <textarea
-                id="scPrompt"
-                value={scPrompt}
-                onChange={(e) => setScPrompt(e.target.value)}
-                placeholder="예: aurora over icy mountains, ultra detailed"
-              />
-            </div>
             {scProvider === "cloudflare-workers-ai" && (
               <>
                 <div className="field">
@@ -1053,6 +1262,15 @@ export function App(): React.ReactElement {
                     API 키 입력은 필요 없습니다 (Puter 세션 사용). SDK 로드 실패 시 명시적 오류가 표시됩니다.
                   </div>
                 </div>
+                <button
+                  type="button"
+                  className="block"
+                  onClick={() => void handlePuterSignIn()}
+                  disabled={busy}
+                  style={{ marginBottom: "8px" }}
+                >
+                  Puter 로그인 (세션 연결)
+                </button>
                 <button
                   type="button"
                   className="primary block"

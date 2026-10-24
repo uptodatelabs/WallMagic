@@ -46,11 +46,14 @@ pub enum ScenarioOrder {
 }
 
 /// 이미지 공급자 (시나리오 자동 업데이트·수동 생성 공용).
+/// Puter는 WebView 전용 SDK라 Rust에서 직접 생성할 수 없어 스킵된다 —
+/// 프론트가 화면 순서 자리에서 직접 시도하므로 순서를 보존하기 위해 variant로 유지한다.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum ImageProvider {
     #[default]
     Pollinations,
+    Puter,
     CloudflareWorkersAi,
     Openai,
 }
@@ -116,6 +119,8 @@ pub fn provider_is_configured(settings: &ScenarioSettings, provider: ImageProvid
                 && !settings.cloudflare.api_token.trim().is_empty()
         }
         ImageProvider::Openai => !settings.openai.api_key.trim().is_empty(),
+        // Puter는 WebView 전용 SDK라 Rust 백엔드에서 직접 생성할 수 없어 항상 스킵한다.
+        ImageProvider::Puter => false,
     }
 }
 
@@ -201,6 +206,9 @@ pub fn generate_ai_with_fallback(
             let oa = &settings.openai;
             generate_openai_wallpaper(&oa.api_key, &oa.model, trimmed, dest)
         }
+        ImageProvider::Puter => Err(WallpaperError::CandidateLoad(
+            "Puter skipped: browser SDK only".to_string(),
+        )),
     })
 }
 

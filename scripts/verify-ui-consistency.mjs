@@ -80,6 +80,18 @@ check(
   "ensurePuterSession 헬퍼 미정의 또는 auth.isSignedIn/auth.signIn 호출 누락"
 );
 
+// 8-2. isSignedIn 안전 래퍼 — SDK가 동기 boolean을 반환해도 동작해야 한다.
+//      `auth.isSignedIn().catch(...)` 직접 체이닝은
+//      `TypeError: auth.isSignedIn(...).catch is not a function`을 유발하므로 금지.
+//      puterIsSignedIn() 래퍼(Promise.resolve 정규화 + try/catch)를 경유할 것.
+check(
+  "ensurePuterSession이 동기·비동기 안전 래퍼 puterIsSignedIn 사용 (.catch 직접 체이닝 금지)",
+  /async function puterIsSignedIn/.test(src) &&
+    src.includes("Promise.resolve") &&
+    !/isSignedIn\(\)\.catch\(/.test(src),
+  "puterIsSignedIn 래퍼 미정의 또는 isSignedIn().catch 직접 체이닝 잔존"
+);
+
 // 9. 생성 헬퍼가 세션 보장 → txt2img → 인증 오류 시 signIn 후 재시도
 //    구현 설계상 signIn 호출은 ensurePuterSession에 위임되므로 본문 리터럴 "signIn"이 아니라
 //    (a) ensurePuterSession 호출(사전 세션 보장) + (b) txt2img 생성 + (c) catch 재시도 분기
