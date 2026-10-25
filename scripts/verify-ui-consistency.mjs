@@ -107,12 +107,34 @@ check(
 );
 
 // 10. 실제 생성 지점은 헬퍼 경유 — 핸들러 내 직접 txt2img 호출 금지(로그인 미연결로 생성이 안 되던 현상 방지)
+//     헬퍼는 이제 모델 옵션 유무를 `call` 클로저로 분기하므로 `await txt2img(` 형태가 아니라
+//     `txt2img(...)` 두 형태(모델 지정/기본)로 나타난다. 따라서 "await txt2img(" 개수가 아니라
+//     "전체 파일의 txt2img( 호출이 모두 헬퍼 본문 안에 있는가"로 검사한다.
+/** 함수 본문을 중괄호 깊이 기반으로 추출한다(다음 함수 포함 오탐 방지). */
+function bodyOf(signature) {
+  const at = src.indexOf(signature);
+  if (at < 0) return "";
+  const open = src.indexOf("{", at);
+  if (open < 0) return "";
+  let depth = 0;
+  for (let i = open; i < src.length; i += 1) {
+    const ch = src[i];
+    if (ch === "{") depth += 1;
+    else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) return src.slice(open + 1, i);
+    }
+  }
+  return "";
+}
 const genCallCount = (src.match(/puterGenerateWithAuth\(/g) ?? []).length;
-const directTxt2img = (src.match(/await txt2img\(/g) ?? []).length;
+const helperTxt2imgBody = bodyOf("async function puterGenerateWithAuth");
+const allTxt2img = (src.match(/\btxt2img\(/g) ?? []).length;
+const helperTxt2img = (helperTxt2imgBody.match(/\btxt2img\(/g) ?? []).length;
 check(
   "생성 지점이 puterGenerateWithAuth 경유 (핸들러 내 직접 txt2img 호출 금지)",
-  genCallCount >= 3 && directTxt2img === 2,
-  `helper 참조 ${genCallCount}회(정의+생성지점 2) / 직접 txt2img ${directTxt2img}회 (헬퍼 내부 2회만 허용)`
+  genCallCount >= 3 && helperTxt2img >= 2 && allTxt2img === helperTxt2img,
+  `helper 참조 ${genCallCount}회(정의+생성지점 2) / 전체 txt2img 호출 ${allTxt2img}회 중 헬퍼 내부 ${helperTxt2img}회 (전체 == 헬퍼 내부여야 함)`
 );
 
 // 11. 수동 로그인 버튼 노출 (생성 전 세션 연결 가능)

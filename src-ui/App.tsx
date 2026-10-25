@@ -19,6 +19,29 @@ declare global {
   }
 }
 
+/// Puter `txt2img`가 지원하는 이미지 모델 목록 — Puter.js 공식 문서 기준.
+/// 근거: https://developer.puter.com/tutorials/free-unlimited-image-generation-api/ (모델 목록)
+///       https://docs.puter.com/AI/txt2img/ (options.model, 제공자 기본 모델표)
+/// 모델 ID를 생략하면 Puter가 제공자 기본 모델(현재 OpenAI `gpt-image-2`)을 고르므로,
+/// UI의 "(기본 모델)" 항목은 options 자체를 넘기지 않는 것과 동일하다.
+const PUTER_IMAGE_MODELS: { id: string; label: string }[] = [
+  { id: "openai/gpt-image-2", label: "GPT Image 2 (Puter 기본값)" },
+  { id: "openai/gpt-image-2.5-flare", label: "GPT Image 2.5 Flare" },
+  { id: "openai/gpt-image-2.5-sunburst", label: "GPT Image 2.5 Sunburst" },
+  { id: "google/gemini-3-pro-image", label: "Nano Banana Pro (Gemini 3 Pro Image)" },
+  { id: "google/gemini-3.1-flash-image", label: "Gemini 3.1 Flash Image" },
+  { id: "google/imagen-4.0", label: "Imagen 4.0" },
+  { id: "black-forest-labs/flux-2-pro", label: "FLUX.2 [pro]" },
+  { id: "black-forest-labs/flux-2-dev", label: "FLUX.2 [dev]" },
+  { id: "black-forest-labs/flux-2-klein-9b-base", label: "FLUX.2 [klein] 9B" },
+  { id: "black-forest-labs/flux-1.1-pro", label: "FLUX 1.1 [pro]" },
+  { id: "black-forest-labs/flux-schnell", label: "FLUX.1 schnell (빠름)" },
+  { id: "x-ai/grok-imagine-image-2.0", label: "Grok Imagine Image 2.0" },
+  { id: "leonardoai/lucid-origin", label: "Leonardo Lucid Origin" },
+  { id: "qwen/qwen-image", label: "Qwen Image" },
+  { id: "stabilityai/stable-diffusion-xl-base-1.0", label: "Stable Diffusion XL" },
+];
+
 /// Blob → data URL(base64) 변환.
 function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -42,6 +65,21 @@ async function puterResultToBase64(result: unknown): Promise<string> {
   }
   if (result instanceof Blob) return blobToBase64(result);
   if (result instanceof HTMLImageElement) {
+    // Puter는 원격(https) URL을 src로 가진 <img>를 돌려준다. 그 이미지를 canvas에 그대로
+    // 그리면 cross-origin taint로 canvas가 오염되어 data URL 추출이 SecurityError로 실패한다
+    // (증상: 생성은 되는데 항상 실패로 보고됨). 그러므로 src를 먼저 fetch → Blob → base64로
+    // 처리하고, fetch가 불가능한 경우(동일 출처/data:/blob: 등)에만 canvas로 폴백한다.
+    const src = result.currentSrc || result.src;
+    if (src) {
+      try {
+        const resp = await fetch(src);
+        if (!resp.ok) throw new Error(`Puter 이미지 다운로드 실패: HTTP ${resp.status}`);
+        return await blobToBase64(await resp.blob());
+      } catch (err) {
+        // fetch 실패는 치명적이지 않다 — 동일 출처 이미지는 아래 canvas 경로로도 성공한다.
+        console.warn("Puter 이미지 fetch 실패 — canvas 폴백 시도:", formatErr(err));
+      }
+    }
     const canvas = document.createElement("canvas");
     canvas.width = result.naturalWidth || result.width;
     canvas.height = result.naturalHeight || result.height;
@@ -204,19 +242,23 @@ async function ensurePuterSession(): Promise<void> {
 }
 
 /// 세션 보장 후 생성 요청. 인증 오류 감지 시 로그인 팝업으로 세션 재연결 후 원래 생성 요청을 1회 재시도한다.
-async function puterGenerateWithAuth(produce: string): Promise<unknown> {
+async function puterGenerateWithAuth(produce: string, model?: string): Promise<unknown> {
   const txt2img = window.puter?.ai?.txt2img;
   if (!txt2img) {
     throw new Error("Puter.js SDK를 불러오지 못했습니다 (오프라인/스크립트 차단).");
   }
+  // 모델이 비어 있으면 options를 넘기지 않아 Puter 기본 모델을 쓴다.
+  // (빈 문자열을 model로 보내면 bad_request가 되므로 undefined로 정규화한다)
+  const selected = model && model.trim() ? model.trim() : undefined;
+  const call = () => (selected ? txt2img(produce, { model: selected }) : txt2img(produce));
   await ensurePuterSession();
   try {
-    return await txt2img(produce);
+    return await call();
   } catch (err) {
     const message = formatErr(err);
     if (!/401|403|auth|sign|login|인증|로그인/i.test(message)) throw err;
     await ensurePuterSession();
-    return await txt2img(produce);
+    return await call();
   }
 }
 
@@ -342,6 +384,8 @@ export function App(): React.ReactElement {
   const [scOpenaiKey, setScOpenaiKey] = useState<string>("");
   const [scOpenaiModel, setScOpenaiModel] = useState<string>("gpt-image-1");
   const [scClearKey, setScClearKey] = useState<boolean>(false);
+  // Puter 이미지 모델 — 빈 문자열이면 options를 넘기지 않아 Puter 기본 모델을 쓴다.
+  const [scPuterModel, setScPuterModel] = useState<string>("");
   // 프롬프트는 좌측 ②의 단일 #prompt를 모든 AI 공급자에 공통 적용한다(중복 입력 제거).
   const [scInfo, setScInfo] = useState<string>("시나리오 미조회");
   // 자동 틱 연속 실패 횟수 (지적 #4: 에러 은폐 방지용 카운터)
@@ -577,7 +621,7 @@ export function App(): React.ReactElement {
       setBusy(true);
       try {
         // 세션 보장(auth.isSignedIn → 미인증 시 signIn 로그인 팝업) 후 생성 + 인증 오류 시 1회 재시도
-        const result = await puterGenerateWithAuth(aiPrompt);
+        const result = await puterGenerateWithAuth(aiPrompt, scPuterModel);
         const dataUrl = await puterResultToBase64(result);
         const state = await invoke<WallpaperState>("apply_generated_image", {
           imageBase64: dataUrl,
@@ -852,7 +896,7 @@ export function App(): React.ReactElement {
       for (const id of order) {
         try {
           if (id === "puter") {
-            const result = await puterGenerateWithAuth(aiPrompt);
+            const result = await puterGenerateWithAuth(aiPrompt, scPuterModel);
             const dataUrl = await puterResultToBase64(result);
             state = await invoke<WallpaperState>("apply_generated_image", {
               imageBase64: dataUrl,
@@ -1328,6 +1372,24 @@ export function App(): React.ReactElement {
                     생성은 WebView의 <b>Puter.js</b>(<code>puter.ai.txt2img</code>)가 수행하고,
                     결과 이미지는 Rust 커맨드 <code>apply_generated_image</code>가 해상도 검증·스테이징·적용합니다.
                     API 키 입력은 필요 없습니다 (Puter 세션 사용). SDK 로드 실패 시 명시적 오류가 표시됩니다.
+                  </div>
+                </div>
+                <div className="field">
+                  <label htmlFor="scPuterModel">이미지 모델</label>
+                  <select
+                    id="scPuterModel"
+                    value={scPuterModel}
+                    onChange={(e) => setScPuterModel(e.target.value)}
+                  >
+                    {PUTER_IMAGE_MODELS.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.label}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="detail">
+                    모델을 선택하지 않으면 Puter 기본 모델(OpenAI gpt-image-2)이 사용됩니다.
+                    모델마다 결과 화질·속도·사용 크레딧이 다릅니다.
                   </div>
                 </div>
                 <button
