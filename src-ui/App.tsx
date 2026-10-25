@@ -908,10 +908,12 @@ export function App(): React.ReactElement {
     const monitor = monitorId.trim() ? monitorId.trim() : null;
     setBusy(true);
     try {
-      // 화면 순서 = 실제 시도 순서: 화면 순서대로 1개씩 시도한다.
+      // 화면 1순위 = 선택한 공급자: select 로 고른 공급자를 먼저 시도하고, 나머지는
+      // 우선순위 목록 순서대로 폴백한다. (기존 `[...scProviderOrder]` 는 Pollinations 가
+      // 키 불필요로 항상 1순위 성공 → Puter 를 선택해도 시도조차 되지 않았다)
       // 백엔드 호출마다 providerOrder: [id]를 전달해 (Tauri v2 camelCase → Rust provider_order)
       // 저장하지 않은 순서 변경도 그대로 반영한다. puter 자리는 프론트 SDK로 시도한다.
-      const order = [...scProviderOrder];
+      const order = [scProvider, ...scProviderOrder.filter((id) => id !== scProvider)];
       let state: WallpaperState | null = null;
       let usedProvider: ProviderId | null = null;
       let lastErr: unknown = null;
@@ -921,6 +923,25 @@ export function App(): React.ReactElement {
       for (const id of order) {
         try {
           if (id === "puter") {
+            // 폴백 자리의 puter — 사용자가 Puter 를 1순위로 고르지 않았는데 로그인 팝업이
+            // 뜨면 기존 무료 생성 흐름을 방해한다. 로그인 상태가 아니면 팝업 없이 건너뛰고,
+            // 건너뛴 사유를 failedBefore 에 남겨 결과 메시지에 표시한다 (무음 스킵 금지).
+            if (scProvider !== "puter") {
+              const auth = window.puter?.auth;
+              if (!auth || !auth.isSignedIn) {
+                lastErr = new Error("Puter.js SDK 미로드");
+                failedBefore.push(`${providerLabel(id)}: SDK 미로드 — 건너뜀`);
+                continue;
+              }
+              const signedIn = await puterIsSignedIn(() =>
+                auth.isSignedIn ? auth.isSignedIn() : false,
+              );
+              if (!signedIn) {
+                lastErr = new Error("Puter 로그인 상태 아님");
+                failedBefore.push(`${providerLabel(id)}: 로그인 상태 아님 — 건너뜀`);
+                continue;
+              }
+            }
             const result = await puterGenerateWithAuth(aiPrompt, scPuterModel);
             const dataUrl = await puterResultToBase64(result);
             state = await invoke<WallpaperState>("apply_generated_image", {
