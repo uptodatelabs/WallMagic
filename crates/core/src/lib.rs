@@ -28,10 +28,11 @@ pub use search::{
     WallpaperCandidate, SearchResult, SUPPORTED_EXTENSIONS,
 };
 pub use wallpaper::{
-    app_data_dir, generate_online_wallpaper, generate_sample_wallpaper, get_current_wallpaper,
-    is_staged_path, list_monitors, load_state, normalize_to_hd, record_generation,
-    restore_wallpaper, save_state, set_wallpaper, set_wallpaper_with, state_file_path,
-    validate_and_stage_image, WallpaperError, WallpaperPosition, WallpaperState, MonitorInfo,
+    app_data_dir, generate_online_wallpaper, generate_sample_wallpaper, generation_sidecar_path,
+    get_current_wallpaper, is_staged_path, list_monitors, load_state, normalize_to_hd,
+    read_generation_sidecar, record_generation, restore_wallpaper, save_state, set_wallpaper,
+    set_wallpaper_with, state_file_path, validate_and_stage_image, write_generation_sidecar,
+    GenerationSidecar, WallpaperError, WallpaperPosition, WallpaperState, MonitorInfo,
 };
 
 // NOTE: The canonical doc comments for the re-exported items live on their definitions

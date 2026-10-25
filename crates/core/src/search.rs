@@ -10,7 +10,9 @@
 //! 필터)만 수행해 `total_matched`(매칭 전체 수)를 정확히 센다 — Pictures에 이미지가
 //! 수천 장이어도 IPC 페이로드와 디코딩 시간은 상한으로 묶인다.
 
-use crate::wallpaper::{generate_online_wallpaper, WallpaperError};
+use crate::wallpaper::{
+    generate_online_wallpaper, read_generation_sidecar, write_generation_sidecar, WallpaperError,
+};
 use std::time::Duration;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use image::ImageFormat;
@@ -27,6 +29,11 @@ pub struct WallpaperCandidate {
     pub height: u32,
     pub size_bytes: u64,
     pub thumb_base64: String,
+    /// 이 파일 자체의 생성 정보(사이드카 `.geninfo.json`) — "현재 배경"(state.json)과 분리된 귀속.
+    #[serde(default)]
+    pub gen_provider: Option<String>,
+    #[serde(default)]
+    pub gen_source: Option<String>,
 }
 
 /// 검색 결과 묶음: 후보 목록 + 잘림(truncation) 정보.
@@ -93,6 +100,9 @@ fn is_supported_image(path: &Path) -> bool {
 /// 파일을 열어 유효한 후보(디코딩 가능 + 640x480 이상)로 변환하고 썸네일을 생성한다.
 /// 유효하지 않으면 `None`을 반환한다 — 검색 결과에는 "적용 가능한 후보"만 노출한다.
 pub fn load_candidate(path: &Path) -> Option<WallpaperCandidate> {
+    // 파일 자체의 생성 정보(사이드카)를 먼저 읽는다 — "현재 배경" state.json 과 무관한 귀속.
+    // 사이드카가 없으면(미기록) None 이므로 후보의 gen_* 는 null 로 표시된다.
+    let gen = read_generation_sidecar(path);
     let img = image::open(path).ok()?;
     let (width, height) = (img.width(), img.height());
     if width < 640 || height < 480 {
@@ -120,6 +130,8 @@ pub fn load_candidate(path: &Path) -> Option<WallpaperCandidate> {
         height,
         size_bytes: meta.len(),
         thumb_base64: BASE64.encode(&buf),
+        gen_provider: gen.as_ref().and_then(|s| s.provider.clone()),
+        gen_source: gen.as_ref().and_then(|s| s.source.clone()),
     })
 }
 
@@ -361,6 +373,16 @@ pub fn generate_library_wallpaper(prompt: &str) -> Result<WallpaperCandidate, Wa
     let out_path = library.join(file_name);
 
     generate_online_wallpaper(prompt, &out_path)?;
+
+    // 생성 파일 자체에 귀속을 남긴다 (사이드카 `.geninfo.json`).
+    // "② 생성"은 배경을 적용하지 않으므로 state.json 이 갱신되지 않고, 미리보기에서
+    // "현재 배경" 기록(예: 과거 Puter 생성)과 오귀속되는 사태가 있었다.
+    write_generation_sidecar(
+        &out_path,
+        Some("pollinations"),
+        Some(&format!("Pollinations (무료 이미지 API) · prompt: {prompt}")),
+    )?;
+
     load_candidate(&out_path).ok_or_else(|| {
         WallpaperError::CandidateLoad(out_path.to_string_lossy().to_string())
     })

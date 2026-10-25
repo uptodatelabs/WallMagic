@@ -225,6 +225,13 @@ pub fn apply_generated_image_impl(
         }
     };
 
+    // 생성 파일 자체에도 사이드카를 남긴다 (검수 지적: 읽는 곳이 없던 미완성 계약).
+    // 파일이 스스로 귀속 정보를 갖고 있어야 "현재 배경" 기록(state.json)과 어긋나도
+    // 해당 이미지가 어떤 공급자로 만들어졌는지 파일 단위로 정확히 표시된다.
+    // 사이드카 기록 실패는 조용히 넘기지 않고 적용 자체를 실패시킨다 (무음 손실 금지).
+    wallmagic_core::write_generation_sidecar(&path, Some(label), Some(&detail))
+        .map_err(err_to_string)?;
+
     // `set_wallpaper_with`가 내부에서 디코딩·해상도(640x480) 검증·스테이징을 수행하므로
     // 손상 payload나 저해상도 이미지는 여기서 명시적 오류로 실패한다 (조용한 폴스루 없음).
     wallmagic_core::set_wallpaper_with(&path, monitor_id, pos, Some(label), Some(&detail))

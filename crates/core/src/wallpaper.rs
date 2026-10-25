@@ -426,6 +426,66 @@ pub fn record_generation(state: &mut WallpaperState, provider: Option<&str>, sou
     state.source = norm(source);
 }
 
+/// 이미지 파일 옆에 저장하는 생성 정보 사이드카(`.geninfo.json`).
+/// 생성 파일은 배경으로 적용되기 전까진 state.json 에 기록되지 않으므로,
+/// 미리보기(라이브러리 후보) 단계의 파일이 **자신이 어떤 경로로 생성됐는지**를
+/// 스스로 갖고 있어야 "현재 배경" 기록과 혼동되지 않는다 (오귀속 방지).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct GenerationSidecar {
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+/// 이미지 파일의 사이드카 경로: `<원본 파일명>.geninfo.json`
+/// (예: `generated_Cyberpunk_541ef24f.jpg` → `generated_Cyberpunk_541ef24f.jpg.geninfo.json`)
+/// 이 형식은 스테이징 전후 파일(다른 디렉터리)에서도 이름으로 연결된다.
+pub fn generation_sidecar_path(image_path: &Path) -> PathBuf {
+    let mut file_name = image_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    file_name.push_str(".geninfo.json");
+    image_path.with_file_name(file_name)
+}
+
+fn norm_str(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
+/// 이미지 파일 옆에 생성 정보 사이드카를 기록한다.
+/// provider/source 둘 다 비면(빈 문자열·공백 포함) 기록하지 않는다 — 무정보 사이드카 금지.
+/// 기록 실패는 호출부가 정책을 결정하도록 Result 를 반환한다.
+pub fn write_generation_sidecar(
+    image_path: &Path,
+    provider: Option<&str>,
+    source: Option<&str>,
+) -> Result<(), WallpaperError> {
+    let sidecar = GenerationSidecar {
+        provider: norm_str(provider),
+        source: norm_str(source),
+    };
+    if sidecar.provider.is_none() && sidecar.source.is_none() {
+        return Ok(());
+    }
+    let path = generation_sidecar_path(image_path);
+    let json = serde_json::to_string_pretty(&sidecar)?;
+    fs::write(&path, json)?;
+    Ok(())
+}
+
+/// 이미지 파일의 생성 정보 사이드카를 읽는다.
+/// 파일이 없거나 파싱할 수 없으면 `None` — 생성 정보 미기록 상태를 뜻한다.
+pub fn read_generation_sidecar(image_path: &Path) -> Option<GenerationSidecar> {
+    let path = generation_sidecar_path(image_path);
+    let text = fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
 /// `set_wallpaper` + 생성 정보 기록. 실제 생성 경로(공급자·모델)를 함께 남긴다.
 pub fn set_wallpaper_with(
     candidate_path: &Path,
@@ -435,6 +495,15 @@ pub fn set_wallpaper_with(
     source: Option<&str>,
 ) -> Result<WallpaperState, WallpaperError> {
     let staged_path = validate_and_stage_image(candidate_path, monitor_id)?;
+    // 스테이징 파일(`active/`)에도 생성 정보 사이드카를 남긴다 — 적용된 파일이
+    // 스스로 어떤 공급자/경로로 만들어졌는지 갖고 있어야 "현재 배경" 기록(state.json)과
+    // 파일 단위 귀속이 어긋나지 않는다 (검수 지적: 사이드카 읽는 곳이 없던 미완성 계약).
+    if let Err(e) = write_generation_sidecar(&staged_path, provider, source) {
+        tracing::warn!(
+            "generation sidecar write failed ({}): {e}",
+            staged_path.display()
+        );
+    }
     let mut state = load_state().unwrap_or_default();
 
     // Capture current OS wallpaper before overwriting so we can restore reliably.

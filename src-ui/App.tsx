@@ -271,6 +271,9 @@ export interface WallpaperCandidate {
   height: number;
   size_bytes: number;
   thumb_base64: string;
+  /** 이 파일 자체의 생성 정보(사이드카 `.geninfo.json`) — "현재 배경" state.json 과 분리된 귀속 */
+  gen_provider?: string | null;
+  gen_source?: string | null;
 }
 
 export interface SearchResult {
@@ -1292,7 +1295,23 @@ export function App(): React.ReactElement {
 
           {/* gen-info:start — ③ 미리보기 안에서도 생성 경로를 항상 보여준다
               (상태바(footer)만으로는 생성 직후 어떤 공급자로 만들어졌는지 눈에 띄지 않아
-               Puter 결과와 무료 폴백(Pollinations) 결과를 구분할 수 없다는 지적 반영) */}
+               Puter 결과와 무료 폴백(Pollinations) 결과를 구분할 수 없다는 지적 반영)
+
+              귀속은 두 가지로 분리해 표시한다 (검수 지적: "Pollinations로 생성했는데
+              Puter로 표시" 오표시 재발 방지):
+              - "생성 정보 (미리보기 파일)": 미리보고 있는 파일 자신의 생성 정보 —
+                파일 옆 사이드카(.geninfo.json)에서 읽은 값 (load_candidate → gen_provider/gen_source).
+              - "생성 정보 (현재 배경)": OS 배경(state.json) 기록 — 이 파일과 무관할 수 있다. */}
+          <div className="gen-info" id="genInfoPreview" title={selected?.gen_source ?? undefined}>
+            <div className="gen-info-label">생성 정보 (미리보기 파일)</div>
+            <div className="gen-info-value">
+              {selected?.gen_provider
+                ? `${providerLabel(selected.gen_provider as ProviderId)}${
+                    selected.gen_source ? ` · ${selected.gen_source}` : ""
+                  }`
+                : "(이 파일의 생성 정보 미기록 — 사이드카 없음)"}
+            </div>
+          </div>
           <div className="gen-info" id="genInfo" title={status?.source ?? undefined}>
             <div className="gen-info-label">생성 정보 (현재 배경)</div>
             <div className="gen-info-value">
@@ -1309,7 +1328,7 @@ export function App(): React.ReactElement {
             ) : null}
             {genPath && selPath && !genMatchesSelected && selected ? (
               <div className="gen-info-warn" id="genInfoMismatch">
-                현재 배경과 다른 파일 — 위 미리보기({selected.file_name})의 생성 정보가 아닙니다.
+                현재 배경과 다른 파일 — "생성 정보 (현재 배경)"은 위 미리보기({selected.file_name})의 정보가 아닙니다. 이 이미지의 정보는 위 "생성 정보 (미리보기 파일)"을 보세요.
               </div>
             ) : null}
           </div>
