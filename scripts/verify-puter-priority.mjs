@@ -15,16 +15,50 @@
 ///  3) 건너뛴 사유가 failedBefore 에 누적되어 사용자 메시지에 표시된다(무음 스킵 금지).
 ///  4) 성공 시에도 앞선 실패/스킵 사유가 메시지에 포함된다.
 ///
-/// 사용: node scripts/verify-puter-priority.mjs [--red]
-///   --red: 수정 이전 형태(주문 그대로 + puter 로그인 가드 없음)를 메모리에서 재구성해 FAIL 재현.
+/// 사용: node scripts/verify-puter-priority.mjs [--file=<path> | --git=<rev> | --red]
+///   --file=<path> : 지정 파일(예: .multicode-backups 의 실제 백업 스냅샷)을 그대로 검사 → 실제 Red 재현
+///   --git=<rev>   : 해당 개정의 src-ui/App.tsx 를 git 에서 읽어 검사 → 실제 Red 재현
+///   --red         : (파일·개정 미지정 시) 수정 이전 형태를 메모리에서 재구성 — 증거 강도 약함, 폴백용
 import fs from "node:fs";
 import path from "node:path";
 
 const RED = process.argv.includes("--red");
-const file = path.join(process.cwd(), "src-ui", "App.tsx");
-let ui = fs.readFileSync(file, "utf8");
 
-if (RED) {
+/// 검사 대상 파일 해석.
+///  기본            : 현재 작업본 src-ui/App.tsx (Green 판정)
+///  --file=<path>   : 지정 파일을 그대로 읽어 검사 (예: .multicode-backups 의 실제 백업 스냅샷)
+///  --git=<rev>     : 해당 개정의 src-ui/App.tsx 를 git 에서 읽어 검사 (예: 수정 커밋의 부모)
+///  --red           : 과거 형태를 메모리에서 재구성 (파일 지정이 없을 때만 사용)
+///
+/// 배경: --red 재구성은 수정 전 형태를 "메모리에서 흉내"내는 것이라 Red 증거의 강도가 약하다.
+///  실제 백업 파일(--file)이나 실제 커밋 이력(--git)을 지정하면 저장소에 존재했던 실제 소스로
+///  FAIL 을 재현하므로 증거 강도가 실재현에 가까워진다.
+const argOf = (name) => {
+  const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
+  return hit ? hit.slice(name.length + 3) : null;
+};
+const explicitFile = argOf("file");
+const gitRev = argOf("git");
+
+let file;
+let ui;
+if (gitRev) {
+  const { execFileSync } = await import("node:child_process");
+  const spec = `${gitRev}:src-ui/App.tsx`;
+  file = spec;
+  ui = execFileSync("git", ["show", spec], { encoding: "utf8", cwd: process.cwd() });
+} else {
+  file = explicitFile
+    ? path.resolve(process.cwd(), explicitFile)
+    : path.join(process.cwd(), "src-ui", "App.tsx");
+  ui = fs.readFileSync(file, "utf8");
+}
+console.log(`검사 대상: ${file}${RED ? " (--red)" : ""}`);
+
+// 실제 파일·이력이 지정되면 그 자체가 수정 이전 소스이므로 메모리 재구성은 하지 않는다.
+const RED_RECONSTRUCT = RED && !explicitFile && !gitRev;
+
+if (RED_RECONSTRUCT) {
   // 수정 이전 형태 재구성 — ① 순서는 저장된 배열 그대로 ② puter 로그인 가드 없음.
   ui = ui.replace(
     /const order = \[scProvider, \.\.\.scProviderOrder\.filter\(\(id\) => id !== scProvider\)\];/,
