@@ -29,6 +29,11 @@ pub struct AppStatus {
     pub current_wallpaper: String,
     pub previous_wallpaper: Option<String>,
     pub backend_used: Option<String>,
+    /// 생성 공급자 식별자: `pollinations` | `puter` | `cloudflare-workers-ai`
+    /// | `openai` | `local-file` | `url` (없으면 이 배경은 앱이 생성한 것이 아니다).
+    pub provider: Option<String>,
+    /// 생성 경로 상세 (사용 모델명·SDK 등). UI 가 "생성 정보"로 그대로 표시한다.
+    pub source: Option<String>,
     pub data_dir: String,
 }
 
@@ -162,12 +167,14 @@ fn apply_generated_image(
     label: Option<String>,
     position: Option<String>,
     monitor_id: Option<String>,
+    model: Option<String>,
 ) -> Result<WallpaperState, String> {
     apply_generated_image_impl(
         &image_base64,
         label.as_deref(),
         position.as_deref(),
         monitor_id.as_deref(),
+        model.as_deref(),
     )
 }
 
@@ -176,6 +183,7 @@ pub fn apply_generated_image_impl(
     label: Option<&str>,
     position: Option<&str>,
     monitor_id: Option<&str>,
+    model: Option<&str>,
 ) -> Result<WallpaperState, String> {
     let pos = parse_position_arg(position)?;
     let bytes = decode_image_payload(image_base64)?;
@@ -194,9 +202,18 @@ pub fn apply_generated_image_impl(
     let path = dir.join(format!("puter_{safe}.png"));
     std::fs::write(&path, &bytes).map_err(|e| format!("write generated image failed: {e}"))?;
 
-    // `set_wallpaper`가 내부에서 디코딩·해상도(640x480) 검증·스테이징을 수행하므로
+    // 생성 정보 기록: WebView(Puter.js)가 만든 이미지도 `state.json` 에
+    // "어떤 경로로 생성됐는지"(SDK + 사용 모델)를 남겨 UI 가 항상 표시할 수 있게 한다.
+    // 기록이 없으면 사용자는 무료 폴백(Pollinations)과 Puter 결과를 구분할 수 없다.
+    let detail = match model.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(m) => format!("Puter.js txt2img (WebView 브라우저 SDK) · model={m}"),
+        None => "Puter.js txt2img (WebView 브라우저 SDK) · Puter 기본 모델".to_string(),
+    };
+
+    // `set_wallpaper_with`가 내부에서 디코딩·해상도(640x480) 검증·스테이징을 수행하므로
     // 손상 payload나 저해상도 이미지는 여기서 명시적 오류로 실패한다 (조용한 폴스루 없음).
-    wallmagic_core::set_wallpaper(&path, monitor_id, pos).map_err(err_to_string)
+    wallmagic_core::set_wallpaper_with(&path, monitor_id, pos, Some(label), Some(&detail))
+        .map_err(err_to_string)
 }
 
 /// IPC #1 (액션 ① 검색): 키워드로 로컬 배경화면 후보를 검색한다.
@@ -281,7 +298,15 @@ pub fn generate_wallpaper_ai_impl(
         &dest,
     )
     .map_err(err_to_string)?;
-    wallmagic_core::set_wallpaper(&generated, monitor_id, pos).map_err(err_to_string)
+    // 생성 정보 기록: 수동 Cloudflare 생성도 어떤 모델로 만들었는지 state.json 에 남긴다.
+    wallmagic_core::set_wallpaper_with(
+        &generated,
+        monitor_id,
+        pos,
+        Some("cloudflare-workers-ai"),
+        Some(&format!("Cloudflare Workers AI · model={model} · manual")),
+    )
+    .map_err(err_to_string)
 }
 
 /// IPC #10b: OpenAI Images 이미지 생성 → 디코드 → 배경 적용.
@@ -328,7 +353,14 @@ pub fn generate_wallpaper_openai_impl(
     let generated =
         wallmagic_core::generate_openai_wallpaper(&effective_key, model, prompt, &dest)
             .map_err(err_to_string)?;
-    wallmagic_core::set_wallpaper(&generated, monitor_id, pos).map_err(err_to_string)
+    wallmagic_core::set_wallpaper_with(
+        &generated,
+        monitor_id,
+        pos,
+        Some("openai"),
+        Some(&format!("OpenAI Images API · model={model} · manual")),
+    )
+    .map_err(err_to_string)
 }
 
 /// IPC #10c: 우선순위 순서대로 이미지 생성 후 적용.
@@ -366,10 +398,20 @@ pub fn generate_wallpaper_priority_impl(
     let dest = wallmagic_core::app_data_dir()
         .join("online_cache")
         .join("priority_manual.jpg");
-    let (_used, path) =
+    let (used, path) =
         wallmagic_core::generate_ai_with_fallback(&settings, prompt, &dest)
             .map_err(err_to_string)?;
-    wallmagic_core::set_wallpaper(&path, monitor_id, pos).map_err(err_to_string)
+    // 생성 정보 기록: 우선순위 폴백에서 **실제로 성공한 공급자**를 state.json 에 남긴다.
+    // `_used` 를 버리면 사용자는 어떤 경로로 생성됐는지 알 수 없다 (요구 ① 위반).
+    let detail = wallmagic_core::generation_source_detail(&settings, used);
+    wallmagic_core::set_wallpaper_with(
+        &path,
+        monitor_id,
+        pos,
+        Some(used.as_id()),
+        Some(&format!("{detail} · priority")),
+    )
+    .map_err(err_to_string)
 }
 
 /// IPC #3 (액션 ③ 적용): 선택한 이미지를 검증·스테이징 후 바탕화면에 적용한다.
@@ -409,6 +451,8 @@ fn get_app_status() -> AppStatus {
         current_wallpaper: wallmagic_core::get_current_wallpaper(None).unwrap_or_default(),
         previous_wallpaper: state.previous_wallpaper,
         backend_used: state.backend_used,
+        provider: state.provider,
+        source: state.source,
         data_dir: wallmagic_core::app_data_dir().to_string_lossy().to_string(),
     }
 }

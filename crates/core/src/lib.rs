@@ -15,7 +15,8 @@ pub mod wallpaper;
 // Types and functions are re-exported here so downstream crates keep a stable import path.
 pub use scenario::{
     cloudflare_ai_url, default_cf_model, default_openai_model, default_provider_order,
-    effective_provider_order, failure_retry_allowed_at, generate_ai_with_fallback, provider_is_configured,
+    effective_provider_order, failure_retry_allowed_at, generate_ai_with_fallback,
+    generation_source_detail, provider_is_configured,
     generate_cloudflare_wallpaper, generate_openai_wallpaper, load_scenario, needs_cursor_reset,
     now_unix_secs, openai_images_url, parse_cf_image_response, parse_openai_image_response,
     pick_next_url, save_scenario, scenario_file_path, scenario_http_status_error, should_run,
@@ -28,9 +29,9 @@ pub use search::{
 };
 pub use wallpaper::{
     app_data_dir, generate_online_wallpaper, generate_sample_wallpaper, get_current_wallpaper,
-    is_staged_path, list_monitors, load_state, normalize_to_hd, restore_wallpaper, save_state,
-    set_wallpaper, state_file_path, validate_and_stage_image, WallpaperError, WallpaperPosition,
-    WallpaperState, MonitorInfo,
+    is_staged_path, list_monitors, load_state, normalize_to_hd, record_generation,
+    restore_wallpaper, save_state, set_wallpaper, set_wallpaper_with, state_file_path,
+    validate_and_stage_image, WallpaperError, WallpaperPosition, WallpaperState, MonitorInfo,
 };
 
 // NOTE: The canonical doc comments for the re-exported items live on their definitions
@@ -180,6 +181,7 @@ mod tests {
             previous_wallpaper: Some("C:\\Users\\test\\original.jpg".to_string()),
             current_wallpaper: Some("C:\\Users\\test\\current.jpg".to_string()),
             backend_used: Some("unit-test".to_string()),
+            ..WallpaperState::default()
         };
         save_state(&state).expect("save state");
         assert!(
@@ -191,6 +193,49 @@ mod tests {
         assert_eq!(loaded.previous_wallpaper, state.previous_wallpaper);
         assert_eq!(loaded.current_wallpaper, state.current_wallpaper);
         assert_eq!(loaded.backend_used, state.backend_used);
+    }
+
+    /// 회귀 테스트 (검수 지적 ①): 생성 정보(`provider`/`source`)가 state.json 에 기록되어야
+    /// UI 가 "어떤 경로로 생성되었는지" 항상 표시할 수 있다. 기록이 없으면 사용자는
+    /// 무료 폴백(Pollinations)으로 생성됐는지 Puter 로 생성됐는지 구분할 수 없다.
+    ///
+    /// OS 를 건드리지 않도록 순수 함수 `apply_generation_info` + state 파일 왕복으로만 검증한다.
+    #[test]
+    fn test_generation_info_is_recorded_and_persisted() {
+        let _guard = DataDirGuard::new("generation_info");
+
+        let mut state = WallpaperState::default();
+        assert!(state.provider.is_none(), "default state has no provider");
+
+        record_generation(
+            &mut state,
+            Some("puter"),
+            Some("Puter.js txt2img (model: openai/gpt-image-2)"),
+        );
+        assert_eq!(state.provider.as_deref(), Some("puter"));
+        assert_eq!(
+            state.source.as_deref(),
+            Some("Puter.js txt2img (model: openai/gpt-image-2)")
+        );
+
+        // 디스크에 영속되어 앱 재시작 후에도 표시 가능해야 한다.
+        save_state(&state).expect("save state");
+        let loaded = load_state().expect("load state");
+        assert_eq!(loaded.provider.as_deref(), Some("puter"));
+        assert_eq!(
+            loaded.source.as_deref(),
+            Some("Puter.js txt2img (model: openai/gpt-image-2)")
+        );
+
+        // 정보 없는 적용(로컬 파일 등)에서 이전 생성 정보가 잔류하면 오표시가 된다.
+        record_generation(&mut state, None, None);
+        assert_eq!(state.provider, None, "previous provider must not linger");
+        assert_eq!(state.source, None, "previous source must not linger");
+
+        // 공백 문자열도 None 으로 정규화한다 (빈 값 표시 금지).
+        record_generation(&mut state, Some("  "), Some(""));
+        assert_eq!(state.provider, None);
+        assert_eq!(state.source, None);
     }
 
     #[test]
@@ -522,6 +567,89 @@ mod tests {
         assert_ne!(
             a, b,
             "same 20-char prefix queries must not share a cache file"
+        );
+    }
+
+    /// 회귀 테스트 (요구: "생성 정보에 어떤 경로로 생성됐는지 표시"):
+    /// `set_wallpaper` 계열은 어떤 공급자/경로로 생성된 배경화면인지
+    /// `WallpaperState.provider` / `source` 에 남겨야 UI 가 항상 표시할 수 있다.
+    /// OS 를 건드리지 않도록 정보 기록은 순수 함수 `record_generation` 으로 분리한다.
+    #[test]
+    fn test_record_generation_stores_provider_and_source() {
+        let mut state = WallpaperState::default();
+        record_generation(
+            &mut state,
+            Some("puter"),
+            Some("Puter.js txt2img · model=openai/gpt-image-2"),
+        );
+        assert_eq!(state.provider.as_deref(), Some("puter"));
+        assert_eq!(
+            state.source.as_deref(),
+            Some("Puter.js txt2img · model=openai/gpt-image-2")
+        );
+    }
+
+    /// 공백·빈 문자열은 생성 정보를 남기지 않는다 (오라벨 방지).
+    #[test]
+    fn test_record_generation_clears_on_blank() {
+        let mut state = WallpaperState {
+            provider: Some("openai".to_string()),
+            source: Some("old".to_string()),
+            ..WallpaperState::default()
+        };
+        record_generation(&mut state, Some("   "), None);
+        assert_eq!(state.provider, None);
+        assert_eq!(state.source, None);
+    }
+
+    /// 생성 정보는 state.json 에 영속되고, 필드가 없는 구버전 state.json 도 로드된다.
+    #[test]
+    fn test_generation_info_persists_in_state_json() {
+        let _guard = DataDirGuard::new("generation_info");
+        let mut state = WallpaperState::default();
+        record_generation(
+            &mut state,
+            Some("cloudflare-workers-ai"),
+            Some("Cloudflare Workers AI · model=@cf/x"),
+        );
+        save_state(&state).expect("save state");
+
+        let loaded = load_state().expect("load state");
+        assert_eq!(loaded.provider.as_deref(), Some("cloudflare-workers-ai"));
+        assert_eq!(
+            loaded.source.as_deref(),
+            Some("Cloudflare Workers AI · model=@cf/x")
+        );
+
+        // 구버전 state.json (provider/source 필드 없음) — serde(default) 로 로드 성공해야 한다.
+        let legacy = r#"{"previous_wallpaper":null,"current_wallpaper":"C:\\x.bmp","backend_used":"IDesktopWallpaper (COM)"}"#;
+        let parsed: WallpaperState = serde_json::from_str(legacy).expect("legacy state must load");
+        assert_eq!(parsed.provider, None);
+        assert_eq!(parsed.source, None);
+    }
+
+    /// 시나리오(자동 업데이트) 경로에서도 공급자별 생성 경로 설명이 만들어진다 (모델명 포함).
+    #[test]
+    fn test_generation_source_detail_includes_model() {
+        use crate::scenario::generation_source_detail;
+        let mut settings = ScenarioSettings::default();
+        settings.cloudflare.model = "@cf/black-forest-labs/flux-1-schnell".to_string();
+        settings.openai.model = "gpt-image-1".to_string();
+
+        let cf = generation_source_detail(&settings, ImageProvider::CloudflareWorkersAi);
+        assert!(
+            cf.contains("@cf/black-forest-labs/flux-1-schnell"),
+            "cloudflare source must contain the model: {cf}"
+        );
+        let oa = generation_source_detail(&settings, ImageProvider::Openai);
+        assert!(
+            oa.to_lowercase().contains("openai") && oa.contains("gpt-image-1"),
+            "openai source must contain provider and model: {oa}"
+        );
+        let puter = generation_source_detail(&settings, ImageProvider::Puter);
+        assert!(
+            puter.to_lowercase().contains("puter"),
+            "puter source must name the Puter SDK path: {puter}"
         );
     }
 }

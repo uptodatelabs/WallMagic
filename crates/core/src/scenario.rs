@@ -58,6 +58,38 @@ pub enum ImageProvider {
     Openai,
 }
 
+impl ImageProvider {
+    /// 프론트엔드·디스크가 쓰는 공급자 식별자 (serde kebab-case 표기와 동일).
+    ///
+    /// 생성 결과의 `WallpaperState::provider` 에 이 값을 기록해 "생성 정보"로 표시하고,
+    /// UI 의 `provider_order` / 라벨과 같은 어휘를 유지한다.
+    pub fn as_id(self) -> &'static str {
+        match self {
+            ImageProvider::Pollinations => "pollinations",
+            ImageProvider::Puter => "puter",
+            ImageProvider::CloudflareWorkersAi => "cloudflare-workers-ai",
+            ImageProvider::Openai => "openai",
+        }
+    }
+}
+
+/// 생성 경로 상세 설명을 만든다 — `WallpaperState::source` 에 기록되어
+/// UI 가 "어떤 경로(사용 모델 포함)로 생성됐는지" 항상 표시할 수 있게 한다.
+/// 순수 함수라 네트워크 없이 단위 테스트로 검증한다.
+pub fn generation_source_detail(settings: &ScenarioSettings, provider: ImageProvider) -> String {
+    match provider {
+        ImageProvider::Pollinations => {
+            "Pollinations image API (image.pollinations.ai · 무료·키 불필요)".to_string()
+        }
+        ImageProvider::CloudflareWorkersAi => format!(
+            "Cloudflare Workers AI · model={}",
+            settings.cloudflare.model
+        ),
+        ImageProvider::Openai => format!("OpenAI Images API · model={}", settings.openai.model),
+        ImageProvider::Puter => "Puter.js txt2img (WebView 브라우저 SDK)".to_string(),
+    }
+}
+
 /// Cloudflare Workers AI 설정 (주의: api_token은 scenario.json에 평문 저장된다 —
 /// 디스크 평문 존재를 전제로 다룰 것. get_scenario 응답의 api_token은 항상 ""
 /// (마스킹)이며, 프론트는 저장 시에만 토큰을 전달한다. 직접 fetch는 Tauri 커맨드 경유만 허용).
@@ -754,8 +786,18 @@ pub fn tick_scenario(now_secs: u64) -> Result<Option<WallpaperState>, WallpaperE
             let tmp = app_data_dir().join("online_cache").join("scenario_ai.jpg");
             let prompt_owned = settings.prompt.clone();
             match generate_ai_with_fallback(&settings, &prompt_owned, &tmp) {
-                Ok((_used, path)) => {
-                    match crate::wallpaper::set_wallpaper(&path, None, settings.position_enum()) {
+                Ok((used, path)) => {
+                    // 생성 정보: 어떤 공급자(모델 포함)로 생성됐는지 state.json 에 남긴다.
+                    // 기록이 없으면 UI 가 "무료 폴백인지 Puter 인지" 구분할 수 없다.
+                    let provider_id = used.as_id();
+                    let detail = generation_source_detail(&settings, used);
+                    match crate::wallpaper::set_wallpaper_with(
+                        &path,
+                        None,
+                        settings.position_enum(),
+                        Some(provider_id),
+                        Some(&detail),
+                    ) {
                         Ok(st) => {
                             settings.next_index = settings.next_index.wrapping_add(1);
                             settings.last_run_at = Some(now_secs);

@@ -23,11 +23,21 @@ pub enum WallpaperPosition {
 }
 
 /// Snapshot & state stored on disk for reliable restore (`restore_wallpaper`)
+///
+/// `provider` / `source` 는 "생성 정보"다 — 이 배경화면이 **어떤 경로로 생성되었는지**를
+/// `state.json` 에 남겨 UI 가 항상 표시할 수 있게 한다.
+/// `None` 은 생성 경로 미기록(복원 직후·구버전 state.json 등)을 뜻한다.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WallpaperState {
     pub previous_wallpaper: Option<String>,
     pub current_wallpaper: Option<String>,
     pub backend_used: Option<String>,
+    /// 생성 공급자 식별자: `pollinations` | `puter` | `cloudflare-workers-ai` | `openai` | `local-file` | `url`
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// 생성 경로 상세 설명 (사용 모델명·SDK 등)
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 /// Core errors for wallpaper operations
@@ -397,6 +407,33 @@ pub fn set_wallpaper(
     monitor_id: Option<&str>,
     position: WallpaperPosition,
 ) -> Result<WallpaperState, WallpaperError> {
+    set_wallpaper_with(candidate_path, monitor_id, position, None, None)
+}
+
+/// 생성 정보(`provider` / `source`)를 기록하는 순수 함수.
+///
+/// `state.json` 의 두 필드는 "이 배경화면이 **어떤 경로로** 생성되었는지"를 남겨
+/// UI 가 항상 표시할 수 있게 한다. 공백·빈 문자열은 `None` 으로 정규화해
+/// 빈 값 표시나 이전 값 잔류로 인한 오라벨을 막는다.
+pub fn record_generation(state: &mut WallpaperState, provider: Option<&str>, source: Option<&str>) {
+    fn norm(value: Option<&str>) -> Option<String> {
+        value
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+    }
+    state.provider = norm(provider);
+    state.source = norm(source);
+}
+
+/// `set_wallpaper` + 생성 정보 기록. 실제 생성 경로(공급자·모델)를 함께 남긴다.
+pub fn set_wallpaper_with(
+    candidate_path: &Path,
+    monitor_id: Option<&str>,
+    position: WallpaperPosition,
+    provider: Option<&str>,
+    source: Option<&str>,
+) -> Result<WallpaperState, WallpaperError> {
     let staged_path = validate_and_stage_image(candidate_path, monitor_id)?;
     let mut state = load_state().unwrap_or_default();
 
@@ -436,6 +473,8 @@ pub fn set_wallpaper(
 
     state.current_wallpaper = Some(staged_path.to_string_lossy().to_string());
     state.backend_used = Some(backend);
+    // 생성 정보 기록: 이 배경화면이 어떤 공급자/경로로 만들어졌는지 남긴다.
+    record_generation(&mut state, provider, source);
     save_state(&state)?;
 
     Ok(state)
@@ -476,6 +515,8 @@ pub fn restore_wallpaper(monitor_id: Option<&str>) -> Result<WallpaperState, Wal
 
     state.current_wallpaper = Some(prev);
     state.backend_used = Some(backend);
+    // 복원은 사용자 원본 배경화면이므로 생성 정보를 지운다 (이전 생성 공급자 오표시 방지).
+    record_generation(&mut state, None, None);
     save_state(&state)?;
 
     Ok(state)

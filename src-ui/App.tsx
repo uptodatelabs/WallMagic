@@ -283,6 +283,10 @@ export interface WallpaperState {
   previous_wallpaper: string | null;
   current_wallpaper: string | null;
   backend_used: string | null;
+  /** 생성 공급자 식별자 — "생성 정보"로 항상 표시한다. */
+  provider: string | null;
+  /** 생성 경로 상세(모델·SDK 등) — "생성 정보"로 항상 표시한다. */
+  source: string | null;
 }
 
 export interface MonitorInfo {
@@ -297,6 +301,10 @@ export interface AppStatus {
   current_wallpaper: string | null;
   previous_wallpaper: string | null;
   backend_used: string | null;
+  /** 생성 공급자 식별자 (state.json 의 provider). */
+  provider: string | null;
+  /** 생성 경로 상세 (state.json 의 source). */
+  source: string | null;
   data_dir: string;
 }
 
@@ -544,6 +552,8 @@ export function App(): React.ReactElement {
                     current_wallpaper: applied.current_wallpaper,
                     previous_wallpaper: applied.previous_wallpaper,
                     backend_used: applied.backend_used,
+                    provider: applied.provider,
+                    source: applied.source,
                   }
                 : prev,
             );
@@ -628,6 +638,8 @@ export function App(): React.ReactElement {
           label: "puter",
           position,
           monitorId: monitorId.trim() ? monitorId.trim() : null,
+          // 선택한 모델을 백엔드로 넘겨 "생성 정보"(provider/source)에 기록한다.
+          model: scPuterModel.trim() ? scPuterModel.trim() : null,
         });
         setStatus((prev) =>
           prev
@@ -636,6 +648,8 @@ export function App(): React.ReactElement {
                 current_wallpaper: state.current_wallpaper,
                 previous_wallpaper: state.previous_wallpaper,
                 backend_used: state.backend_used,
+                provider: state.provider,
+                source: state.source,
               }
             : prev,
         );
@@ -671,6 +685,8 @@ export function App(): React.ReactElement {
                 current_wallpaper: state.current_wallpaper,
                 previous_wallpaper: state.previous_wallpaper,
                 backend_used: state.backend_used,
+                provider: state.provider,
+                source: state.source,
               }
             : prev,
         );
@@ -711,6 +727,8 @@ export function App(): React.ReactElement {
               current_wallpaper: state.current_wallpaper,
               previous_wallpaper: state.previous_wallpaper,
               backend_used: state.backend_used,
+              provider: state.provider,
+              source: state.source,
             }
           : prev,
       );
@@ -742,6 +760,8 @@ export function App(): React.ReactElement {
               current_wallpaper: state.current_wallpaper,
               previous_wallpaper: state.previous_wallpaper,
               backend_used: state.backend_used,
+              provider: state.provider,
+              source: state.source,
             }
           : prev,
       );
@@ -766,6 +786,8 @@ export function App(): React.ReactElement {
               current_wallpaper: state.current_wallpaper,
               previous_wallpaper: state.previous_wallpaper,
               backend_used: state.backend_used,
+              provider: state.provider,
+              source: state.source,
             }
           : prev,
       );
@@ -893,6 +915,9 @@ export function App(): React.ReactElement {
       let state: WallpaperState | null = null;
       let usedProvider: ProviderId | null = null;
       let lastErr: unknown = null;
+      // 무음 폴백 금지: 앞선 공급자의 실패 원인을 모아 성공 시에도 함께 표시한다.
+      // (Puter 로그인/팝업/생성 실패가 뒤 공급자 성공에 가려 보이지 않던 문제)
+      const failedBefore: string[] = [];
       for (const id of order) {
         try {
           if (id === "puter") {
@@ -903,6 +928,7 @@ export function App(): React.ReactElement {
               label: "puter",
               position,
               monitorId: monitor,
+              model: scPuterModel.trim() ? scPuterModel.trim() : null,
             });
           } else {
             state = await invoke<WallpaperState>("generate_wallpaper_priority", {
@@ -916,6 +942,7 @@ export function App(): React.ReactElement {
           break;
         } catch (err) {
           lastErr = err;
+          failedBefore.push(`${providerLabel(id)}: ${formatErr(err)}`);
         }
       }
       if (!state || !usedProvider) {
@@ -929,11 +956,17 @@ export function App(): React.ReactElement {
               current_wallpaper: applied.current_wallpaper,
               previous_wallpaper: applied.previous_wallpaper,
               backend_used: applied.backend_used,
+              provider: applied.provider,
+              source: applied.source,
             }
           : prev,
       );
+      const skippedNote =
+        failedBefore.length > 0 ? ` · 앞선 실패: ${failedBefore.join(" / ")}` : "";
       reportOk(
-        `우선순위 생성·적용 완료 — 공급자: ${providerLabel(usedProvider)} · 백엔드: ${applied.backend_used ?? "unknown"}`,
+        `우선순위 생성·적용 완료 — 공급자: ${providerLabel(usedProvider)} · 백엔드: ${
+          applied.backend_used ?? "unknown"
+        }${skippedNote}`,
       );
       await refreshStatus();
     } catch (err) {
@@ -968,6 +1001,8 @@ export function App(): React.ReactElement {
                 current_wallpaper: applied.current_wallpaper,
                 previous_wallpaper: applied.previous_wallpaper,
                 backend_used: applied.backend_used,
+                provider: applied.provider,
+                source: applied.source,
               }
             : prev,
         );
@@ -1444,6 +1479,12 @@ export function App(): React.ReactElement {
         </span>
         <span className="path">
           이전 배경: {status?.previous_wallpaper || "(스냅샷 없음)"}
+        </span>
+        <span className="path" title={status?.source ?? undefined}>
+          생성 정보:{" "}
+          {status?.provider
+            ? `${status.provider}${status?.source ? ` · ${status?.source}` : ""}`
+            : "(이 앱에서 생성한 배경 아님 / 미기록)"}
         </span>
         <span className={`msg ${statusKind === "error" ? "error" : statusKind === "ok" ? "ok" : ""}`}>
           {busy ? "처리 중..." : statusMsg}
