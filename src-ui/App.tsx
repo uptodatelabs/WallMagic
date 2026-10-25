@@ -406,6 +406,27 @@ export function App(): React.ReactElement {
   const [statusMsg, setStatusMsg] = useState<string>("준비됨");
   const [statusKind, setStatusKind] = useState<"ok" | "error" | "info">("info");
   const [busy, setBusy] = useState<boolean>(false);
+  // ③ 미리보기 전체화면 뷰어 열림 상태
+  const [viewerOpen, setViewerOpen] = useState<boolean>(false);
+
+  // 생성 정보 귀속 판별: "생성 정보"는 현재 배경(state.json) 기준이고,
+  // 미리보기 이미지는 검색 후보(selected)이므로 둘은 서로 다른 파일일 수 있다.
+  // 비교 결과를 gen-info 에 표시해, 무료 공급자로 만든 이미지를 보면서
+  // "Puter" 라벨을 보는 오귀속을 막는다.
+  const genPath = status?.current_wallpaper ?? null;
+  const selPath = selected?.path ?? null;
+
+  // 전체화면 뷰어 닫기 — Esc 키
+  useEffect(() => {
+    if (!viewerOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setViewerOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [viewerOpen]);
   /// 팝업 차단 안내 모달 상태 — null 이면 닫힘, 문자열이면 그 URL을 담은 모달이 열린다.
   const [puterPromptUrl, setPuterPromptUrl] = useState<string | null>(null);
   /// 모달 안에 표시되는 복사/열기 결과 피드백(토스트 역할).
@@ -1165,7 +1186,17 @@ export function App(): React.ReactElement {
                 <img
                   src={`data:image/jpeg;base64,${selected.thumb_base64}`}
                   alt={selected.file_name}
+                  onClick={() => setViewerOpen(true)}
+                  title="클릭하면 전체화면으로 봅니다"
                 />
+                <button
+                  type="button"
+                  id="previewFullscreen"
+                  className="preview-fullscreen"
+                  onClick={() => setViewerOpen(true)}
+                >
+                  전체화면
+                </button>
               </div>
               <div className="detail">
                 <div>
@@ -1185,7 +1216,7 @@ export function App(): React.ReactElement {
               (상태바(footer)만으로는 생성 직후 어떤 공급자로 만들어졌는지 눈에 띄지 않아
                Puter 결과와 무료 폴백(Pollinations) 결과를 구분할 수 없다는 지적 반영) */}
           <div className="gen-info" id="genInfo" title={status?.source ?? undefined}>
-            <div className="gen-info-label">생성 정보</div>
+            <div className="gen-info-label">생성 정보 (현재 배경)</div>
             <div className="gen-info-value">
               {status?.provider
                 ? `${providerLabel(status.provider as ProviderId)}${
@@ -1193,8 +1224,45 @@ export function App(): React.ReactElement {
                   }`
                 : "(이 앱에서 생성한 배경 아님 / 미기록)"}
             </div>
+            {genPath ? (
+              <div className="gen-info-path" title={genPath}>
+                현재 배경: {genPath}
+              </div>
+            ) : null}
+            {genPath && selPath && genPath !== selPath && selected ? (
+              <div className="gen-info-warn" id="genInfoMismatch">
+                현재 배경과 다른 파일 — 위 미리보기({selected.file_name})의 생성 정보가 아닙니다.
+              </div>
+            ) : null}
           </div>
           {/* gen-info:end */}
+
+          {/* ③ 미리보기 전체화면 뷰어 — 이미지를 화면 전체로 본다(Esc / 닫기 버튼으로 종료). */}
+          {viewerOpen && selected ? (
+            <div
+              className="viewer"
+              id="fullscreenViewer"
+              role="dialog"
+              aria-modal="true"
+              aria-label={`${selected.file_name} 전체화면`}
+              onClick={() => setViewerOpen(false)}
+            >
+              <div className="viewer-body" onClick={(e) => e.stopPropagation()}>
+                <img
+                  src={`data:image/jpeg;base64,${selected.thumb_base64}`}
+                  alt={selected.file_name}
+                />
+              </div>
+              <button
+                type="button"
+                id="viewerClose"
+                className="viewer-close"
+                onClick={() => setViewerOpen(false)}
+              >
+                닫기 (Esc)
+              </button>
+            </div>
+          ) : null}
 
           <div className="field">
             <label htmlFor="position">배치 방식</label>
