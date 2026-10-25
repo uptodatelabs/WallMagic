@@ -487,6 +487,28 @@ pub fn run() {
             apply_generated_image,
             open_external_url,
         ])
+        .setup(|app| {
+            // 팝업 차단의 구조적 원인 해소: `tauri.conf.json` 의 `app.windows` 로 자동 생성된
+            // 창은 wry 의 `on_new_window` 핸들러가 없어 WebView2 가 새 창 요청을 무조건
+            // 차단한다 (wry-0.57.1/src/webview2/mod.rs:861-863 의 `SetHandled(true)`).
+            // 즉 Puter 로그인 팝업은 그 경로에서 100% 차단된다.
+            // 따라서 메인 창을 코드로 직접 만들고 `on_new_window` 를 등록해 https 팝업을
+            // 실제 창으로 열어준다 (라벨 "main" 은 capabilities/default.json 과 일치).
+            tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
+                .title("WallMagic — Windows Wallpaper Studio")
+                .inner_size(1080.0, 720.0)
+                .resizable(true)
+                .on_new_window(|url, _features| {
+                    // Puter 로그인 팝업(https)은 실제 창으로 열어준다.
+                    // 비-Web 스킴(file://, 커스텀 스킴)은 명시적으로 거부한다.
+                    match url.scheme() {
+                        "https" | "http" => tauri::webview::NewWindowResponse::Allow,
+                        _ => tauri::webview::NewWindowResponse::Deny,
+                    }
+                })
+                .build()?;
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running WallMagic application");
 }
