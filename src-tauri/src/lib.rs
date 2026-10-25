@@ -190,24 +190,39 @@ pub fn apply_generated_image_impl(
 
     let dir = wallmagic_core::app_data_dir().join("online_cache");
     std::fs::create_dir_all(&dir).map_err(|e| format!("create online_cache failed: {e}"))?;
+    // 무라벨 호출을 'puter' 로 둔갑시키지 않는다 (검수 지적 [medium]).
+    // 기본값이 존재하면 프론트가 label 을 빠뜨려도 provider 가 조용히 "puter" 로 기록되어
+    // "Pollinations 로 생성했는데 Puter 로 표시"되는 오표시가 재발한다.
     let label = label
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or("puter");
+        .ok_or_else(|| "apply_generated_image: label(공급자 id)이 필요합니다".to_string())?;
     let safe: String = label
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .take(24)
         .collect();
-    let path = dir.join(format!("puter_{safe}.png"));
+    // 파일명 접두어를 'puter_' 고정에서 'generated_' 로 바꾼다 (검수 지적 [medium]).
+    // 접두어가 공급자와 무관하게 puter 로 고정되면 파일 경로
+    // (active_puter_puter_primary.bmp)만 보고 사용자가 생성 경로를 오판한다.
+    let path = dir.join(format!("generated_{safe}.png"));
     std::fs::write(&path, &bytes).map_err(|e| format!("write generated image failed: {e}"))?;
 
     // 생성 정보 기록: WebView(Puter.js)가 만든 이미지도 `state.json` 에
     // "어떤 경로로 생성됐는지"(SDK + 사용 모델)를 남겨 UI 가 항상 표시할 수 있게 한다.
     // 기록이 없으면 사용자는 무료 폴백(Pollinations)과 Puter 결과를 구분할 수 없다.
-    let detail = match model.map(str::trim).filter(|m| !m.is_empty()) {
-        Some(m) => format!("Puter.js txt2img (WebView 브라우저 SDK) · model={m}"),
-        None => "Puter.js txt2img (WebView 브라우저 SDK) · Puter 기본 모델".to_string(),
+    // 상세 문구도 label 에 종속시킨다 — 라벨이 puter 가 아닌데 "Puter.js txt2img" 가
+    // 기록되면 생성 정보 자체가 거짓이 된다 (검수 지적 [medium]).
+    let detail = if label == "puter" {
+        match model.map(str::trim).filter(|m| !m.is_empty()) {
+            Some(m) => format!("Puter.js txt2img (WebView 브라우저 SDK) · model={m}"),
+            None => "Puter.js txt2img (WebView 브라우저 SDK) · Puter 기본 모델".to_string(),
+        }
+    } else {
+        match model.map(str::trim).filter(|m| !m.is_empty()) {
+            Some(m) => format!("apply_generated_image (WebView) · provider={label} · model={m}"),
+            None => format!("apply_generated_image (WebView) · provider={label}"),
+        }
     };
 
     // `set_wallpaper_with`가 내부에서 디코딩·해상도(640x480) 검증·스테이징을 수행하므로
@@ -604,6 +619,42 @@ mod tests {
         assert!(
             err.contains("0 bytes"),
             "empty payload must be reported: {err}"
+        );
+    }
+
+    /// 검수 지적 [medium]: label(공급자 id)을 생략한 호출은 'puter' 로 둔갑하지 않고 오류다.
+    ///
+    /// 무라벨 기본값(`unwrap_or("puter")`)이 존재하면 프론트가 label 을 빠뜨렸을 때
+    /// Pollinations 등 다른 공급자로 만든 이미지가 조용히 "Puter" 로 기록된다.
+    /// 이 테스트는 (1) None/공백 label 이 label 오류로 실패하고
+    /// (2) 정상 label 은 label 검사에서 막히지 않음(대조군)을 확인한다.
+    #[test]
+    fn test_apply_generated_image_requires_label() {
+        // 1x1 PNG data URL — label 검사는 디코딩 직후·해상도 검증 전에 수행된다.
+        let png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==";
+        let _guard = DataDirGuard::new("requires_label");
+
+        let err = apply_generated_image_impl(png, None, None, None, None)
+            .expect_err("label 없이 호출하면 오류여야 한다");
+        assert!(
+            err.contains("label"),
+            "label 누락은 label 오류로 보고돼야 한다(무라벨→puter 둔갑 금지): {err}"
+        );
+
+        let err_blank = apply_generated_image_impl(png, Some("   "), None, None, None)
+            .expect_err("공백 label 도 오류여야 한다");
+        assert!(
+            err_blank.contains("label"),
+            "공백 label 은 label 오류로 보고돼야 한다: {err_blank}"
+        );
+
+        // 대조군: 정상 label 은 label 검사에 걸리지 않아야 한다.
+        // (1x1 이미지는 해상도 검증에서 실패하므로 Err 이지만, 문구가 label 오류가 아니어야 한다)
+        let other = apply_generated_image_impl(png, Some("pollinations"), None, None, None)
+            .expect_err("1x1 이미지는 해상도 검증에서 실패해야 한다");
+        assert!(
+            !other.contains("label(공급자 id)이 필요합니다"),
+            "정상 label 이 label 검사에서 막히면 안 된다: {other}"
         );
     }
 

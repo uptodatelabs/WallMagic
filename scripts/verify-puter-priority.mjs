@@ -100,8 +100,8 @@ ok(
 );
 
 ok(
-  "시도 순서가 선택한 공급자(scProvider) 우선으로 구성된다",
-  /const order = \[scProvider, \.\.\.scProviderOrder\.filter\(\(id\) => id !== scProvider\)\]/.test(
+  "폴백 허용 시 시도 순서가 선택한 공급자(scProvider) 우선으로 구성된다",
+  /scAllowFallback\s*\?\s*\[scProvider, \.\.\.scProviderOrder\.filter\(\(id\) => id !== scProvider\)\]/.test(
     body,
   ),
 );
@@ -111,6 +111,26 @@ ok(
   body.includes('scProvider !== "puter"') &&
     /await puterIsSignedIn\(\(\) =>/.test(body) &&
     /auth\.isSignedIn \? auth\.isSignedIn\(\) : false/.test(body),
+);
+
+ok(
+  "엄격 모드 상태(scAllowFallback)는 기본 false 로 선언된다",
+  /const \[scAllowFallback, setScAllowFallback\] = useState\(false\)/.test(ui),
+);
+
+ok(
+  "엄격 모드(기본)에서 시도 순서는 선택 공급자 단일이다",
+  /const order = scAllowFallback\s*\?[\s\S]{0,200}:\s*\[scProvider\];/.test(body),
+);
+
+ok(
+  "폴백 비활성 시 선택 공급자 실패 원인을 노출하고 다른 공급자로 넘어가지 않는다",
+  /선택한 공급자\(\$\{providerLabel\(scProvider\)\}\) 실패: .*자동 폴백 비활성/.test(body),
+);
+
+ok(
+  "결과 메시지에 선택·실제 공급자를 명시한다",
+  /선택: \$\{providerLabel\(scProvider\)\} → 실제: \$\{providerLabel\(usedProvider\)\}/.test(body),
 );
 
 ok(

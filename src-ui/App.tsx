@@ -385,6 +385,9 @@ export function App(): React.ReactElement {
     order.filter((id) => PROVIDERS.find((p) => p.id === id)?.backend);
   const [scProvider, setScProvider] = useState<ProviderId>("pollinations");
   const [scProviderOrder, setScProviderOrder] = useState<ProviderId[]>([...FREE_FIRST_ORDER]);
+  // 엄격 모드(기본 false): 선택한 공급자만 시도하고 실패 시 다른 공급자로 넘어가지 않는다.
+  // true 일 때만 우선순위 목록 순서대로 폴백한다.
+  const [scAllowFallback, setScAllowFallback] = useState(false);
   const [scCfAccount, setScCfAccount] = useState<string>("");
   const [scCfToken, setScCfToken] = useState<string>("");
   const [scCfModel, setScCfModel] = useState<string>("@cf/black-forest-labs/flux-1-schnell");
@@ -934,7 +937,9 @@ export function App(): React.ReactElement {
       // 키 불필요로 항상 1순위 성공 → Puter 를 선택해도 시도조차 되지 않았다)
       // 백엔드 호출마다 providerOrder: [id]를 전달해 (Tauri v2 camelCase → Rust provider_order)
       // 저장하지 않은 순서 변경도 그대로 반영한다. puter 자리는 프론트 SDK로 시도한다.
-      const order = [scProvider, ...scProviderOrder.filter((id) => id !== scProvider)];
+      const order = scAllowFallback
+        ? [scProvider, ...scProviderOrder.filter((id) => id !== scProvider)]
+        : [scProvider];
       let state: WallpaperState | null = null;
       let usedProvider: ProviderId | null = null;
       let lastErr: unknown = null;
@@ -988,6 +993,11 @@ export function App(): React.ReactElement {
         }
       }
       if (!state || !usedProvider) {
+        if (!scAllowFallback) {
+          throw new Error(
+            `선택한 공급자(${providerLabel(scProvider)}) 실패: ${formatErr(lastErr)} — 자동 폴백 비활성`,
+          );
+        }
         throw lastErr ?? new Error("시도 가능한 이미지 공급자가 없습니다.");
       }
       const applied = state;
@@ -1005,12 +1015,19 @@ export function App(): React.ReactElement {
       );
       const skippedNote =
         failedBefore.length > 0 ? ` · 앞선 실패: ${failedBefore.join(" / ")}` : "";
-      reportOk(
-        `우선순위 생성·적용 완료 — 공급자: ${providerLabel(usedProvider)} · 백엔드: ${
-          applied.backend_used ?? "unknown"
-        }${skippedNote}`,
-      );
+      // 검수 지적 [low](2): 신규 생성 결과(응답 applied)와 state.json 저장값(fresh)을
+      // 같은 메시지에 나란히 노출한다. "생성 정보" 패널은 현재 배경 기준이므로,
+      // 둘이 다르면 사용자가 "왜 Puter 로 표시되지?"라고 혼동하던 지점이 즉시 드러난다.
       await refreshStatus();
+      const fresh = await invoke<AppStatus>("get_app_status");
+      const savedNote = fresh.provider
+        ? ` · state.json: ${providerLabel(fresh.provider as ProviderId)}${fresh.source ? ` — ${fresh.source}` : ""}`
+        : " · state.json: 생성 정보 없음";
+      reportOk(
+        `우선순위 생성·적용 완료 — 선택: ${providerLabel(scProvider)} → 실제: ${providerLabel(usedProvider)} · 응답 provider: ${
+          applied.provider ?? "없음"
+        }${savedNote} · 백엔드: ${applied.backend_used ?? "unknown"}${skippedNote}`,
+      );
     } catch (err) {
       reportError(`우선순위 생성 실패 (기존 배경 유지): ${formatErr(err)}`);
     } finally {
@@ -1370,6 +1387,17 @@ export function App(): React.ReactElement {
                   </option>
                 ))}
               </select>
+            </div>
+            <div className="field">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={scAllowFallback}
+                  onChange={(e) => setScAllowFallback(e.target.checked)}
+                  disabled={busy}
+                />{" "}
+                자동 폴백 허용 (선택 공급자 실패 시 다음 공급자로 넘어감 — 기본은 끔: 선택한 공급자만 사용)
+              </label>
             </div>
             <div className="field">
               <label>이미지 생성 우선순위 (폴백 순서 — 위부터 시도, 실패 시 다음 공급자)</label>
