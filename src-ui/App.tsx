@@ -419,6 +419,61 @@ export function App(): React.ReactElement {
   const genPath = status?.current_wallpaper ?? null;
   const selPath = selected?.path ?? null;
 
+  // [검수 지적 medium] 적용 후 경로와 원본 경로는 **문자열이 절대 같을 수 없다**:
+  // 백엔드 `validate_and_stage_image`가 원본을 BMP로 재인코딩해
+  // `active/active_<원본 stem>_<모니터>.bmp`로 스테이징하므로 확장자·디렉터리·접두어가
+  // 모두 달라진다. 경로 문자열 동등 비교(`genPath !== selPath`)로는 적용에 성공해도
+  // 항상 불일치 경고가 떠서 "왜 계속 다른 파일이라고 나오지"의 실제 원인이었다.
+  // → 스테이징 규칙(`active_` + 원본 stem + `_` + 모니터 접미어)으로 귀속을 판정한다.
+  const sameWallpaperSource = (
+    activePath: string | null,
+    sourcePath: string | null,
+  ): boolean => {
+    if (!activePath || !sourcePath) return false;
+    const baseName = (p: string) => p.split(/[\\/]/).pop() ?? "";
+    const stripExt = (n: string) => n.replace(/\.[^.]*$/, "");
+    const activeStem = stripExt(baseName(activePath)).toLowerCase();
+    const srcStem = stripExt(baseName(sourcePath)).toLowerCase();
+    if (!activeStem || !srcStem) return false;
+    // 스테이징 파일끼리(같은 stem)면 동일 소스다. 이 단락이 없으면
+    // active_X.bmp vs active_X.bmp 도 `active_${active_X}` 비교로 false 가 되어
+    // 적용 성공 후에도 불일치 경고가 남는다.
+    if (activeStem === srcStem) return true;
+    return (
+      activeStem === `active_${srcStem}` || activeStem.startsWith(`active_${srcStem}_`)
+    );
+  };
+  const genMatchesSelected = sameWallpaperSource(genPath, selPath);
+
+  // [검수 지적 medium] 적용 성공 후에도 미리보기(selected)가 **생성 전 후보**에 남아
+  // "현재 배경과 다른 파일" 경고가 계속 뜨던 순환의 직접 원인을 제거한다.
+  // 적용 결과(current_wallpaper)는 스테이징된 `active_*.bmp` 이고 selected 는 검색/생성
+  // 후보이므로, 적용 후 selected 를 갱신하지 않으면 두 값은 영원히 다른 파일이 된다.
+  // → 백엔드 `candidate_for_path` 로 적용된 파일의 후보(썸네일·해상도)를 받아 교체한다.
+  // 실패는 조용히 넘기지 않고 console.warn 으로 남긴다(무음 실패 금지).
+  const syncSelectedToApplied = async (
+    applied: { current_wallpaper: string | null } | null,
+  ): Promise<boolean> => {
+    const appliedPath = applied?.current_wallpaper ?? null;
+    if (!appliedPath) return false;
+    try {
+      const candidate = await invoke<WallpaperCandidate>("candidate_for_path", {
+        path: appliedPath,
+      });
+      setCandidates((prev) => [
+        candidate,
+        ...prev.filter((c) => c.path !== candidate.path),
+      ]);
+      setSelected(candidate);
+      return true;
+    } catch (err) {
+      console.warn(
+        `적용 결과를 미리보기에 반영하지 못했습니다: ${formatErr(err)}`,
+      );
+      return false;
+    }
+  };
+
   // 전체화면 뷰어 닫기 — Esc 키
   useEffect(() => {
     if (!viewerOpen) return;
@@ -677,6 +732,7 @@ export function App(): React.ReactElement {
               }
             : prev,
         );
+        await syncSelectedToApplied(state);
         reportOk(`Puter 생성·적용 완료 — 백엔드: ${state.backend_used ?? "unknown"}`);
         await refreshStatus();
       } catch (err) {
@@ -714,6 +770,7 @@ export function App(): React.ReactElement {
               }
             : prev,
         );
+        await syncSelectedToApplied(state);
         reportOk(`OpenAI 생성·적용 완료 — 백엔드: ${state.backend_used ?? "unknown"}`);
         await refreshStatus();
       } catch (err) {
@@ -756,6 +813,7 @@ export function App(): React.ReactElement {
             }
           : prev,
       );
+      await syncSelectedToApplied(state);
       reportOk(`Cloudflare AI 생성·적용 완료 — 백엔드: ${state.backend_used ?? "unknown"}`);
       await refreshStatus();
     } catch (err) {
@@ -789,6 +847,7 @@ export function App(): React.ReactElement {
             }
           : prev,
       );
+      await syncSelectedToApplied(state);
       reportOk(`적용 완료 — 백엔드: ${state.backend_used ?? "unknown"}`);
     } catch (err) {
       reportError(`적용 실패: ${formatErr(err)}`);
@@ -1023,6 +1082,7 @@ export function App(): React.ReactElement {
       const savedNote = fresh.provider
         ? ` · state.json: ${providerLabel(fresh.provider as ProviderId)}${fresh.source ? ` — ${fresh.source}` : ""}`
         : " · state.json: 생성 정보 없음";
+      await syncSelectedToApplied(applied);
       reportOk(
         `우선순위 생성·적용 완료 — 선택: ${providerLabel(scProvider)} → 실제: ${providerLabel(usedProvider)} · 응답 provider: ${
           applied.provider ?? "없음"
@@ -1065,6 +1125,7 @@ export function App(): React.ReactElement {
               }
             : prev,
         );
+        await syncSelectedToApplied(applied);
         reportOk(`시나리오 적용 — 백엔드: ${applied.backend_used ?? "unknown"}`);
       } else {
         reportOk("시나리오: 아직 주기가 안 됐거나 OFF/소스 없음");
@@ -1246,7 +1307,7 @@ export function App(): React.ReactElement {
                 현재 배경: {genPath}
               </div>
             ) : null}
-            {genPath && selPath && genPath !== selPath && selected ? (
+            {genPath && selPath && !genMatchesSelected && selected ? (
               <div className="gen-info-warn" id="genInfoMismatch">
                 현재 배경과 다른 파일 — 위 미리보기({selected.file_name})의 생성 정보가 아닙니다.
               </div>

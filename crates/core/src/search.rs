@@ -92,7 +92,7 @@ fn is_supported_image(path: &Path) -> bool {
 
 /// 파일을 열어 유효한 후보(디코딩 가능 + 640x480 이상)로 변환하고 썸네일을 생성한다.
 /// 유효하지 않으면 `None`을 반환한다 — 검색 결과에는 "적용 가능한 후보"만 노출한다.
-fn load_candidate(path: &Path) -> Option<WallpaperCandidate> {
+pub fn load_candidate(path: &Path) -> Option<WallpaperCandidate> {
     let img = image::open(path).ok()?;
     let (width, height) = (img.width(), img.height());
     if width < 640 || height < 480 {

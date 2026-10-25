@@ -24,8 +24,8 @@ pub use scenario::{
     ScenarioSettings, ScenarioSource,
 };
 pub use search::{
-    generate_library_wallpaper, online_cache_file_name, search_wallpapers, WallpaperCandidate,
-    SearchResult, SUPPORTED_EXTENSIONS,
+    generate_library_wallpaper, load_candidate, online_cache_file_name, search_wallpapers,
+    WallpaperCandidate, SearchResult, SUPPORTED_EXTENSIONS,
 };
 pub use wallpaper::{
     app_data_dir, generate_online_wallpaper, generate_sample_wallpaper, get_current_wallpaper,

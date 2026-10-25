@@ -341,6 +341,22 @@ button.block {
   word-break: break-all;
 }
 
+/* 현재 배경 파일 경로 — 길어서 줄바꿈되므로 라벨과 구분되는 톤다운 색을 쓴다. */
+.gen-info-path {
+  color: var(--text-dim);
+  word-break: break-all;
+  margin-top: 4px;
+}
+
+/* 미리보기(selected) 와 현재 배경(current_wallpaper)이 다른 파일일 때의 안내.
+   경고이지만 오류(생성 실패)는 아니므로 danger 대신 주의 색조를 쓴다. */
+.gen-info-warn {
+  color: #ffb454;
+  border-top: 1px dashed var(--border);
+  padding-top: 6px;
+  margin-top: 6px;
+}
+
 /* ── 상태 바 ──────────────────────────────── */
 .statusbar {
   display: flex;

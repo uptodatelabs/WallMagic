@@ -429,6 +429,35 @@ pub fn generate_wallpaper_priority_impl(
     .map_err(err_to_string)
 }
 
+/// IPC #3b: 적용된 배경 파일 경로를 ③ 미리보기용 후보로 변환한다.
+///
+/// `validate_and_stage_image`는 원본을 `active/active_<원본 stem>_<모니터>.bmp`로
+/// 재인코딩·스테이징하므로, 적용 결과 경로(`current_wallpaper`)와 미리보기 후보 경로
+/// (`selected.path`)는 **문자열이 절대 같을 수 없다**. 적용 후 selected 를 그대로 두면
+/// "현재 배경과 다른 파일" 경고가 계속 뜬다.
+/// 이 커맨드는 스테이징된 파일 자체를 후보(썸네일·해상도)로 되돌려, UI 가 미리보기를
+/// 실제 적용 파일로 교체할 수 있게 한다.
+#[tauri::command]
+fn candidate_for_path(path: String) -> Result<WallpaperCandidate, String> {
+    candidate_for_path_impl(&path)
+}
+
+pub fn candidate_for_path_impl(path: &str) -> Result<WallpaperCandidate, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("candidate_for_path: path 가 필요합니다".to_string());
+    }
+    let candidate_path = PathBuf::from(trimmed);
+    if !candidate_path.exists() {
+        return Err(format!("candidate_for_path: 파일이 없습니다 — {trimmed}"));
+    }
+    wallmagic_core::load_candidate(&candidate_path).ok_or_else(|| {
+        format!(
+            "candidate_for_path: 후보로 변환할 수 없습니다(디코딩 실패 또는 640x480 미만) — {trimmed}"
+        )
+    })
+}
+
 /// IPC #3 (액션 ③ 적용): 선택한 이미지를 검증·스테이징 후 바탕화면에 적용한다.
 #[tauri::command]
 fn apply_wallpaper(
@@ -536,6 +565,7 @@ pub fn run() {
             generate_wallpaper_ai,
             generate_wallpaper_openai,
             apply_wallpaper,
+            candidate_for_path,
             restore_wallpaper,
             list_monitors,
             get_app_status,
