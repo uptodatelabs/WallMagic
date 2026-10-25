@@ -53,7 +53,10 @@ if (RED) {
     .replace(/\n\s*source: string \| null;/, "")
     .replace(/\n\s*provider: \w+\.provider,/, "")
     .replace(/\n\s*source: \w+\.source,/, "")
-    .replace(/생성 정보:[^\n]*/g, "");
+    .replace(/생성 정보:[^\n]*/g, "")
+    // 5b(미리보기 패널 생성 정보) 역시 수정 이전 형태에는 없었다 —
+    // 마커 주석으로 감싼 블록을 제거해 5b 두 항목이 Red 에서 FAIL 하도록 재구성한다.
+    .replace(/\{\/\* gen-info:start[\s\S]*?\{\/\* gen-info:end \*\/\}\n?/g, "");
 }
 
 // ── 1) 코어: state 필드 + 순수 함수 ──
@@ -162,6 +165,26 @@ ok(
 ok(
   "Puter 생성 호출이 선택 모델을 백엔드로 전달(생성 정보에 모델 기록)",
   /apply_generated_image",\s*\{[\s\S]{0,400}?model:/.test(ui),
+);
+
+// ── 5b) 미리보기 패널(③)에도 생성 정보를 표시 ──
+// 요구("미리보기에 생성 정보가 없어 Puter 로 생성됐는지 알 수 없다"): 상태바(footer)
+// 하단만으로는 생성 직후 눈에 띄지 않으므로, ③ 미리보기 패널 안에서도
+// 공급자 라벨 + 경로 상세를 항상 볼 수 있어야 한다.
+const previewStart = ui.indexOf("<h2>③ 미리보기</h2>");
+const previewEnd = previewStart >= 0 ? ui.indexOf("</aside>", previewStart) : -1;
+const previewBlock =
+  previewStart >= 0 && previewEnd > previewStart
+    ? ui.slice(previewStart, previewEnd)
+    : "";
+ok(
+  "미리보기 패널(③ 미리보기)에 생성 정보 블록이 있다",
+  previewBlock.length > 0 && /생성 정보/.test(previewBlock),
+);
+ok(
+  "미리보기 생성 정보가 공급자 라벨 + 경로 상세를 렌더한다",
+  /생성 정보[\s\S]{0,900}?providerLabel\(/.test(previewBlock) &&
+    /생성 정보[\s\S]{0,900}?status\?\.source/.test(previewBlock),
 );
 
 // ── 6) 상태 갱신이 provider/source 를 복사 ──

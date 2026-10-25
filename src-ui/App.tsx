@@ -1181,6 +1181,21 @@ export function App(): React.ReactElement {
             <div className="empty">선택된 이미지가 없습니다.</div>
           )}
 
+          {/* gen-info:start — ③ 미리보기 안에서도 생성 경로를 항상 보여준다
+              (상태바(footer)만으로는 생성 직후 어떤 공급자로 만들어졌는지 눈에 띄지 않아
+               Puter 결과와 무료 폴백(Pollinations) 결과를 구분할 수 없다는 지적 반영) */}
+          <div className="gen-info" id="genInfo" title={status?.source ?? undefined}>
+            <div className="gen-info-label">생성 정보</div>
+            <div className="gen-info-value">
+              {status?.provider
+                ? `${providerLabel(status.provider as ProviderId)}${
+                    status?.source ? ` · ${status?.source}` : ""
+                  }`
+                : "(이 앱에서 생성한 배경 아님 / 미기록)"}
+            </div>
+          </div>
+          {/* gen-info:end */}
+
           <div className="field">
             <label htmlFor="position">배치 방식</label>
             <select

@@ -274,6 +274,28 @@ button.block {
   color: var(--text);
 }
 
+/* ── 생성 정보 (미리보기 패널) ─────────────── */
+.gen-info {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 8px 10px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.gen-info-label {
+  color: var(--text-dim);
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.gen-info-value {
+  color: var(--text);
+  word-break: break-all;
+}
+
 /* ── 상태 바 ──────────────────────────────── */
 .statusbar {
   display: flex;
