@@ -14,14 +14,26 @@
  * 정적 문자열 검사 스크립트다(런타임 렌더·클릭은 미검증).
  */
 import { readFileSync } from "node:fs";
+import { execSync } from "node:child_process";
 
 const APP = "src-ui/App.tsx";
 const CSS = "src-ui/styles.css";
 const LIB = "src-tauri/src/lib.rs";
 
-const app = readFileSync(APP, "utf8");
-const css = readFileSync(CSS, "utf8");
-const lib = readFileSync(LIB, "utf8");
+/// `--git=<rev>` 를 주면 해당 커밋의 **실제 소스**를 검사한다(작업본 대신).
+/// 회귀(Red) 증빙을 메모리 재구성 없이 실제 이력으로 확보하기 위한 모드다.
+/// 사용: node scripts/verify-preview-viewer.mjs --git=0968877
+const gitArg = process.argv.find((a) => a.startsWith("--git="));
+const rev = gitArg ? gitArg.slice("--git=".length) : null;
+const read = (path) =>
+  rev
+    ? execSync(`git show ${rev}:${path}`, { encoding: "utf8" })
+    : readFileSync(path, "utf8");
+
+const app = read(APP);
+const css = read(CSS);
+const lib = read(LIB);
+if (rev) console.log(`검사 대상: ${rev} 커밋의 실제 소스 (작업본 아님)`);
 
 const results = [];
 const check = (name, fn) => {
@@ -65,6 +77,22 @@ check("styles.css 의 .viewer 가 고정 전체화면 오버레이이다", () =>
 
 check(".preview 가 position: relative (전체화면 버튼 배치 기준)", () =>
   /\.preview\s*\{[^}]*position:\s*relative/.test(css),
+);
+
+// 교차 검사: JSX 가 쓰는 클래스명이 styles.css 에 실제로 존재해야 한다.
+// (className="preview-fullscreen" 인데 CSS 에는 .preview-fs 만 있던 불일치 회귀 방지)
+check("전체화면 버튼 className 이 styles.css 에 정의되어 있다", () => {
+  const m = app.match(/id="previewFullscreen"[^>]*className="([^"]+)"/) ||
+            app.match(/className="([^"]+)"[^>]*id="previewFullscreen"/);
+  if (!m) return false;
+  const cls = m[1].trim().split(/\s+/).join("\\.");
+  return new RegExp(`\\.${cls}`).test(css);
+});
+
+check("styles.css 에 .viewer-body 래퍼 규칙(최대 크기 + 중앙 정렬)이 있다", () =>
+  /\.viewer-body\s*\{[^}]*max-height:\s*100%/.test(css) &&
+  /\.viewer-body\s*\{[^}]*display:\s*flex/.test(css) &&
+  /\.viewer-body\s*\{[^}]*justify-content:\s*center/.test(css),
 );
 
 /* ── B. 생성 정보 귀속(현재 배경 기준) ────────────────────────── */
