@@ -610,18 +610,18 @@ pub fn generate_wallpaper_priority_impl(
     let dest = wallmagic_core::app_data_dir()
         .join("online_cache")
         .join("priority_manual.jpg");
-    let (used, path) =
-        wallmagic_core::generate_ai_with_fallback(&settings, prompt, &dest)
+    // 3-튜플 판(`_query`)을 쓴다 — 폴백에서 **실제로 성공한 공급자**와 **실제로 사용된
+    // 질의문**을 함께 받아 기록한다. 2-튜플 판 + `search_query_for` 재호출은
+    // 순차(next_index)/랜덤(seed) 순환에서 다른 검색어를 만들어 UI 표기와 어긋난다
+    // (검수 지적 [medium]: ② 검색 경로의 검색어 표기 불일치).
+    let (used, path, used_query) =
+        wallmagic_core::generate_ai_with_fallback_query(&settings, prompt, &dest)
             .map_err(err_to_string)?;
     // 생성 정보 기록: 우선순위 폴백에서 **실제로 성공한 공급자**를 state.json 에 남긴다.
     // `_used` 를 버리면 사용자는 어떤 경로로 생성됐는지 알 수 없다 (요구 ① 위반).
     let mut detail = wallmagic_core::generation_source_detail(&settings, used);
     if used == wallmagic_core::ImageProvider::Search {
-        if let Some(query) =
-            wallmagic_core::search_query_for(&settings, prompt, wallmagic_core::now_unix_secs())
-        {
-            detail = format!("{detail} · query: {query}");
-        }
+        detail = format!("{detail} · query: {used_query}");
         let query_count = wallmagic_core::valid_search_queries(&settings).len();
         if query_count > 0 {
             settings.next_index = settings.next_index.wrapping_add(1) % query_count;

@@ -243,12 +243,12 @@ pub fn search_query_for(settings: &ScenarioSettings, prompt: &str, seed: u64) ->
 /// `attempt` 에 넘기는 두 번째 인자는 **해당 공급자에 실제로 쓸 질의문**이다:
 /// - Search 는 `source.search_queries` 를 우선 사용하고(순환), 비어 있을 때만 프롬프트를 쓴다.
 /// - 그 외 공급자는 공용 프롬프트를 그대로 쓴다.
-pub fn generate_ai_with_fallback_with<F>(
+pub fn generate_ai_with_fallback_with_query<F>(
     settings: &ScenarioSettings,
     prompt: &str,
     dest: &PathBuf,
     attempt: F,
-) -> Result<(ImageProvider, PathBuf), WallpaperError>
+) -> Result<(ImageProvider, PathBuf, String), WallpaperError>
 where
     F: Fn(ImageProvider, &str, &PathBuf) -> Result<PathBuf, WallpaperError>,
 {
@@ -308,7 +308,9 @@ where
             trimmed.to_string()
         };
         match attempt(provider, &query, dest) {
-            Ok(p) => return Ok((provider, p)),
+            // 실제로 사용된 질의문을 함께 돌려준다 — 호출자가 search_query_for 를 다시
+            // 호출하면 순차/랜덤 순환에서 다른 값이 나와 기록과 실제 검색어가 어긋난다.
+            Ok(p) => return Ok((provider, p, query)),
             Err(e) => {
                 last_err = Some(e);
                 continue;
@@ -322,12 +324,35 @@ where
     }))
 }
 
-pub fn generate_ai_with_fallback(
+/// 2-튜플 호환 래퍼 — 실제 사용된 질의문이 필요 없는 호출부·테스트용.
+///
+/// 코어 구현은 `generate_ai_with_fallback_with_query`(3-튜플)이며, 이 함수는 질의문을
+/// 버린다. 시나리오 tick·우선순위 생성처럼 "무엇으로 생성됐는지" 를 기록해야 하는 경로는
+/// 반드시 `_query` 판을 써야 한다(검수 지적 [medium]).
+pub fn generate_ai_with_fallback_with<F>(
     settings: &ScenarioSettings,
     prompt: &str,
     dest: &PathBuf,
-) -> Result<(ImageProvider, PathBuf), WallpaperError> {
-    generate_ai_with_fallback_with(settings, prompt, dest, |provider, trimmed, dest| match provider {
+    attempt: F,
+) -> Result<(ImageProvider, PathBuf), WallpaperError>
+where
+    F: Fn(ImageProvider, &str, &PathBuf) -> Result<PathBuf, WallpaperError>,
+{
+    generate_ai_with_fallback_with_query(settings, prompt, dest, attempt)
+        .map(|(provider, path, _query)| (provider, path))
+}
+
+/// 실제 네트워크 시도 함수 — **실제로 사용된 질의문**을 함께 반환한다.
+///
+/// Search 는 ⑤ 키워드 목록을 순환(순차=`next_index`, 랜덤=seed)하므로 호출 측이
+/// "내가 넘긴 프롬프트"를 검색어로 단정할 수 없다. 그 값을 그대로 받아 기록해야
+/// UI 표기와 실제 검색어가 일치한다.
+pub fn generate_ai_with_fallback_query(
+    settings: &ScenarioSettings,
+    prompt: &str,
+    dest: &PathBuf,
+) -> Result<(ImageProvider, PathBuf, String), WallpaperError> {
+    generate_ai_with_fallback_with_query(settings, prompt, dest, |provider, trimmed, dest| match provider {
         ImageProvider::Pollinations => {
             crate::wallpaper::generate_online_wallpaper(trimmed, dest)
         }
@@ -351,6 +376,21 @@ pub fn generate_ai_with_fallback(
             "Puter skipped: browser SDK only".to_string(),
         )),
     })
+}
+
+/// 2-튜플 호환 래퍼 — 실제 사용된 질의문이 필요 없는 호출부용.
+///
+/// 시나리오 tick·우선순위 생성처럼 "무엇으로 생성됐는지"를 state.json 에 기록하는 경로는
+/// 반드시 `generate_ai_with_fallback_query`(3-튜플)를 써야 한다. 2-튜플만 받아
+/// 호출 측이 `search_query_for` 를 **다시** 호출하면, 순차/랜덤 순환 특성상 기록과
+/// 실제 검색어가 어긋난다(검수 지적 [medium]).
+pub fn generate_ai_with_fallback(
+    settings: &ScenarioSettings,
+    prompt: &str,
+    dest: &PathBuf,
+) -> Result<(ImageProvider, PathBuf), WallpaperError> {
+    generate_ai_with_fallback_query(settings, prompt, dest)
+        .map(|(provider, path, _query)| (provider, path))
 }
 
 /// OpenAI 이미지 생성 설정 (주의: api_key는 scenario.json에 평문 저장된다 —
@@ -908,18 +948,18 @@ pub fn tick_scenario(now_secs: u64) -> Result<Option<WallpaperState>, WallpaperE
         if order.iter().any(|pr| provider_is_configured(&settings, *pr)) {
             let tmp = app_data_dir().join("online_cache").join("scenario_ai.jpg");
             let prompt_owned = settings.prompt.clone();
-            match generate_ai_with_fallback(&settings, &prompt_owned, &tmp) {
-                Ok((used, path)) => {
+            // 3-튜플 판(`_query`)을 쓴다 — 실제로 사용된 질의문을 그대로 받아 기록해야
+            // "기록된 검색어"와 "실제 검색어"가 일치한다. 2-튜플 판을 쓰고 호출 측이
+            // `search_query_for` 를 다시 호출하면, 순차(next_index)/랜덤(seed) 순환 특성상
+            // 서로 다른 값이 나와 기록이 어긋난다(검수 지적 [medium]).
+            match generate_ai_with_fallback_query(&settings, &prompt_owned, &tmp) {
+                Ok((used, path, used_query)) => {
                     // 생성 정보: 어떤 공급자(모델 포함)로 생성됐는지 state.json 에 남긴다.
                     // 기록이 없으면 UI 가 "무료 폴백인지 Puter 인지" 구분할 수 없다.
                     let provider_id = used.as_id();
                     let detail = generation_source_detail(&settings, used);
                     let detail_with_query = if used == ImageProvider::Search {
-                        if let Some(query) = search_query_for(&settings, &prompt_owned, now_secs) {
-                            format!("{detail} · query: {query}")
-                        } else {
-                            detail
-                        }
+                        format!("{detail} · query: {used_query}")
                     } else {
                         detail
                     };
@@ -1690,15 +1730,19 @@ mod tests {
         s.next_index = 0;
 
         let dest = PathBuf::from("dummy.jpg");
-        // 1회차: first_kw 선택
-        let (used1, _) = generate_ai_with_fallback_with(&s, &s.prompt, &dest, |p, q, d| {
-            assert_eq!(p, ImageProvider::Search);
-            assert_eq!(q, "first_kw");
-            Ok(d.clone())
-        })
-        .expect("1st search attempt");
+        // 1회차: first_kw 선택 — 반환된 질의문(used_query)이 **실제 시도 질의문**과 같아야 한다.
+        let (used1, _, q1) =
+            generate_ai_with_fallback_with_query(&s, &s.prompt, &dest, |p, q, d| {
+                assert_eq!(p, ImageProvider::Search);
+                assert_eq!(q, "first_kw");
+                Ok(d.clone())
+            })
+            .expect("1st search attempt");
         assert_eq!(used1, ImageProvider::Search);
-        let q1 = search_query_for(&s, &s.prompt, 0).expect("q1");
+        assert_eq!(
+            q1, "first_kw",
+            "반환 질의문은 search_query_for 재호출이 아니라 실제 시도 질의문이어야 한다"
+        );
         let detail1 = format!("{} · query: {q1}", generation_source_detail(&s, used1));
         assert!(detail1.contains("· query: first_kw"));
         let query_count = valid_search_queries(&s).len();
@@ -1706,18 +1750,69 @@ mod tests {
         assert_eq!(s.next_index, 1);
 
         // 2회차: second_kw 선택 후 0으로 모듈로 순환
-        let (used2, _) = generate_ai_with_fallback_with(&s, &s.prompt, &dest, |p, q, d| {
-            assert_eq!(p, ImageProvider::Search);
-            assert_eq!(q, "second_kw");
-            Ok(d.clone())
-        })
-        .expect("2nd search attempt");
+        let (used2, _, q2) =
+            generate_ai_with_fallback_with_query(&s, &s.prompt, &dest, |p, q, d| {
+                assert_eq!(p, ImageProvider::Search);
+                assert_eq!(q, "second_kw");
+                Ok(d.clone())
+            })
+            .expect("2nd search attempt");
         assert_eq!(used2, ImageProvider::Search);
-        let q2 = search_query_for(&s, &s.prompt, 0).expect("q2");
+        assert_eq!(q2, "second_kw");
         let detail2 = format!("{} · query: {q2}", generation_source_detail(&s, used2));
         assert!(detail2.contains("· query: second_kw"));
         s.next_index = s.next_index.wrapping_add(1) % query_count;
         assert_eq!(s.next_index, 0);
+    }
+
+    /// 회귀 테스트 (검수 지적 [medium]: ② 검색 경로의 검색어 표기 불일치).
+    ///
+    /// tick·우선순위 생성은 적용 후 `next_index` 를 전진시킨다. 따라서 호출 측이
+    /// `search_query_for` 를 **다시** 호출해 기록하면, 이미지가 실제로 만들어진 검색어와
+    /// 다른 값이 기록된다(순차: 커서가 이미 넘어감 / 랜덤: seed 가 달라짐).
+    /// 반환된 질의문은 반드시 실제 시도 질의문이어야 한다.
+    #[test]
+    fn test_returned_query_is_the_used_one_not_a_recomputation() {
+        let mut s = ScenarioSettings::default();
+        s.provider_order = vec![ImageProvider::Search];
+        s.source.search_queries = vec!["first_kw".to_string(), "second_kw".to_string()];
+        s.prompt = "shared prompt".to_string();
+        s.order = ScenarioOrder::Sequential;
+        s.next_index = 0;
+
+        let dest = PathBuf::from("dummy.jpg");
+        // attempt 는 `Fn` 이므로 내부 가변 캡처를 쓸 수 없다 — `Cell` 로 수집한다.
+        let attempted: std::cell::Cell<Option<String>> = std::cell::Cell::new(None);
+        let (_, _, used_query) =
+            generate_ai_with_fallback_with_query(&s, &s.prompt, &dest, |p, q, d| {
+                assert_eq!(p, ImageProvider::Search);
+                attempted.set(Some(q.to_string()));
+                Ok(d.clone())
+            })
+            .expect("search attempt");
+
+        let attempted = attempted
+            .take()
+            .expect("attempt 클로저는 반드시 호출되어야 한다");
+        assert_eq!(
+            used_query, attempted,
+            "반환 질의문과 실제 시도 질의문이 달라선 안 된다"
+        );
+        assert_eq!(used_query, "first_kw");
+
+        // 적용 후 커서를 전진시키면 재계산 값은 "second_kw" 로 갈라진다 —
+        // 재계산을 기록에 쓰면 이 어긋남이 그대로 사용자 표기에 노출된다.
+        let query_count = valid_search_queries(&s).len();
+        s.next_index = s.next_index.wrapping_add(1) % query_count;
+        assert_eq!(
+            search_query_for(&s, &s.prompt, 0).as_deref(),
+            Some("second_kw"),
+            "재계산 값이 실제 사용 값과 달라지는 조건임을 고정한다"
+        );
+        assert_ne!(
+            used_query, "second_kw",
+            "기록에는 재계산 값이 아니라 실제 사용 값이 쓰여야 한다"
+        );
     }
 
 }

@@ -129,8 +129,18 @@ ok(
 );
 ok(
   "우선순위 생성 IPC 가 성공 공급자를 기록 (used 폐기 금지)",
-  /generate_wallpaper_priority_impl[\s\S]{0,900}?let \(used, path\)/.test(tauri) &&
+  // 3-튜플(`let (used, path, used_query)`) 계약도 허용한다 — 실제 사용된 질의문을
+  // 함께 받아 기록하는 형태(검수 지적 [medium] 반영). 2-튜플은 하위호환으로 계속 통과.
+  /generate_wallpaper_priority_impl[\s\S]{0,900}?let \(used, path(?:, used_query)?\)/.test(
+    tauri,
+  ) &&
     /generate_wallpaper_priority_impl[\s\S]{0,1800}?set_wallpaper_with\(/.test(tauri),
+);
+ok(
+  "우선순위 생성 IPC 가 실제 사용 검색어(used_query)를 기록한다 (재계산 금지)",
+  /generate_wallpaper_priority_impl[\s\S]{0,1800}?generate_ai_with_fallback_query\(/.test(tauri) &&
+    /query:\s*\{used_query\}/.test(tauri) &&
+    !/generate_wallpaper_priority_impl[\s\S]{0,1800}?search_query_for\(/.test(tauri),
 );
 
 // ── 4) 상태 조회 IPC ──

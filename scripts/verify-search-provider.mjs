@@ -107,9 +107,17 @@ check("should_run 이 search_queries 만으로도 실행 조건을 만족시킨�
 });
 
 // ── 코어: 실행 경로(폴백 · tick) ──
-check("generate_ai_with_fallback 이 Search 분기를 명시한다", () => {
-  const body = fnBody(scenario, "generate_ai_with_fallback");
+// 이번 커밋에서 코어 구현을 `generate_ai_with_fallback_with_query`(3-튜플)로 옮기고
+// `generate_ai_with_fallback` 은 위임 래퍼가 되었다. 검사 이름을 실제 구현으로 맞춘다
+// (이름이 어긋나면 fnBody 가 "" 를 반환해 항상 FAIL 하는 오탐이 난다 — 이번 실행에서 실제로 발생).
+check("네트워크 시도 함수(generate_ai_with_fallback_query)가 Search 분기를 명시한다", () => {
+  const body = fnBody(scenario, "generate_ai_with_fallback_query");
   return /ImageProvider::Search =>/.test(body);
+});
+
+check("2-튜플 generate_ai_with_fallback 은 3-튜플 _query 판에 위임한다(질의문 재계산 금지)", () => {
+  const body = fnBody(scenario, "generate_ai_with_fallback");
+  return /generate_ai_with_fallback_query\s*\(/.test(body);
 });
 
 check("search_query_for 가 저장 키워드를 공용 프롬프트보다 우선한다", () => {
@@ -127,13 +135,17 @@ check("provider_is_configured 의 Search 가 프롬프트만으로도 자격을 
   return Boolean(arm) && /search_queries/.test(arm[0]) && /settings\.prompt/.test(arm[0]);
 });
 
-check("generate_ai_with_fallback_with 가 Search 에 키워드 기반 질의를 전달한다", () => {
-  const body = fnBody(scenario, "generate_ai_with_fallback_with");
-  return /search_query_for/.test(body) && /attempt\(provider, &query/.test(body);
+check("generate_ai_with_fallback_with_query 가 Search 에 키워드 기반 질의를 전달하고 실제 사용 질의문을 반환한다", () => {
+  const body = fnBody(scenario, "generate_ai_with_fallback_with_query");
+  return (
+    /search_query_for/.test(body) &&
+    /attempt\(provider, &query/.test(body) &&
+    /Ok\(p\)\s*=>\s*return\s+Ok\(\(\s*provider,\s*p,\s*query\s*\)\)/.test(body)
+  );
 });
 
-check("generate_ai_with_fallback_with 가 Search 자격 판정 시 호출 인자 prompt(!trimmed.is_empty())도 인정한다", () => {
-  const body = fnBody(scenario, "generate_ai_with_fallback_with");
+check("generate_ai_with_fallback_with_query 가 Search 자격 판정 시 호출 인자 prompt(!trimmed.is_empty())도 인정한다", () => {
+  const body = fnBody(scenario, "generate_ai_with_fallback_with_query");
   return (
     /provider\s*==\s*ImageProvider::Search/.test(body) &&
     /!settings\.disabled_providers\.contains\(&ImageProvider::Search\)/.test(body) &&
@@ -141,21 +153,21 @@ check("generate_ai_with_fallback_with 가 Search 자격 판정 시 호출 인자
   );
 });
 
-check("tick_scenario 상단 AI 분기가 Search 채택 시 query 기록 및 next_index 모듈로 순환을 수행한다", () => {
+check("tick_scenario 상단 AI 분기가 Search 채택 시 실제 검색어(used_query)를 기록하고 next_index 를 모듈로 순환한다", () => {
   const body = fnBody(scenario, "tick_scenario");
   const topBranch = body.split("if settings.prompt.trim().is_empty()")[0] || "";
   return (
     /used\s*==\s*ImageProvider::Search/.test(topBranch) &&
-    /query:\s*\{query\}/.test(topBranch) &&
+    /query:\s*\{used_query\}/.test(topBranch) &&
     /wrapping_add\(1\)\s*%\s*query_count/.test(topBranch)
   );
 });
 
-check("generate_wallpaper_priority_impl 이 Search 채택 시 query 기록 및 next_index 모듈로 순환·저장을 수행한다", () => {
+check("generate_wallpaper_priority_impl 이 Search 채택 시 실제 검색어(used_query)를 기록하고 next_index 를 모듈로 순환·저장한다", () => {
   const body = fnBody(lib, "generate_wallpaper_priority_impl");
   return (
     /used\s*==\s*wallmagic_core::ImageProvider::Search/.test(body) &&
-    /query:\s*\{query\}/.test(body) &&
+    /query:\s*\{used_query\}/.test(body) &&
     /wrapping_add\(1\)\s*%\s*query_count/.test(body) &&
     /save_scenario\(&settings\)/.test(body)
   );
@@ -225,6 +237,31 @@ check("시나리오 조회가 search_queries 를 복원한다", () => {
 check("구버전 scenario.json(search_queries 없음) 호환 테스트가 있다", () =>
   /search_queries[\s\S]{0,400}legacy|legacy[\s\S]{0,400}search_queries/.test(scenario) &&
   /fn test_search_queries_/.test(scenario));
+
+check("② 생성·적용(handleGenerateAi) 검색 분기가 백엔드가 실제 사용한 검색어를 표기한다", () => {
+  // 백엔드(generate_wallpaper_priority_impl)는 search_query_for 로 키워드를 순환하므로
+  // UI 가 넘긴 prompt 를 그대로 표기하면 실제 검색어와 어긋난다.
+  // 적용 기록(state.source)의 "· query: <실제 검색어>" 를 읽어 표기해야 한다.
+  const body = fnBody(app, "handleGenerateAi");
+  return (
+    /state\.source/.test(body) &&
+    /·\\s\*query:\\s\*/.test(body) &&
+    /appliedQuery/.test(body)
+  );
+});
+
+check("② 검색(라이브러리) 경로는 회전 없이 키워드를 그대로 넘겨 표기=실제가 된다", () => {
+  const body = fnBody(app, "handleGenerate");
+  const backend = fnBody(lib, "generate_library_wallpaper_with_provider_impl");
+  const searchArm = /"search"\s*=>\s*\{[\s\S]*?\n        \}/.exec(backend);
+  return (
+    /provider:\s*"search"/.test(body) &&
+    /prompt:\s*keyword/.test(body) &&
+    Boolean(searchArm) &&
+    /generate_search_wallpaper\(trimmed_prompt/.test(searchArm[0]) &&
+    !/search_query_for/.test(searchArm[0])
+  );
+});
 
 let failed = 0;
 for (const c of checks) {

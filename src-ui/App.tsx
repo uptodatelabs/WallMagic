@@ -960,7 +960,18 @@ export function App(): React.ReactElement {
             : prev,
         );
         await syncSelectedToApplied(state);
-        reportOk(`검색 생성·적용 완료 — 백엔드: ${state.backend_used ?? "unknown"}`);
+        // 실제 검색어는 **백엔드가 고른 값**이다 — ⑤ 키워드 목록이 있으면
+        // `search_query_for` 가 next_index(순차)/seed(랜덤)로 순환하므로, UI 가 넘긴
+        // prompt 를 그대로 표기하면 실제 검색어와 어긋난다(검수 지적 [medium]).
+        // 백엔드는 적용 기록(state.source)에 "· query: <실제 검색어> · priority" 형태로
+        // 남긴다. ` · ` 다음 구분자(접미사)까지 잡으면 검색어에 "· priority" 가 붙으므로
+        // 구분자 앞까지만 잘라 "표기 = 실제 검색어" 계약을 지킨다.
+        const appliedSource = state.source ?? "";
+        const appliedQuery =
+          /·\s*query:\s*([^·]+)/.exec(appliedSource)?.[1]?.trim() || keyword;
+        reportOk(
+          `검색 생성·적용 완료 — 검색어: "${appliedQuery}" · 백엔드: ${state.backend_used ?? "unknown"}`,
+        );
         await refreshStatus();
       } catch (err) {
         reportError(`검색 생성 실패 (기존 배경 유지): ${formatErr(err)}`);
