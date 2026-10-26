@@ -27,13 +27,17 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// 소스: 원격 URL 목록(R2/CDN) + 선택적 로컬 폴더.
+/// 소스: 원격 URL 목록(R2/CDN) + 선택적 로컬 폴더 + 선택적 검색 키워드.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ScenarioSource {
     #[serde(default)]
     pub urls: Vec<String>,
     #[serde(default)]
     pub local_dir: Option<String>,
+    /// 검색(Search) 소스 — 키워드 목록. `next_index` 로 순환하며 공개 이미지 검색 결과를 사용한다.
+    /// 이전 버전 `scenario.json`(필드 없음)도 그대로 로드되도록 `#[serde(default)]`.
+    #[serde(default)]
+    pub search_queries: Vec<String>,
 }
 
 /// 순환 순서.
@@ -56,6 +60,9 @@ pub enum ImageProvider {
     Puter,
     CloudflareWorkersAi,
     Openai,
+    /// 검색(Search) — 프롬프트 대신 키워드(`ScenarioSource::search_queries`)로
+    /// 공개 이미지를 검색해 그 결과를 배경/후보로 사용한다.
+    Search,
 }
 
 impl ImageProvider {
@@ -69,6 +76,7 @@ impl ImageProvider {
             ImageProvider::Puter => "puter",
             ImageProvider::CloudflareWorkersAi => "cloudflare-workers-ai",
             ImageProvider::Openai => "openai",
+            ImageProvider::Search => "search",
         }
     }
 }
@@ -87,6 +95,9 @@ pub fn generation_source_detail(settings: &ScenarioSettings, provider: ImageProv
         ),
         ImageProvider::Openai => format!("OpenAI Images API · model={}", settings.openai.model),
         ImageProvider::Puter => "Puter.js txt2img (WebView 브라우저 SDK)".to_string(),
+        ImageProvider::Search => {
+            "Wikimedia Commons image search (키 불필요 · 키워드 검색)".to_string()
+        }
     }
 }
 
@@ -159,6 +170,12 @@ pub fn provider_is_configured(settings: &ScenarioSettings, provider: ImageProvid
                 && !settings.cloudflare.api_token.trim().is_empty()
         }
         ImageProvider::Openai => !settings.openai.api_key.trim().is_empty(),
+        // 검색(Search)은 키가 필요 없지만, 키워드가 1개 이상 있어야 후보를 만들 수 있다.
+        ImageProvider::Search => settings
+            .source
+            .search_queries
+            .iter()
+            .any(|q| !q.trim().is_empty()),
         // Puter는 WebView 전용 SDK라 Rust 백엔드에서 직접 생성할 수 없어 항상 스킵한다.
         ImageProvider::Puter => false,
     }
@@ -246,6 +263,8 @@ pub fn generate_ai_with_fallback(
             let oa = &settings.openai;
             generate_openai_wallpaper(&oa.api_key, &oa.model, trimmed, dest)
         }
+        // 검색(Search): 프롬프트를 검색 키워드로 사용해 공개 이미지 1건을 확정한다.
+        ImageProvider::Search => crate::search::generate_search_wallpaper(trimmed, dest),
         ImageProvider::Puter => Err(WallpaperError::CandidateLoad(
             "Puter skipped: browser SDK only".to_string(),
         )),
@@ -412,6 +431,13 @@ pub fn should_run(settings: &ScenarioSettings, now_secs: u64) -> bool {
         && effective_provider_order(settings)
             .iter()
             .any(|p| provider_is_configured(settings, *p));
+    // 검색(Search) 소스: 프롬프트 없이 키워드(`source.search_queries`)만으로 실행 가능하다.
+    // 키워드가 하나도 없으면 Search 는 후보를 만들 수 없으므로 실행 조건에서 제외한다.
+    let has_search_source =
+        settings.source.search_queries.iter().any(|q| !q.trim().is_empty())
+            && effective_provider_order(settings)
+                .iter()
+                .any(|p| *p == ImageProvider::Search && provider_is_configured(settings, *p));
     if settings.source.urls.is_empty()
         && settings
             .source
@@ -420,6 +446,7 @@ pub fn should_run(settings: &ScenarioSettings, now_secs: u64) -> bool {
             .map(|s| s.trim().is_empty())
             .unwrap_or(true)
         && !has_ai_source
+        && !has_search_source
     {
         return false;
     }
@@ -834,6 +861,63 @@ pub fn tick_scenario(now_secs: u64) -> Result<Option<WallpaperState>, WallpaperE
         }
     }
 
+    // 검색(Search) 소스: 프롬프트 없이 키워드(`search_queries`)만으로 실행한다.
+    // 프롬프트가 있으면 위 AI 분기가 Search 를 프롬프트로도 처리하므로, 여기서는
+    // 프롬프트가 비어 있고 Search 가 우선순위(On) 일 때만 키워드 순환으로 1건 확정한다.
+    if settings.prompt.trim().is_empty()
+        && effective_provider_order(&settings).contains(&ImageProvider::Search)
+        && provider_is_configured(&settings, ImageProvider::Search)
+    {
+        let queries: Vec<String> = settings
+            .source
+            .search_queries
+            .iter()
+            .map(|q| q.trim().to_string())
+            .filter(|q| !q.is_empty())
+            .collect();
+        if !queries.is_empty() {
+            let idx = match settings.order {
+                ScenarioOrder::Sequential => settings.next_index % queries.len(),
+                ScenarioOrder::Random => (now_secs as usize) % queries.len(),
+            };
+            let query = queries[idx].clone();
+            let tmp = app_data_dir()
+                .join("online_cache")
+                .join("scenario_search.jpg");
+            // 실패 시 백오프: last_run_at 갱신·저장으로 매 틱 재시도 폭주를 막는다.
+            match crate::search::generate_search_wallpaper(&query, &tmp) {
+                Ok(path) => {
+                    let detail = generation_source_detail(&settings, ImageProvider::Search);
+                    match crate::wallpaper::set_wallpaper_with(
+                        &path,
+                        None,
+                        settings.position_enum(),
+                        Some(ImageProvider::Search.as_id()),
+                        Some(&format!("{detail} · query: {query}")),
+                    ) {
+                        Ok(st) => {
+                            settings.next_index =
+                                settings.next_index.wrapping_add(1) % queries.len().max(1);
+                            settings.last_run_at = Some(now_secs);
+                            save_scenario(&settings)?;
+                            return Ok(Some(st));
+                        }
+                        Err(er) => {
+                            settings.last_run_at = Some(now_secs);
+                            let _ = save_scenario(&settings);
+                            return Err(er);
+                        }
+                    }
+                }
+                Err(er) => {
+                    settings.last_run_at = Some(now_secs);
+                    let _ = save_scenario(&settings);
+                    return Err(er);
+                }
+            }
+        }
+    }
+
     if !settings.source.urls.is_empty() {
         let len = settings.source.urls.len();
         let idx = match settings.order {
@@ -912,6 +996,7 @@ mod tests {
             source: ScenarioSource {
                 urls: urls.iter().map(|s| s.to_string()).collect(),
                 local_dir: None,
+                search_queries: Vec::new(),
             },
             order: ScenarioOrder::Sequential,
             next_index: 0,
@@ -1237,6 +1322,79 @@ mod tests {
         s.cloudflare.account_id = "acc".to_string();
         s.cloudflare.api_token = "tok".to_string();
         assert!(should_run(&s, 1_000_000));
+    }
+
+    // ── 검색(Search) 공급자·소스 회귀 테스트 ──
+
+    #[test]
+    fn test_search_provider_id_and_detail() {
+        assert_eq!(ImageProvider::Search.as_id(), "search");
+        let s = ScenarioSettings::default();
+        let detail = generation_source_detail(&s, ImageProvider::Search);
+        assert!(
+            detail.contains("search") || detail.contains("검색"),
+            "Search 공급자의 생성 경로 설명이 비어 있으면 안 된다: {detail}"
+        );
+    }
+
+    #[test]
+    fn test_search_provider_configured_requires_keyword() {
+        let mut s = ScenarioSettings::default();
+        // 키워드가 없으면 Search 는 자격 없음(네트워크 호출 없이 스킵).
+        assert!(!provider_is_configured(&s, ImageProvider::Search));
+        // 공백 키워드도 자격 없음.
+        s.source.search_queries = vec!["   ".to_string()];
+        assert!(!provider_is_configured(&s, ImageProvider::Search));
+        // 실제 키워드 1개 → 자격 있음 (키 불필요 공급자).
+        s.source.search_queries = vec!["aurora".to_string()];
+        assert!(provider_is_configured(&s, ImageProvider::Search));
+        // Off 로 두면 키워드가 있어도 제외.
+        s.disabled_providers = vec![ImageProvider::Search];
+        assert!(!provider_is_configured(&s, ImageProvider::Search));
+    }
+
+    #[test]
+    fn test_should_run_true_with_search_queries_only() {
+        // 프롬프트·URL·로컬 폴더가 모두 비어 있어도 검색 키워드만으로 실행 조건을 만족한다.
+        let mut s = settings_with_urls(&[]);
+        s.provider = ImageProvider::Search;
+        s.provider_order = vec![ImageProvider::Search];
+        s.source.search_queries = vec!["neon city".to_string()];
+        assert!(should_run(&s, 1_000_000));
+        // 키워드가 비면 실행 조건 불충족.
+        s.source.search_queries.clear();
+        assert!(!should_run(&s, 1_000_000));
+    }
+
+    #[test]
+    fn test_search_fallback_branch_is_explicit() {
+        // generate_ai_with_fallback 은 Search 를 명시적으로 search.rs 경로로 넘긴다.
+        // 실제 네트워크 호출 대신 attempt 클로저로 주입해 결정적으로 검증한다.
+        let mut s = ScenarioSettings::default();
+        s.provider_order = vec![ImageProvider::Search];
+        s.source.search_queries = vec!["aurora".to_string()];
+        let dest = PathBuf::from("dummy.jpg");
+        let (used, _) = generate_ai_with_fallback_with(&s, "aurora", &dest, |p, query, d| {
+            assert_eq!(p, ImageProvider::Search);
+            assert_eq!(query, "aurora");
+            Ok(d.clone())
+        })
+        .expect("search provider must be attempted when configured");
+        assert_eq!(used, ImageProvider::Search);
+    }
+
+    #[test]
+    fn test_search_queries_legacy_json_compatible() {
+        // 구버전 scenario.json(ScenarioSource 에 search_queries 필드 없음)도 그대로 로드된다.
+        let raw = r#"{"enabled":false,"interval_minutes":60,"source":{"urls":["https://cdn.example.com/w1.jpg"],"local_dir":null}}"#;
+        let parsed: ScenarioSettings = serde_json::from_str(raw).expect("legacy scenario json");
+        assert!(
+            parsed.source.search_queries.is_empty(),
+            "legacy json must default search_queries to an empty vec"
+        );
+        // 직렬화 왕복: 필드가 항상 기록되어 저장 후 재조회에서 유지된다.
+        let json = serde_json::to_string(&parsed).expect("serialize");
+        assert!(json.contains("search_queries"));
     }
 
 }

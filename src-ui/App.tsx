@@ -349,13 +349,19 @@ export interface AppStatus {
 export interface ScenarioSettings {
   enabled: boolean;
   interval_minutes: number;
-  source: { urls: string[]; local_dir: string | null };
+  /** 시나리오 소스: 원격 URL + 로컬 폴더 + 검색 키워드(Search 공급자용). */
+  source: {
+    urls: string[];
+    local_dir: string | null;
+    /** 검색(Search) 키워드 목록 — 순환하며 공개 이미지 검색 결과를 사용한다. */
+    search_queries?: string[];
+  };
   order: "sequential" | "random";
   next_index: number;
   last_run_at: number | null;
   position: string;
-  provider: "pollinations" | "cloudflare-workers-ai" | "openai";
-  provider_order?: ("pollinations" | "cloudflare-workers-ai" | "openai")[];
+  provider: "pollinations" | "cloudflare-workers-ai" | "openai" | "search";
+  provider_order?: ("pollinations" | "cloudflare-workers-ai" | "openai" | "search")[];
   /** Off(비활성) 공급자 목록 — 생성·폴백·시나리오 자동 실행에서 모두 제외된다. */
   disabled_providers?: string[];
   prompt: string;
@@ -408,11 +414,14 @@ export function App(): React.ReactElement {
   const [scInterval, setScInterval] = useState<string>("60");
   const [scUrls, setScUrls] = useState<string>("");
   const [scLocalDir, setScLocalDir] = useState<string>("");
+  // 검색(Search) 소스 — 줄바꿈 구분 키워드 목록. 시나리오 자동 실행에서 순환 사용된다.
+  const [scSearchQueries, setScSearchQueries] = useState<string>("");
   const [scOrder, setScOrder] = useState<"sequential" | "random">("sequential");
   // `ProviderId`: 이미지 공급자 전체 집합(4종) — select 옵션·우선순위 목록이 같은 PROVIDERS 상수에서 파생된다.
-  type ProviderId = "pollinations" | "puter" | "cloudflare-workers-ai" | "openai";
+  type ProviderId = "pollinations" | "puter" | "cloudflare-workers-ai" | "openai" | "search";
   const PROVIDERS: { id: ProviderId; label: string; backend: boolean }[] = [
     { id: "pollinations", label: "Pollinations (무료·키 불필요)", backend: true },
+    { id: "search", label: "검색 (Search — 키워드·키 불필요)", backend: true },
     { id: "puter", label: "Puter (무료·브라우저 SDK)", backend: false },
     { id: "cloudflare-workers-ai", label: "Cloudflare Workers AI", backend: true },
     { id: "openai", label: "OpenAI", backend: true },
@@ -429,6 +438,7 @@ export function App(): React.ReactElement {
   // `disabled_providers` 로 전달되어 시나리오 자동 실행에서도 제외된다.
   const [scProviderEnabled, setScProviderEnabled] = useState<Record<ProviderId, boolean>>({
     pollinations: true,
+    search: true,
     puter: true,
     "cloudflare-workers-ai": true,
     openai: true,
@@ -624,14 +634,16 @@ export function App(): React.ReactElement {
       setScInterval(String(sc.interval_minutes));
       setScUrls(sc.source.urls.join("\n"));
       setScLocalDir(sc.source.local_dir ?? "");
+      // 검색(Search) 소스 키워드 복원 — 저장된 키워드가 없으면 빈 문자열.
+      setScSearchQueries((sc.source.search_queries ?? []).join("\n"));
       setScOrder(sc.order);
       setScProvider(sc.provider ?? "pollinations");
       const rawOrd = (sc as unknown as { provider_order?: unknown }).provider_order;
       if (Array.isArray(rawOrd) && rawOrd.length > 0) {
-        const valid = (rawOrd as string[]).filter((v): v is ProviderId => v === "pollinations" || v === "cloudflare-workers-ai" || v === "openai");
+        const valid = (rawOrd as string[]).filter((v): v is ProviderId => v === "pollinations" || v === "search" || v === "cloudflare-workers-ai" || v === "openai");
         const dedup = [...new Set(valid)];
         if (dedup.length > 0) {
-          // 저장된 순서(백엔드 3종) + 화면 전용(Puter) 누락분을 뒤에 보태 4종 집합을 유지한다.
+          // 저장된 순서(백엔드 4종) + 화면 전용(Puter) 누락분을 뒤에 보태 5종 집합을 유지한다.
           const missing = FREE_FIRST_ORDER.filter((id) => !dedup.includes(id));
           setScProviderOrder([...dedup, ...missing]);
         }
@@ -649,6 +661,7 @@ export function App(): React.ReactElement {
         ? (rawOff as string[]).filter(
             (v): v is ProviderId =>
               v === "pollinations" ||
+              v === "search" ||
               v === "cloudflare-workers-ai" ||
               v === "openai" ||
               v === "puter",
@@ -656,6 +669,7 @@ export function App(): React.ReactElement {
         : [];
       setScProviderEnabled({
         pollinations: !offList.includes("pollinations"),
+        search: !offList.includes("search"),
         puter: !offList.includes("puter"),
         "cloudflare-workers-ai": !offList.includes("cloudflare-workers-ai"),
         openai: !offList.includes("openai"),
@@ -873,6 +887,46 @@ export function App(): React.ReactElement {
       }
       return;
     }
+    // provider=search일 때는 생성이 아니라 **키워드 검색** 경로로 분기한다.
+    // 검색도 배경을 "적용"해야 하므로 우선순위 커맨드에 공급자 1개([search])만 넘겨
+    // 코어의 동일한 폴백·기록 경로(state.json provider=search)를 그대로 사용한다.
+    // (이 분기가 없으면 검색 선택 시 Cloudflare 분기로 흘러 Account ID 오류가 났다)
+    if (scProvider === "search") {
+      const keyword = prompt.trim();
+      if (!keyword) {
+        reportError("검색 키워드를 입력하세요.");
+        return;
+      }
+      setBusy(true);
+      try {
+        const state = await invoke<WallpaperState>("generate_wallpaper_priority", {
+          prompt: keyword,
+          position,
+          monitorId: monitorId.trim() ? monitorId.trim() : null,
+          providerOrder: ["search"],
+        });
+        setStatus((prev) =>
+          prev
+            ? {
+                ...prev,
+                current_wallpaper: state.current_wallpaper,
+                previous_wallpaper: state.previous_wallpaper,
+                backend_used: state.backend_used,
+                provider: state.provider,
+                source: state.source,
+              }
+            : prev,
+        );
+        await syncSelectedToApplied(state);
+        reportOk(`검색 생성·적용 완료 — 백엔드: ${state.backend_used ?? "unknown"}`);
+        await refreshStatus();
+      } catch (err) {
+        reportError(`검색 생성 실패 (기존 배경 유지): ${formatErr(err)}`);
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     // provider=openai일 때는 OpenAI 경로로 분기한다 (저장된 api_key 폴백 포함).
     if (scProvider === "openai") {
       const aiPrompt = prompt.trim();
@@ -1024,10 +1078,16 @@ export function App(): React.ReactElement {
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
     const localDir = scLocalDir.trim() ? scLocalDir.trim() : null;
+    // 검색(Search) 소스 — 줄바꿈 구분 키워드 목록. 빈 줄은 버리고 순서를 유지한다.
+    // 이 값이 scenario.json 의 `source.search_queries` 로 저장되어 자동 실행(tick)에서 순환된다.
+    const searchQueries = scSearchQueries
+      .split("\n")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
     // Puter는 WebView 전용 SDK라 백엔드 ImageProvider("pollinations"|"cloudflare-workers-ai"|"openai")로
     // 역직렬화할 수 없다 — 그대로 저장하면 scenario.json 로드 시 실패한다. 저장을 명시적으로 차단한다.
     if (scProvider === "puter") {
-      reportError("Puter는 WebView 전용 생성 경로라 시나리오 공급자로 저장할 수 없습니다. Pollinations/Cloudflare/OpenAI 중 선택 후 저장하세요.");
+      reportError("Puter는 WebView 전용 생성 경로라 시나리오 공급자로 저장할 수 없습니다. Pollinations/검색(Search)/Cloudflare/OpenAI 중 선택 후 저장하세요.");
       return;
     }
     // 위 puter 가드에서 early return했으므로 Exclude<ProviderId, "puter">로 좁혀진다.
@@ -1052,11 +1112,18 @@ export function App(): React.ReactElement {
     const prevCf = scPrev?.cloudflare ?? { account_id: "", api_token: "", model: "" };
     const prevOa = scPrev?.openai ?? { api_key: "", model: "" };
     const prevPrompt = scPrev?.prompt ?? "";
+    // 검색 키워드 변경도 소스 변경이다 — 커서를 리셋하지 않으면 키워드가 줄었을 때
+    // next_index 가 목록 밖으로 나가 첫 키워드로 되돌아가는 어긋남이 생긴다.
+    const prevSearchQueries = scPrev?.source.search_queries ?? [];
+    const searchChanged =
+      prevSearchQueries.length !== searchQueries.length ||
+      prevSearchQueries.some((q, i) => q !== searchQueries[i]);
     const sourceChanged =
       scPrev == null ||
       prevUrls.length !== urls.length ||
       prevUrls.some((u, i) => u !== urls[i]) ||
       (prevLocalDir ?? null) !== localDir ||
+      searchChanged ||
       prevProvider !== provider ||
       orderChanged ||
       (prevCf.account_id ?? "") !== cfAccount ||
@@ -1071,7 +1138,9 @@ export function App(): React.ReactElement {
         settings: {
           enabled: scEnabled,
           interval_minutes: minutes,
-          source: { urls, local_dir: localDir },
+          // 검색(Search) 소스도 함께 저장한다 — 이 필드가 없으면 시나리오 자동 실행(tick)에서
+          // 검색 공급자가 "키워드 없음"으로 판정되어 조용히 스킵된다.
+          source: { urls, local_dir: localDir, search_queries: searchQueries },
           order: scOrder,
           next_index: nextIndex,
           last_run_at: lastRunAt,
@@ -1598,6 +1667,19 @@ export function App(): React.ReactElement {
                 onChange={(e) => setScLocalDir(e.target.value)}
                 placeholder="C:\Users\me\Pictures\auto (비우면 사용 안 함)"
               />
+            </div>
+            <div className="field">
+              <label htmlFor="scSearchQueries">검색 키워드 (줄바꿈 구분 — 검색 공급자용)</label>
+              <textarea
+                id="scSearchQueries"
+                value={scSearchQueries}
+                onChange={(e) => setScSearchQueries(e.target.value)}
+                placeholder={"aurora borealis\nneon city night"}
+              />
+              <div className="detail">
+                검색(Search) 공급자를 On 으로 두면 이 키워드로 공개 이미지를 검색해 배경으로 사용합니다
+                (순서 항목의 순차/랜덤에 따라 순환). 프롬프트가 비어 있어도 키워드만으로 자동 실행됩니다.
+              </div>
             </div>
             <div className="field">
               <label htmlFor="scOrder">순서</label>

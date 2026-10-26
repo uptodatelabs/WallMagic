@@ -256,12 +256,13 @@ pub fn search_wallpapers_impl(query: &str, dir: Option<&str>) -> Result<SearchRe
     wallmagic_core::search_wallpapers(query, root.as_deref()).map_err(err_to_string)
 }
 
-/// IPC #2 (액션 ② 생성): 프롬프트 기반 배경을 생성하고 썸네일 후보로 반환한다.
-#[tauri::command]
-fn generate_library_wallpaper(prompt: String) -> Result<WallpaperCandidate, String> {
-    generate_library_wallpaper_impl(&prompt)
-}
-
+/// ② 생성의 코어 위임 함수 (Pollinations 고정).
+///
+/// IPC 표면(`#[tauri::command]`)에서는 제거되었다 — UI 는 공급자를 명시하는
+/// `generate_library_wallpaper_with_provider` 만 호출한다. 죽은 IPC 명령을 등록해 두면
+/// `verify-ipc-contract.mjs`(UI invoke 집합 ≡ Rust command 집합)가 불일치로 실패하고,
+/// "어떤 공급자로 생성되는지"가 호출 경로마다 갈라진다.
+/// 스모크 테스트(`test_ipc_smoke_search_generate_apply_restore`)가 이 위임 함수를 쓴다.
 pub fn generate_library_wallpaper_impl(prompt: &str) -> Result<WallpaperCandidate, String> {
     wallmagic_core::generate_library_wallpaper(prompt).map_err(err_to_string)
 }
@@ -362,6 +363,13 @@ pub fn generate_library_wallpaper_with_provider_impl(
                 .map_err(err_to_string)?;
             format!("OpenAI Images API · model={oa_model}")
         }
+        // 검색(Search): 프롬프트를 **키워드**로 사용해 공개 이미지 1건을 검색·확정한다.
+        // 생성 API 대신 실제 검색 결과를 쓰는 공급자라, 키가 없어도 동작한다.
+        "search" => {
+            wallmagic_core::generate_search_wallpaper(trimmed_prompt, &dest)
+                .map_err(err_to_string)?;
+            format!("Wikimedia Commons image search (키워드 검색) · query: {trimmed_prompt}")
+        }
         // Puter 는 브라우저 SDK 전용이라 이 커맨드로 생성할 수 없다 — 프론트가 만든 이미지는
         // `save_generated_image` 로 저장한다. 조용히 다른 공급자로 대체하지 않는다.
         "puter" => {
@@ -372,7 +380,7 @@ pub fn generate_library_wallpaper_with_provider_impl(
         }
         other => {
             return Err(format!(
-                "unknown provider '{other}' (expected: pollinations|cloudflare-workers-ai|openai|puter)"
+                "unknown provider '{other}' (expected: pollinations|cloudflare-workers-ai|openai|search|puter)"
             ))
         }
     };
@@ -750,7 +758,6 @@ pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             search_wallpapers,
-            generate_library_wallpaper,
             generate_wallpaper_ai,
             generate_wallpaper_openai,
             apply_wallpaper,
@@ -1140,6 +1147,7 @@ mod tests {
             source: wallmagic_core::ScenarioSource {
                 urls: vec![],
                 local_dir: None,
+                search_queries: vec![],
             },
             order: wallmagic_core::ScenarioOrder::Sequential,
             next_index: 0,

@@ -395,3 +395,42 @@ pub fn generate_library_wallpaper(prompt: &str) -> Result<WallpaperCandidate, Wa
         WallpaperError::CandidateLoad(out_path.to_string_lossy().to_string())
     })
 }
+
+/// 검색(Search) 공급자: 키워드로 공개 이미지를 검색해 그 결과 1건을 `dest`에 확정한다.
+///
+/// - 프롬프트(생성) 대신 **키워드 검색**을 사용하는 공급자 경로다.
+/// - `search_online_wallpapers`가 내려받은 캐시 파일 중 첫 후보를 원본으로 삼아
+///   `normalize_to_hd`로 1920x1080 기준에 맞춘 뒤 `dest`에 저장한다.
+/// - 파일 자체에 사이드카(`provider=search`, 검색어 포함)를 남겨, ② 생성처럼 배경을
+///   적용하지 않는 경로에서도 미리보기가 자기 생성 경로를 정확히 표시할 수 있게 한다.
+/// - 검색 결과 0건·다운로드 전멸은 `Network`/`HttpStatus`로 그대로 반환한다(무음 폴백 금지).
+pub fn generate_search_wallpaper(query: &str, dest: &PathBuf) -> Result<PathBuf, WallpaperError> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return Err(WallpaperError::CandidateLoad(
+            "empty search query: search provider needs a keyword".to_string(),
+        ));
+    }
+    let result = search_online_wallpapers(trimmed)?;
+    let first = result.candidates.first().ok_or_else(|| {
+        WallpaperError::Network(format!(
+            "search provider found no usable image for '{trimmed}'"
+        ))
+    })?;
+    let bytes = std::fs::read(&first.path)
+        .map_err(|e| WallpaperError::CandidateLoad(format!("read searched image failed: {e}")))?;
+    let img = image::load_from_memory(&bytes).map_err(|e| {
+        WallpaperError::CandidateLoad(format!("searched image decode failed: {e}"))
+    })?;
+    let hd = crate::wallpaper::normalize_to_hd(img)?;
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    hd.save(dest)?;
+    write_generation_sidecar(
+        dest,
+        Some("search"),
+        Some(&format!("Wikimedia Commons image search (키워드 검색) · query: {trimmed}")),
+    )?;
+    Ok(dest.clone())
+}
