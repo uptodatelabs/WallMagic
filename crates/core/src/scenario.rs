@@ -132,6 +132,10 @@ pub fn effective_provider_order(settings: &ScenarioSettings) -> Vec<ImageProvide
     };
     let mut out: Vec<ImageProvider> = Vec::new();
     for p in raw {
+        // Off(비활성) 공급자는 후보에서 제외 — 순서 목록의 위치는 UI 가 유지한다.
+        if settings.disabled_providers.contains(&p) {
+            continue;
+        }
         if !out.contains(&p) {
             out.push(p);
         }
@@ -144,6 +148,10 @@ pub fn effective_provider_order(settings: &ScenarioSettings) -> Vec<ImageProvide
 /// - Cloudflare는 account_id + api_token이 모두 필요.
 /// - OpenAI는 api_key가 필요.
 pub fn provider_is_configured(settings: &ScenarioSettings, provider: ImageProvider) -> bool {
+    // 사용자가 Off 로 둔 공급자는 자격증명이 있어도 시도하지 않는다(개별 On/Off).
+    if settings.disabled_providers.contains(&provider) {
+        return false;
+    }
     match provider {
         ImageProvider::Pollinations => true,
         ImageProvider::CloudflareWorkersAi => {
@@ -278,6 +286,11 @@ pub struct ScenarioSettings {
     /// 해석한다. 기본값 = 무료 우선(Pollinations → Cloudflare → OpenAI).
     #[serde(default)]
     pub provider_order: Vec<ImageProvider>,
+    /// 사용자가 Off(비활성)로 둔 공급자 목록.
+    /// 순서 목록에서 위치는 유지하되 생성·폴백 후보에서는 제외한다(공급자별 개별 On/Off).
+    /// `#[serde(default)]` 로 구 scenario.json(필드 없음)과 호환된다.
+    #[serde(default)]
+    pub disabled_providers: Vec<ImageProvider>,
     /// 공용 생성 프롬프트 — Pollinations/Cloudflare/OpenAI 3개 공급자가 모두 참조한다.
     /// 구 `cloudflare.prompt`/`openai.prompt`는 제거되고 이 필드로 단일화되었다.
     #[serde(default)]
@@ -318,6 +331,7 @@ impl Default for ScenarioSettings {
             cloudflare: CloudflareAiConfig::default(),
             openai: OpenAiConfig::default(),
             provider_order: default_provider_order(),
+            disabled_providers: Vec::new(),
             clear_api_token: false,
             clear_api_key: false,
         }
@@ -908,6 +922,7 @@ mod tests {
             cloudflare: CloudflareAiConfig::default(),
             openai: OpenAiConfig::default(),
             provider_order: default_provider_order(),
+            disabled_providers: Vec::new(),
             clear_api_token: false,
             clear_api_key: false,
         }
@@ -962,6 +977,44 @@ mod tests {
         assert!(s.validate().is_err());
         s.interval_minutes = 5;
         assert!(s.validate().is_ok());
+    }
+
+    // ── 개별 On/Off (disabled_providers) 회귀 테스트 ──
+    #[test]
+    fn test_disabled_providers_excluded_from_order_and_config() {
+        let mut s = settings_with_urls(&["https://cdn.example.com/w1.jpg"]);
+        s.openai.api_key = "sk-test".to_string();
+        s.provider_order = vec![
+            ImageProvider::Pollinations,
+            ImageProvider::CloudflareWorkersAi,
+            ImageProvider::Openai,
+        ];
+        s.disabled_providers = vec![ImageProvider::Pollinations];
+
+        // Off 공급자는 순서 해석에서 빠지고, 자격 판정도 false 다.
+        assert_eq!(
+            effective_provider_order(&s),
+            vec![ImageProvider::CloudflareWorkersAi, ImageProvider::Openai]
+        );
+        assert!(!provider_is_configured(&s, ImageProvider::Pollinations));
+        assert!(provider_is_configured(&s, ImageProvider::Openai));
+
+        // 전부 Off 면 후보가 비어 자동 실행이 성립하지 않는다(조용한 성공 금지).
+        s.disabled_providers = vec![
+            ImageProvider::Pollinations,
+            ImageProvider::CloudflareWorkersAi,
+            ImageProvider::Openai,
+        ];
+        assert!(effective_provider_order(&s).is_empty());
+    }
+
+    #[test]
+    fn test_disabled_providers_defaults_empty_for_legacy_json() {
+        // 구버전 scenario.json(필드 없음)도 그대로 로드되고, On/Off 는 기본 "모두 On" 이다.
+        let raw = r#"{"enabled":false,"interval_minutes":60}"#;
+        let parsed: ScenarioSettings = serde_json::from_str(raw).expect("legacy scenario json");
+        assert!(parsed.disabled_providers.is_empty());
+        assert!(provider_is_configured(&parsed, ImageProvider::Pollinations));
     }
 
     // ── 검수 지적 3 (Red→Green): 신규 순수 헬퍼 3종의 회귀 테스트 ──

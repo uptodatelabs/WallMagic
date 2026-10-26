@@ -14,6 +14,9 @@ declare global {
       auth?: {
         isSignedIn?: () => boolean | Promise<boolean>;
         signIn?: () => Promise<unknown>;
+        // 월간 사용량·잔여 allowance 조회 (Puter User-Pays 모델).
+        // 근거: https://docs.puter.com/Objects/monthlyusage/
+        getMonthlyUsage?: () => Promise<unknown>;
       };
     };
   }
@@ -98,6 +101,70 @@ async function puterResultToBase64(result: unknown): Promise<string> {
 /// Promise.resolve로 정규화하고 try/catch로 감싸 동기·비동기 양쪽에 안전하다.
 /// Puter 로그인 페이지 주소 — 안내 모달에 표시하고 [바로가기]에서 연다.
 const PUTER_LOGIN_URL = "https://puter.com/auth/";
+
+/// Puter 리소스는 **microcents** 단위다 ($0.01 = 1,000,000).
+/// 근거: https://docs.puter.com/Objects/monthlyusage/ — "Resources in Puter are measured in microcents".
+const PUTER_MICROCENTS_PER_CENT = 1_000_000;
+
+/// Puter 남은 크레딧 표시용 정규화 결과. null 은 "응답에 없음/아직 조회 안 함"이다.
+export interface PuterUsageSummary {
+  /// 남은 allowance (microcents).
+  remaining: number | null;
+  /// 월 총 allowance (microcents).
+  allowance: number | null;
+  /// 이번 달 사용량 (microcents) = allowance - remaining.
+  spent: number | null;
+}
+
+function toMicrocents(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/// `puter.auth.getMonthlyUsage()` 응답을 정규화한다.
+/// - 공식 문서: `allowanceInfo.remaining` / `allowanceInfo.monthUsageAllowance`.
+/// - SDK 버전에 따라 최상위 `remaining` 으로도 올 수 있어 두 경로를 모두 처리한다.
+/// - 해석 불가면 0 대신 null 을 돌려준다 (실제 0 크레딧과 "모름"을 UI 에서 구분).
+export function puterUsageSummary(raw: unknown): PuterUsageSummary {
+  if (!raw || typeof raw !== "object") {
+    return { remaining: null, allowance: null, spent: null };
+  }
+  const obj = raw as Record<string, unknown>;
+  const info = (obj.allowanceInfo ?? null) as Record<string, unknown> | null;
+  const remaining = toMicrocents(info?.remaining) ?? toMicrocents(obj.remaining);
+  const allowance =
+    toMicrocents(info?.monthUsageAllowance) ?? toMicrocents(obj.monthUsageAllowance);
+  const spent = remaining !== null && allowance !== null ? allowance - remaining : null;
+  return { remaining, allowance, spent };
+}
+
+/// microcents → "$1.23" 표시 문자열. null(미확인)은 "알 수 없음".
+export function formatMicrocents(value: number | null): string {
+  if (value === null) return "알 수 없음";
+  const dollars = value / (PUTER_MICROCENTS_PER_CENT * 100);
+  return `${dollars.toFixed(2)}`;
+}
+
+/// 로그인 세션으로 Puter 월간 사용량(남은 크레딧)을 조회한다.
+/// SDK 미로드/미로그인/API 부재는 조용히 0 으로 표시하지 않고 명시적 오류로 실패한다.
+export async function fetchPuterUsage(): Promise<PuterUsageSummary> {
+  if (!window.puter) {
+    throw new Error("Puter.js SDK를 불러오지 못했습니다 (오프라인/스크립트 차단).");
+  }
+  const auth = window.puter.auth;
+  if (!auth) {
+    throw new Error("Puter 로그인(auth)을 사용할 수 없습니다 — SDK 버전을 확인하세요.");
+  }
+  if (typeof auth.getMonthlyUsage !== "function") {
+    throw new Error(
+      "이 Puter.js SDK 버전에는 getMonthlyUsage 가 없습니다 — 잔여 크레딧을 조회할 수 없습니다.",
+    );
+  }
+  const signedIn = await puterIsSignedIn(() => (auth.isSignedIn ? auth.isSignedIn() : false));
+  if (!signedIn) {
+    throw new Error("Puter 로그인이 필요합니다 — [Puter 로그인] 후 다시 조회하세요.");
+  }
+  return puterUsageSummary(await auth.getMonthlyUsage());
+}
 
 /// 팝업 차단 안내 모달을 띄우기 위한 컴포넌트 등록 지점.
 /// 모듈 스코프 함수(openPuterLoginFallback)는 React 상태에 접근할 수 없으므로,
@@ -321,6 +388,8 @@ export interface ScenarioSettings {
   position: string;
   provider: "pollinations" | "cloudflare-workers-ai" | "openai";
   provider_order?: ("pollinations" | "cloudflare-workers-ai" | "openai")[];
+  /** Off(비활성) 공급자 목록 — 생성·폴백·시나리오 자동 실행에서 모두 제외된다. */
+  disabled_providers?: string[];
   prompt: string;
   cloudflare: { account_id: string; api_token: string; model: string };
   clear_api_token?: boolean;
@@ -388,6 +457,14 @@ export function App(): React.ReactElement {
     order.filter((id) => PROVIDERS.find((p) => p.id === id)?.backend);
   const [scProvider, setScProvider] = useState<ProviderId>("pollinations");
   const [scProviderOrder, setScProviderOrder] = useState<ProviderId[]>([...FREE_FIRST_ORDER]);
+  // 공급자별 On/Off — Off 공급자는 생성·폴백에서 제외하고, 저장 시 backend
+  // `disabled_providers` 로 전달되어 시나리오 자동 실행에서도 제외된다.
+  const [scProviderEnabled, setScProviderEnabled] = useState<Record<ProviderId, boolean>>({
+    pollinations: true,
+    puter: true,
+    "cloudflare-workers-ai": true,
+    openai: true,
+  });
   // 엄격 모드(기본 false): 선택한 공급자만 시도하고 실패 시 다른 공급자로 넘어가지 않는다.
   // true 일 때만 우선순위 목록 순서대로 폴백한다.
   const [scAllowFallback, setScAllowFallback] = useState(false);
@@ -400,6 +477,10 @@ export function App(): React.ReactElement {
   const [scClearKey, setScClearKey] = useState<boolean>(false);
   // Puter 이미지 모델 — 빈 문자열이면 options를 넘기지 않아 Puter 기본 모델을 쓴다.
   const [scPuterModel, setScPuterModel] = useState<string>("");
+  // Puter 남은 크레딧 — null 은 "아직 조회 안 함"(0 크레딧과 구분), err 는 조회 실패 사유.
+  const [puterUsage, setPuterUsage] = useState<PuterUsageSummary | null>(null);
+  const [puterUsageErr, setPuterUsageErr] = useState<string>("");
+  const [puterUsageBusy, setPuterUsageBusy] = useState<boolean>(false);
   // 프롬프트는 좌측 ②의 단일 #prompt를 모든 AI 공급자에 공통 적용한다(중복 입력 제거).
   const [scInfo, setScInfo] = useState<string>("시나리오 미조회");
   // 자동 틱 연속 실패 횟수 (지적 #4: 에러 은폐 방지용 카운터)
@@ -589,6 +670,26 @@ export function App(): React.ReactElement {
         const single = (sc.provider ?? "pollinations") as ProviderId;
         setScProviderOrder([single]);
       }
+      // 저장된 On/Off(disabled_providers)를 토글 상태로 복원한다.
+      // Puter 도 저장 대상에 포함한다 — 화면에서 Off 로 둔 상태가 재조회 후에도 유지되어야
+      // "껐는데 다시 켜져 있다"는 혼동이 없다. 백엔드는 Puter 를 후보로 쓰지 않으므로
+      // (provider_is_configured → false) 이 값이 시나리오 실행에 부작용을 주지 않는다.
+      const rawOff = (sc as unknown as { disabled_providers?: unknown }).disabled_providers;
+      const offList = Array.isArray(rawOff)
+        ? (rawOff as string[]).filter(
+            (v): v is ProviderId =>
+              v === "pollinations" ||
+              v === "cloudflare-workers-ai" ||
+              v === "openai" ||
+              v === "puter",
+          )
+        : [];
+      setScProviderEnabled({
+        pollinations: !offList.includes("pollinations"),
+        puter: !offList.includes("puter"),
+        "cloudflare-workers-ai": !offList.includes("cloudflare-workers-ai"),
+        openai: !offList.includes("openai"),
+      });
       setScCfAccount(sc.cloudflare?.account_id ?? "");
       // 검수 지적 [medium](a): get_scenario 응답의 api_token/api_key는 항상 ""(마스킹).
       // 빈 문자열로 덮어쓰면 사용자가 입력한 토큰이 지워지므로, 비어 있지 않을 때만 반영한다.
@@ -684,6 +785,14 @@ export function App(): React.ReactElement {
     const aiPrompt = prompt.trim();
     if (!aiPrompt) {
       reportError("프롬프트를 입력하세요.");
+      return;
+    }
+    // 개별 On/Off: Off 로 둔 공급자는 ② 생성에서도 시도하지 않는다.
+    // (우선순위 생성·시나리오 자동 실행과 같은 규칙 — 경로마다 판정이 달라지면 안 된다)
+    if (!scProviderEnabled[scProvider]) {
+      reportError(
+        `선택한 공급자(${providerLabel(scProvider)})가 Off(비활성)입니다 — 우선순위 목록에서 On 으로 바꾼 뒤 다시 시도하세요.`,
+      );
       return;
     }
     setBusy(true);
@@ -785,6 +894,8 @@ export function App(): React.ReactElement {
         await syncSelectedToApplied(state);
         reportOk(`Puter 생성·적용 완료 — 백엔드: ${state.backend_used ?? "unknown"}`);
         await refreshStatus();
+        // 생성은 크레딧을 소모하므로 성공 시 잔여 allowance 를 자동 갱신한다(실패는 표시만).
+        void handleRefreshPuterUsage();
       } catch (err) {
         reportError(`Puter 생성 실패 (기존 배경 유지): ${formatErr(err)}`);
       } finally {
@@ -951,6 +1062,13 @@ export function App(): React.ReactElement {
     }
     // 위 puter 가드에서 early return했으므로 Exclude<ProviderId, "puter">로 좁혀진다.
     const provider = scProvider as Exclude<ProviderId, "puter">;
+    // Off 공급자를 대표 공급자로 저장하면 시나리오 자동 실행 후보가 비어 버린다 — 명시적으로 막는다.
+    if (!scProviderEnabled[provider]) {
+      reportError(
+        `선택한 공급자(${providerLabel(provider)})가 Off(비활성)입니다 — 우선순위 목록에서 On 으로 바꾼 뒤 저장하세요.`,
+      );
+      return;
+    }
     const cfAccount = scCfAccount.trim();
     const cfModel = scCfModel.trim() || "@cf/black-forest-labs/flux-1-schnell";
     const openaiModel = scOpenaiModel.trim() || "gpt-image-1";
@@ -990,6 +1108,11 @@ export function App(): React.ReactElement {
           position,
           provider,
           provider_order: backendOrderIds(scProviderOrder),
+          // 개별 On/Off: Off 로 둔 공급자를 백엔드(시나리오 자동 실행)에도 알려 제외시킨다.
+          // Puter 도 함께 저장한다 — 화면에서 Off 로 둔 상태가 저장·재조회 후에도 유지되어야
+          // "껐는데 다시 켜져 있다"는 혼동이 없다. 백엔드는 Puter 를 어차피 시도하지 않으므로
+          // (provider_is_configured → false) 이 값이 시나리오 실행에 부작용을 주지 않는다.
+          disabled_providers: FREE_FIRST_ORDER.filter((id) => !scProviderEnabled[id]),
           prompt: sharedPrompt,
           cloudflare: { account_id: cfAccount, api_token: scCfToken, model: cfModel },
           clear_api_token: scClearToken,
@@ -1046,8 +1169,15 @@ export function App(): React.ReactElement {
       // 키 불필요로 항상 1순위 성공 → Puter 를 선택해도 시도조차 되지 않았다)
       // 백엔드 호출마다 providerOrder: [id]를 전달해 (Tauri v2 camelCase → Rust provider_order)
       // 저장하지 않은 순서 변경도 그대로 반영한다. puter 자리는 프론트 SDK로 시도한다.
+      // On/Off 반영: Off 공급자는 1순위 선택이든 폴백이든 시도하지 않는다.
+      const enabledOrder = scProviderOrder.filter((id) => scProviderEnabled[id]);
+      if (!scProviderEnabled[scProvider]) {
+        throw new Error(
+          `선택한 공급자(${providerLabel(scProvider)})가 Off(비활성)입니다 — 우선순위 목록에서 On 으로 바꾸거나 다른 공급자를 선택하세요.`,
+        );
+      }
       const order = scAllowFallback
-        ? [scProvider, ...scProviderOrder.filter((id) => id !== scProvider)]
+        ? [scProvider, ...enabledOrder.filter((id) => id !== scProvider)]
         : [scProvider];
       let state: WallpaperState | null = null;
       let usedProvider: ProviderId | null = null;
@@ -1145,11 +1275,26 @@ export function App(): React.ReactElement {
     }
   };
 
+  // Puter 남은 크레딧 조회 — 실패를 0 으로 위장하지 않고 사유를 그대로 표시한다.
+  const handleRefreshPuterUsage = async () => {
+    setPuterUsageBusy(true);
+    setPuterUsageErr("");
+    try {
+      setPuterUsage(await fetchPuterUsage());
+    } catch (err) {
+      setPuterUsage(null);
+      setPuterUsageErr(formatErr(err));
+    } finally {
+      setPuterUsageBusy(false);
+    }
+  };
+
   const handlePuterSignIn = async () => {
     setBusy(true);
     try {
       await ensurePuterSession();
       reportOk("Puter 세션 연결 완료 — 이제 이미지 생성을 사용할 수 있습니다");
+      void handleRefreshPuterUsage();
     } catch (err) {
       console.error("Puter 로그인 원본 에러:", (() => { try { return JSON.stringify(err, Object.getOwnPropertyNames(err as object)); } catch { return String(err); } })());
       reportError(`Puter 로그인 실패: ${formatErr(err)}`);
@@ -1530,10 +1675,24 @@ export function App(): React.ReactElement {
               <label>이미지 생성 우선순위 (폴백 순서 — 위부터 시도, 실패 시 다음 공급자)</label>
               {scProviderOrder.map((p, i) => (
                 <div key={p} style={{ display: "flex", gap: "6px", alignItems: "center", marginBottom: "4px" }}>
-                  <span style={{ minWidth: "160px" }}>
-                    {i + 1}. {providerLabel(p)}
-                    {p === "puter" ? " — 백엔드 폴백 제외(WebView 전용)" : ""}
-                  </span>
+                  <label
+                    style={{ display: "flex", gap: "4px", alignItems: "center", minWidth: "220px" }}
+                    title="Off 로 두면 이 공급자는 생성·폴백·시나리오 자동 실행에서 모두 제외됩니다."
+                  >
+                    <input
+                      type="checkbox"
+                      checked={scProviderEnabled[p]}
+                      onChange={(e) =>
+                        setScProviderEnabled((prev) => ({ ...prev, [p]: e.target.checked }))
+                      }
+                      disabled={busy}
+                    />
+                    <span>
+                      {i + 1}. {providerLabel(p)}
+                      {scProviderEnabled[p] ? " — On" : " — Off (제외)"}
+                      {p === "puter" ? " · 백엔드 폴백 제외(WebView 전용)" : ""}
+                    </span>
+                  </label>
                   <button type="button" onClick={() => moveProviderOrder(i, -1)} disabled={busy || i === 0}>▲</button>
                   <button type="button" onClick={() => moveProviderOrder(i, 1)} disabled={busy || i === scProviderOrder.length - 1}>▼</button>
                 </div>
@@ -1685,6 +1844,34 @@ export function App(): React.ReactElement {
                     모델을 선택하지 않으면 Puter 기본 모델(OpenAI gpt-image-2)이 사용됩니다.
                     모델마다 결과 화질·속도·사용 크레딧이 다릅니다.
                   </div>
+                </div>
+                <div className="field">
+                  <label htmlFor="puterUsageRemaining">Puter 남은 크레딧 (월간 allowance)</label>
+                  <div id="puterUsageRemaining" className="detail">
+                    {puterUsageBusy
+                      ? "조회 중..."
+                      : puterUsage
+                        ? `남은 크레딧: ${formatMicrocents(puterUsage.remaining)}${
+                            puterUsage.allowance !== null
+                              ? ` / 월 한도 ${formatMicrocents(puterUsage.allowance)}`
+                              : ""
+                          }${puterUsage.spent !== null ? ` · 사용 ${formatMicrocents(puterUsage.spent)}` : ""}`
+                        : "(아직 조회하지 않았습니다 — [크레딧 조회]를 누르세요)"}
+                  </div>
+                  {puterUsageErr && (
+                    <div className="detail" style={{ color: "#c0392b" }}>
+                      크레딧 조회 실패: {puterUsageErr}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    className="block"
+                    onClick={() => void handleRefreshPuterUsage()}
+                    disabled={busy || puterUsageBusy}
+                    style={{ marginBottom: "8px" }}
+                  >
+                    크레딧 조회
+                  </button>
                 </div>
                 <button
                   type="button"

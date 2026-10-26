@@ -1156,6 +1156,7 @@ mod tests {
             clear_api_token: clear_flag,
             openai: wallmagic_core::OpenAiConfig::default(),
             clear_api_key: false,
+            disabled_providers: Vec::new(),
         }
     }
 

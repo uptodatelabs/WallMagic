@@ -101,9 +101,21 @@ ok(
 
 ok(
   "폴백 허용 시 시도 순서가 선택한 공급자(scProvider) 우선으로 구성된다",
-  /scAllowFallback\s*\?\s*\[scProvider, \.\.\.scProviderOrder\.filter\(\(id\) => id !== scProvider\)\]/.test(
+  // On/Off 도입 후 폴백 후보는 `enabledOrder`(= On 공급자만) 로 좁혀진다.
+  // 계약의 본질은 "선택 공급자가 1순위" 이므로 두 형태를 모두 인정한다.
+  /scAllowFallback\s*\?\s*\[scProvider, \.\.\.(?:scProviderOrder|enabledOrder)\.filter\(\(id\) => id !== scProvider\)\]/.test(
     body,
   ),
+);
+
+ok(
+  "폴백 후보가 Off(비활성) 공급자를 제외한다",
+  /const enabledOrder = scProviderOrder\.filter\(\(id\) => scProviderEnabled\[id\]\)/.test(body),
+);
+
+ok(
+  "선택 공급자가 Off 면 시도 전에 명시적 오류로 알린다",
+  /scProviderEnabled\[scProvider\][\s\S]{0,200}(Off|비활성)/.test(body),
 );
 
 ok(
