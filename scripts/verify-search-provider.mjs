@@ -243,10 +243,13 @@ check("② 생성·적용(handleGenerateAi) 검색 분기가 백엔드가 실제
   // UI 가 넘긴 prompt 를 그대로 표기하면 실제 검색어와 어긋난다.
   // 적용 기록(state.source)의 "· query: <실제 검색어>" 를 읽어 표기해야 한다.
   const body = fnBody(app, "handleGenerateAi");
+  const module = readRepoFile("src-ui/appliedQuery.ts");
   return (
-    /state\.source/.test(body) &&
-    /·\\s\*query:\\s\*/.test(body) &&
-    /appliedQuery/.test(body)
+    /import\s*\{\s*parseAppliedSearchQuery\s*\}\s*from\s*"\.\/appliedQuery"/.test(app) &&
+    /parseAppliedSearchQuery\(\s*state\.source\s*\)/.test(body) &&
+    /appliedQuery/.test(body) &&
+    /QUERY_MARKER\s*=\s*"· query:"/.test(module) &&
+    /TRAILING_PRIORITY_SUFFIX/.test(module)
   );
 });
 

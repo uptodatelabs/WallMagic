@@ -7,6 +7,7 @@ import {
   stringifyUsageRaw,
   type PuterUsageResult,
 } from "./puterUsage";
+import { parseAppliedSearchQuery } from "./appliedQuery";
 
 /* ── Puter.js 전역 선언 (WebView 전용 SDK) ──
    `index.html`이 `https://js.puter.com/v2/`를 로드하므로 브라우저 전역에 `puter`가 생긴다.
@@ -963,12 +964,14 @@ export function App(): React.ReactElement {
         // 실제 검색어는 **백엔드가 고른 값**이다 — ⑤ 키워드 목록이 있으면
         // `search_query_for` 가 next_index(순차)/seed(랜덤)로 순환하므로, UI 가 넘긴
         // prompt 를 그대로 표기하면 실제 검색어와 어긋난다(검수 지적 [medium]).
-        // 백엔드는 적용 기록(state.source)에 "· query: <실제 검색어> · priority" 형태로
-        // 남긴다. ` · ` 다음 구분자(접미사)까지 잡으면 검색어에 "· priority" 가 붙으므로
-        // 구분자 앞까지만 잘라 "표기 = 실제 검색어" 계약을 지킨다.
-        const appliedSource = state.source ?? "";
-        const appliedQuery =
-          /·\s*query:\s*([^·]+)/.exec(appliedSource)?.[1]?.trim() || keyword;
+        // 백엔드는 적용 기록(state.source)에 "… · query: <실제 검색어> · priority" 형태로
+        // 남긴다. 검색어 자체에 '·' 가 들어갈 수 있으므로 구분자로 잘라내지 않는다
+        // (검수 지적 [low]: `[^·]+` 는 첫 '·' 에서 검색어를 절단해 표기≠실제가 된다).
+        // "query:" 이후 전체를 취한 뒤 **후행 접미사 ' · priority' 만** 제거한다.
+        // 파싱은 순수 모듈(`appliedQuery.ts`)에 위임한다 — 검색어에 '·' 가 들어가도
+        // 후행 " · priority" 접미사만 제거하고 내부 '·' 는 보존한다.
+        // (소스 정규식 문자열 검사로는 절단 버그를 잡지 못해 실행 가능 모듈로 분리)
+        const appliedQuery = parseAppliedSearchQuery(state.source) ?? keyword;
         reportOk(
           `검색 생성·적용 완료 — 검색어: "${appliedQuery}" · 백엔드: ${state.backend_used ?? "unknown"}`,
         );

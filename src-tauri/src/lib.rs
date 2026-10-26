@@ -602,10 +602,15 @@ pub fn generate_wallpaper_priority_impl(
 ) -> Result<WallpaperState, String> {
     let pos = parse_position_arg(position)?;
     let mut settings = wallmagic_core::load_scenario().map_err(err_to_string)?;
+    // IPC 로 받은 시도 순서는 **이번 생성 시도용 복제본에만** 적용한다.
+    // 원본 `settings.provider_order` 를 덮어쓰면 아래 `save_scenario(&settings)` 가
+    // 그 값을 디스크에 영구 저장해 사용자의 시나리오 자동 생성 순서가 손상된다
+    // (검수 지적 [high]: ② 생성·적용 검색이 provider_order 를 ["search"] 로 오염).
+    // effective_provider_order 가 빈 배열·중복을 정규화하므로 미저장 상태에서도
+    // 화면 순서 = 실제 시도 순서는 그대로 유지된다.
+    let mut gen = settings.clone();
     if let Some(order) = provider_order {
-        // 지적 2: 화면 순서를 그대로 전달 — effective_provider_order가
-        // 빈 배열·중복을 정규화하므로 미저장 상태에서도 화면 순서 = 실제 시도 순서.
-        settings.provider_order = order;
+        gen.provider_order = order;
     }
     let dest = wallmagic_core::app_data_dir()
         .join("online_cache")
@@ -615,7 +620,7 @@ pub fn generate_wallpaper_priority_impl(
     // 순차(next_index)/랜덤(seed) 순환에서 다른 검색어를 만들어 UI 표기와 어긋난다
     // (검수 지적 [medium]: ② 검색 경로의 검색어 표기 불일치).
     let (used, path, used_query) =
-        wallmagic_core::generate_ai_with_fallback_query(&settings, prompt, &dest)
+        wallmagic_core::generate_ai_with_fallback_query(&gen, prompt, &dest)
             .map_err(err_to_string)?;
     // 생성 정보 기록: 우선순위 폴백에서 **실제로 성공한 공급자**를 state.json 에 남긴다.
     // `_used` 를 버리면 사용자는 어떤 경로로 생성됐는지 알 수 없다 (요구 ① 위반).

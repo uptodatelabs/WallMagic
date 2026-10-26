@@ -30,6 +30,31 @@ const ok = (name, cond) => {
   }
 };
 
+/** 이름이 정확히 name 인 Rust 함수 본문(중괄호 균형)을 잘라낸다.
+ *
+ * 이전 구현은 `generate_wallpaper_priority_impl[\s\S]{0,900}?…` 처럼 **문자 수 창**으로
+ * 함수 범위를 근사했다. 함수에 주석을 조금만 더 달아도 창을 벗어나 정상 코드가 FAIL 로
+ * 판정되는 취약점이 있었다(실제로 주석 추가 후 오탐 1건 발생). 함수 경계를 실제로
+ * 계산해 창 크기와 무관하게 만든다.
+ */
+function rustFnBody(src, name) {
+  const re = new RegExp(`fn\\s+${name}\\s*[(<]`);
+  const m = re.exec(src);
+  if (!m) return "";
+  const open = src.indexOf("{", m.index);
+  if (open < 0) return "";
+  let depth = 0;
+  for (let i = open; i < src.length; i += 1) {
+    const ch = src[i];
+    if (ch === "{") depth += 1;
+    else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) return src.slice(open, i + 1);
+    }
+  }
+  return src.slice(open);
+}
+
 // ── 파일 로드 ──
 let wallpaper = read("crates/core/src/wallpaper.rs");
 let scenario = read("crates/core/src/scenario.rs");
@@ -111,6 +136,38 @@ ok(
   !/_used, path\)/.test(scenario),
 );
 
+/** 이름과 정확히 일치하는 Rust/JS 함수의 본문을 잘라낸다(중괄호 균형).
+
+ * 문자 수 상한(`pattern[\s\S]{0,900}?target`) 방식은 함수 본문에 주석이 늘어나면
+ * 검사 창이 함수 끝을 벗어나 **실제 코드가 멀쩡해도 FAIL** 하는 오탐을 만든다
+ * (이번 턴 실측: generate_wallpaper_priority_impl 에 provider_order 복제 주석이
+ *  추가되며 900자 창을 넘겨 FAIL). 이름 경계 + 중괄호 균형으로 본문만 본다. */
+function fnBody(src, name) {
+  const rustRe = new RegExp(`(?:pub\\s+)?fn\\s+${name}\\s*[(<]`);
+  let m = rustRe.exec(src);
+  let start;
+  if (m) {
+    start = m.index;
+  } else {
+    const jsRe = new RegExp(`\\b(?:const|let|var|function)\\s+${name}\\b`);
+    m = jsRe.exec(src);
+    if (!m) return "";
+    start = m.index;
+  }
+  const open = src.indexOf("{", start);
+  if (open < 0) return "";
+  let depth = 0;
+  for (let i = open; i < src.length; i += 1) {
+    const ch = src[i];
+    if (ch === "{") depth += 1;
+    else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) return src.slice(open, i + 1);
+    }
+  }
+  return src.slice(open);
+}
+
 // ── 3) 수동 생성 IPC 3경로 ──
 ok(
   'Cloudflare 수동 생성이 provider "cloudflare-workers-ai" 기록',
@@ -131,16 +188,26 @@ ok(
   "우선순위 생성 IPC 가 성공 공급자를 기록 (used 폐기 금지)",
   // 3-튜플(`let (used, path, used_query)`) 계약도 허용한다 — 실제 사용된 질의문을
   // 함께 받아 기록하는 형태(검수 지적 [medium] 반영). 2-튜플은 하위호환으로 계속 통과.
-  /generate_wallpaper_priority_impl[\s\S]{0,900}?let \(used, path(?:, used_query)?\)/.test(
-    tauri,
-  ) &&
-    /generate_wallpaper_priority_impl[\s\S]{0,1800}?set_wallpaper_with\(/.test(tauri),
+  (() => {
+    const body = fnBody(tauri, "generate_wallpaper_priority_impl");
+    return (
+      /let \(used, path(?:, used_query)?\)/.test(body) &&
+      /generate_ai_with_fallback_query\(/.test(body) &&
+      /set_wallpaper_with\(/.test(body) &&
+      /Some\(used\.as_id\(\)\)/.test(body)
+    );
+  })(),
 );
 ok(
   "우선순위 생성 IPC 가 실제 사용 검색어(used_query)를 기록한다 (재계산 금지)",
-  /generate_wallpaper_priority_impl[\s\S]{0,1800}?generate_ai_with_fallback_query\(/.test(tauri) &&
-    /query:\s*\{used_query\}/.test(tauri) &&
-    !/generate_wallpaper_priority_impl[\s\S]{0,1800}?search_query_for\(/.test(tauri),
+  (() => {
+    const body = fnBody(tauri, "generate_wallpaper_priority_impl");
+    return (
+      /generate_ai_with_fallback_query\(/.test(body) &&
+      /query:\s*\{used_query\}/.test(body) &&
+      !/search_query_for\(/.test(body)
+    );
+  })(),
 );
 
 // ── 4) 상태 조회 IPC ──
