@@ -15,6 +15,10 @@ import { readFileSync } from "node:fs";
 
 const core = readFileSync("crates/core/src/scenario.rs", "utf8");
 const app = readFileSync("src-ui/App.tsx", "utf8");
+// 크레딧 정규화·표시 로직은 React 비의존 순수 모듈로 분리되었다.
+// (이전에는 App.tsx 안에 있어 문자열 검사만 가능했고, "모두 0 표시" 결함을 놓쳤다)
+// 이 스크립트는 배선(호출·UI)을 app 에서, 계산 규칙을 usage 모듈에서 확인한다.
+const usage = readFileSync("src-ui/puterUsage.ts", "utf8");
 
 const results = [];
 function check(name, fn) {
@@ -119,16 +123,33 @@ check("Puter 크레딧은 auth.getMonthlyUsage 로 조회한다", () => {
 });
 
 check("남은 크레딧(microcents)을 표시 문자열로 변환한다", () => {
-  return /MICROCENTS/.test(app) && /toFixed\(2\)/.test(app);
+  // 계산은 순수 모듈(usage)이 담당한다. 1센트 미만은 4자리로 보여 실제 값을 가리지 않는다.
+  return (
+    /PUTER_MICROCENTS_PER_CENT\s*=\s*1_000_000/.test(usage) &&
+    /toFixed\(/.test(usage) &&
+    /formatMicrocents/.test(app)
+  );
 });
 
 check("크레딧 응답은 allowanceInfo.remaining 과 monthUsageAllowance 를 정규화한다", () => {
-  return /allowanceInfo/.test(app) && /monthUsageAllowance/.test(app);
+  // 고정 경로만 보지 않고 후보 키를 트리에서 탐색한다(래핑·snake_case·문자열 숫자 대응).
+  return (
+    /"remaining"/.test(usage) &&
+    /monthUsageAllowance/.test(usage) &&
+    /"month_usage_allowance"/.test(usage) &&
+    /remaining_allowance/.test(usage)
+  );
 });
 
 // ── 8. 0 과 모름 구분 ───────────────────────────────────────────────
 check("크레딧 미확인(null)과 0 을 구분해 표시한다", () => {
-  return /value === null\) return "알 수 없음"/.test(app) || /알 수 없음/.test(app);
+  // 표시 문자열 규칙은 순수 모듈(usage)에 있다: null → "알 수 없음", 0 → "$0.00".
+  // (이전에는 App.tsx 안에 있어 app 만 검사했으나, 모듈 분리 후에는 usage 가 대상이다.
+  //  app 쪽은 조회 결과를 그대로 formatMicrocents 에 넘기는지(중간 0 변환 없음)만 본다.)
+  const nullIsUnknown = /value === null\) return "알 수 없음"/.test(usage);
+  const zeroIsZero = /value === 0\) return "\$0\.00"/.test(usage);
+  const appPassesThrough = /formatMicrocents\(puterUsage\.summary\.remaining\)/.test(app);
+  return nullIsUnknown && zeroIsZero && appPassesThrough;
 });
 
 check("크레딧 조회 실패는 0 으로 위장하지 않고 명시적 오류로 표시한다", () => {

@@ -1,5 +1,11 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import {
+  formatMicrocents,
+  puterUsageSummary,
+  stringifyUsageRaw,
+  type PuterUsageResult,
+} from "./puterUsage";
 
 /* ── Puter.js 전역 선언 (WebView 전용 SDK) ──
    `index.html`이 `https://js.puter.com/v2/`를 로드하므로 브라우저 전역에 `puter`가 생긴다.
@@ -102,51 +108,11 @@ async function puterResultToBase64(result: unknown): Promise<string> {
 /// Puter 로그인 페이지 주소 — 안내 모달에 표시하고 [바로가기]에서 연다.
 const PUTER_LOGIN_URL = "https://puter.com/auth/";
 
-/// Puter 리소스는 **microcents** 단위다 ($0.01 = 1,000,000).
-/// 근거: https://docs.puter.com/Objects/monthlyusage/ — "Resources in Puter are measured in microcents".
-const PUTER_MICROCENTS_PER_CENT = 1_000_000;
-
-/// Puter 남은 크레딧 표시용 정규화 결과. null 은 "응답에 없음/아직 조회 안 함"이다.
-export interface PuterUsageSummary {
-  /// 남은 allowance (microcents).
-  remaining: number | null;
-  /// 월 총 allowance (microcents).
-  allowance: number | null;
-  /// 이번 달 사용량 (microcents) = allowance - remaining.
-  spent: number | null;
-}
-
-function toMicrocents(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-/// `puter.auth.getMonthlyUsage()` 응답을 정규화한다.
-/// - 공식 문서: `allowanceInfo.remaining` / `allowanceInfo.monthUsageAllowance`.
-/// - SDK 버전에 따라 최상위 `remaining` 으로도 올 수 있어 두 경로를 모두 처리한다.
-/// - 해석 불가면 0 대신 null 을 돌려준다 (실제 0 크레딧과 "모름"을 UI 에서 구분).
-export function puterUsageSummary(raw: unknown): PuterUsageSummary {
-  if (!raw || typeof raw !== "object") {
-    return { remaining: null, allowance: null, spent: null };
-  }
-  const obj = raw as Record<string, unknown>;
-  const info = (obj.allowanceInfo ?? null) as Record<string, unknown> | null;
-  const remaining = toMicrocents(info?.remaining) ?? toMicrocents(obj.remaining);
-  const allowance =
-    toMicrocents(info?.monthUsageAllowance) ?? toMicrocents(obj.monthUsageAllowance);
-  const spent = remaining !== null && allowance !== null ? allowance - remaining : null;
-  return { remaining, allowance, spent };
-}
-
-/// microcents → "$1.23" 표시 문자열. null(미확인)은 "알 수 없음".
-export function formatMicrocents(value: number | null): string {
-  if (value === null) return "알 수 없음";
-  const dollars = value / (PUTER_MICROCENTS_PER_CENT * 100);
-  return `${dollars.toFixed(2)}`;
-}
-
 /// 로그인 세션으로 Puter 월간 사용량(남은 크레딧)을 조회한다.
+/// 정규화는 `./puterUsage`(순수 모듈)가 담당하고, 여기서는 SDK 호출·세션 확인만 한다.
+/// 응답 원본(raw)도 함께 돌려주어 화면에서 실제 스키마를 확인할 수 있게 한다.
 /// SDK 미로드/미로그인/API 부재는 조용히 0 으로 표시하지 않고 명시적 오류로 실패한다.
-export async function fetchPuterUsage(): Promise<PuterUsageSummary> {
+export async function fetchPuterUsage(): Promise<PuterUsageResult> {
   if (!window.puter) {
     throw new Error("Puter.js SDK를 불러오지 못했습니다 (오프라인/스크립트 차단).");
   }
@@ -163,7 +129,8 @@ export async function fetchPuterUsage(): Promise<PuterUsageSummary> {
   if (!signedIn) {
     throw new Error("Puter 로그인이 필요합니다 — [Puter 로그인] 후 다시 조회하세요.");
   }
-  return puterUsageSummary(await auth.getMonthlyUsage());
+  const raw = await auth.getMonthlyUsage();
+  return { summary: puterUsageSummary(raw), raw };
 }
 
 /// 팝업 차단 안내 모달을 띄우기 위한 컴포넌트 등록 지점.
@@ -478,7 +445,9 @@ export function App(): React.ReactElement {
   // Puter 이미지 모델 — 빈 문자열이면 options를 넘기지 않아 Puter 기본 모델을 쓴다.
   const [scPuterModel, setScPuterModel] = useState<string>("");
   // Puter 남은 크레딧 — null 은 "아직 조회 안 함"(0 크레딧과 구분), err 는 조회 실패 사유.
-  const [puterUsage, setPuterUsage] = useState<PuterUsageSummary | null>(null);
+  // summary(정규화 결과)와 raw(원본 응답)를 함께 보관한다: 응답 스키마가 달라 값이
+  // null 로 떨어질 때 "왜 0/모름인지"를 화면에서 바로 확인하기 위함이다.
+  const [puterUsage, setPuterUsage] = useState<PuterUsageResult | null>(null);
   const [puterUsageErr, setPuterUsageErr] = useState<string>("");
   const [puterUsageBusy, setPuterUsageBusy] = useState<boolean>(false);
   // 프롬프트는 좌측 ②의 단일 #prompt를 모든 AI 공급자에 공통 적용한다(중복 입력 제거).
@@ -1851,13 +1820,36 @@ export function App(): React.ReactElement {
                     {puterUsageBusy
                       ? "조회 중..."
                       : puterUsage
-                        ? `남은 크레딧: ${formatMicrocents(puterUsage.remaining)}${
-                            puterUsage.allowance !== null
-                              ? ` / 월 한도 ${formatMicrocents(puterUsage.allowance)}`
+                        ? `남은 크레딧: ${formatMicrocents(puterUsage.summary.remaining)}${
+                            puterUsage.summary.allowance !== null
+                              ? ` / 월 한도 ${formatMicrocents(puterUsage.summary.allowance)}`
                               : ""
-                          }${puterUsage.spent !== null ? ` · 사용 ${formatMicrocents(puterUsage.spent)}` : ""}`
+                          }${
+                            puterUsage.summary.spent !== null
+                              ? ` · 사용 ${formatMicrocents(puterUsage.summary.spent)}`
+                              : ""
+                          } · 값 경로: ${puterUsage.summary.remainingPath ?? "없음"}`
                         : "(아직 조회하지 않았습니다 — [크레딧 조회]를 누르세요)"}
                   </div>
+                  {puterUsage && (
+                    <details style={{ marginBottom: "8px" }}>
+                      <summary className="detail">
+                        원본 응답 보기 (진단 — 실제 스키마 확인용)
+                      </summary>
+                      <pre
+                        className="detail"
+                        style={{
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-all",
+                          maxHeight: "240px",
+                          overflow: "auto",
+                          marginTop: "6px",
+                        }}
+                      >
+                        {stringifyUsageRaw(puterUsage.raw)}
+                      </pre>
+                    </details>
+                  )}
                   {puterUsageErr && (
                     <div className="detail" style={{ color: "#c0392b" }}>
                       크레딧 조회 실패: {puterUsageErr}
