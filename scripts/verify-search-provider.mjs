@@ -132,6 +132,44 @@ check("generate_ai_with_fallback_with 가 Search 에 키워드 기반 질의를 
   return /search_query_for/.test(body) && /attempt\(provider, &query/.test(body);
 });
 
+check("generate_ai_with_fallback_with 가 Search 자격 판정 시 호출 인자 prompt(!trimmed.is_empty())도 인정한다", () => {
+  const body = fnBody(scenario, "generate_ai_with_fallback_with");
+  return (
+    /provider\s*==\s*ImageProvider::Search/.test(body) &&
+    /!settings\.disabled_providers\.contains\(&ImageProvider::Search\)/.test(body) &&
+    /!trimmed\.is_empty\(\)/.test(body)
+  );
+});
+
+check("tick_scenario 상단 AI 분기가 Search 채택 시 query 기록 및 next_index 모듈로 순환을 수행한다", () => {
+  const body = fnBody(scenario, "tick_scenario");
+  const topBranch = body.split("if settings.prompt.trim().is_empty()")[0] || "";
+  return (
+    /used\s*==\s*ImageProvider::Search/.test(topBranch) &&
+    /query:\s*\{query\}/.test(topBranch) &&
+    /wrapping_add\(1\)\s*%\s*query_count/.test(topBranch)
+  );
+});
+
+check("generate_wallpaper_priority_impl 이 Search 채택 시 query 기록 및 next_index 모듈로 순환·저장을 수행한다", () => {
+  const body = fnBody(lib, "generate_wallpaper_priority_impl");
+  return (
+    /used\s*==\s*wallmagic_core::ImageProvider::Search/.test(body) &&
+    /query:\s*\{query\}/.test(body) &&
+    /wrapping_add\(1\)\s*%\s*query_count/.test(body) &&
+    /save_scenario\(&settings\)/.test(body)
+  );
+});
+
+check("ScenarioSettings::default() 상태(s.prompt·search_queries 빈 값)에서 수동 prompt 인자만으로 통과하는 테스트가 있다", () => {
+  const body = fnBody(scenario, "test_search_uses_prompt_when_keywords_are_empty");
+  return (
+    /assert!\(s\.prompt\.is_empty\(\)\)/.test(body) &&
+    /assert!\(s\.source\.search_queries\.is_empty\(\)\)/.test(body) &&
+    /generate_ai_with_fallback_with\(&s,\s*"manual keyword"/.test(body)
+  );
+});
+
 check("tick_scenario 가 검색 소스 분기를 갖는다", () => {
   const body = fnBody(scenario, "tick_scenario");
   return /search_queries/.test(body) && /generate_search_wallpaper/.test(body);

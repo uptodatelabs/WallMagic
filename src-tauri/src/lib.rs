@@ -615,7 +615,19 @@ pub fn generate_wallpaper_priority_impl(
             .map_err(err_to_string)?;
     // 생성 정보 기록: 우선순위 폴백에서 **실제로 성공한 공급자**를 state.json 에 남긴다.
     // `_used` 를 버리면 사용자는 어떤 경로로 생성됐는지 알 수 없다 (요구 ① 위반).
-    let detail = wallmagic_core::generation_source_detail(&settings, used);
+    let mut detail = wallmagic_core::generation_source_detail(&settings, used);
+    if used == wallmagic_core::ImageProvider::Search {
+        if let Some(query) =
+            wallmagic_core::search_query_for(&settings, prompt, wallmagic_core::now_unix_secs())
+        {
+            detail = format!("{detail} · query: {query}");
+        }
+        let query_count = wallmagic_core::valid_search_queries(&settings).len();
+        if query_count > 0 {
+            settings.next_index = settings.next_index.wrapping_add(1) % query_count;
+            let _ = wallmagic_core::save_scenario(&settings);
+        }
+    }
     wallmagic_core::set_wallpaper_with(
         &path,
         monitor_id,
@@ -1280,5 +1292,40 @@ mod tests {
             !on_disk.clear_api_key,
             "saved clear_api_key must be reset to false"
         );
+    }
+
+    #[test]
+    fn test_priority_search_qualifies_with_manual_prompt_on_default_scenario() {
+        let _guard = DataDirGuard::new("priority_search_default");
+        // 디스크에 저장된 시나리오의 prompt와 search_queries가 모두 비어 있는 기본 상태
+        let default_sc = wallmagic_core::ScenarioSettings::default();
+        assert!(default_sc.prompt.is_empty());
+        assert!(default_sc.source.search_queries.is_empty());
+        wallmagic_core::save_scenario(&default_sc).expect("save default scenario");
+
+        let mut loaded = wallmagic_core::load_scenario().expect("load default scenario");
+        // 기본 provider_order 는 [Pollinations, Cloudflare, OpenAI] 라 Search 가 후보에 없다.
+        // 실제 검색 경로도 `providerOrder: ["search"]` 로 후보를 명시 전달하므로
+        // (handleGenerate·handleGenerateAi 의 search 분기) 테스트도 같은 계약을 따른다.
+        // 이 줄이 없으면 Search 는 시도조차 되지 않고 마지막 스킵 오류(Openai skipped)가 돌아온다.
+        assert!(!wallmagic_core::default_provider_order()
+            .contains(&wallmagic_core::ImageProvider::Search));
+        loaded.provider_order = vec![wallmagic_core::ImageProvider::Search];
+        let dest = wallmagic_core::app_data_dir().join("online_cache").join("test.jpg");
+        let (used, _) = wallmagic_core::scenario::generate_ai_with_fallback_with(
+            &loaded,
+            "manual keyword",
+            &dest,
+            |provider, query, d| {
+                if provider == wallmagic_core::ImageProvider::Search {
+                    assert_eq!(query, "manual keyword");
+                    Ok(d.clone())
+                } else {
+                    Err(wallmagic_core::WallpaperError::Network("skip others".to_string()))
+                }
+            },
+        )
+        .expect("Search must qualify and succeed with manual prompt even when disk scenario is default");
+        assert_eq!(used, wallmagic_core::ImageProvider::Search);
     }
 }

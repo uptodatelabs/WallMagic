@@ -270,7 +270,13 @@ where
     let mut skipped = 0usize;
     let seed = now_unix_secs();
     for provider in order {
-        if !provider_is_configured(settings, provider) {
+        let qualified = if provider == ImageProvider::Search {
+            !settings.disabled_providers.contains(&ImageProvider::Search)
+                && (provider_is_configured(settings, provider) || !trimmed.is_empty())
+        } else {
+            provider_is_configured(settings, provider)
+        };
+        if !qualified {
             skipped += 1;
             last_err = Some(WallpaperError::CandidateLoad(format!(
                 "{provider:?} skipped: missing credentials"
@@ -908,15 +914,30 @@ pub fn tick_scenario(now_secs: u64) -> Result<Option<WallpaperState>, WallpaperE
                     // 기록이 없으면 UI 가 "무료 폴백인지 Puter 인지" 구분할 수 없다.
                     let provider_id = used.as_id();
                     let detail = generation_source_detail(&settings, used);
+                    let detail_with_query = if used == ImageProvider::Search {
+                        if let Some(query) = search_query_for(&settings, &prompt_owned, now_secs) {
+                            format!("{detail} · query: {query}")
+                        } else {
+                            detail
+                        }
+                    } else {
+                        detail
+                    };
                     match crate::wallpaper::set_wallpaper_with(
                         &path,
                         None,
                         settings.position_enum(),
                         Some(provider_id),
-                        Some(&detail),
+                        Some(&detail_with_query),
                     ) {
                         Ok(st) => {
-                            settings.next_index = settings.next_index.wrapping_add(1);
+                            let query_count = valid_search_queries(&settings).len();
+                            if used == ImageProvider::Search && query_count > 0 {
+                                settings.next_index =
+                                    settings.next_index.wrapping_add(1) % query_count;
+                            } else {
+                                settings.next_index = settings.next_index.wrapping_add(1);
+                            }
                             settings.last_run_at = Some(now_secs);
                             save_scenario(&settings)?;
                             return Ok(Some(st));
@@ -1579,16 +1600,13 @@ mod tests {
 
     #[test]
     fn test_search_uses_prompt_when_keywords_are_empty() {
-        // 저장된 키워드가 없으면 공용 프롬프트를 검색어로 쓴다 (수동 생성 경로).
-        // 이때도 `provider_is_configured` 가 자격을 인정해야 디스크 scenario.json 에
-        // 키워드가 없는 상태에서 수동 검색이 "missing credentials" 로 실패하지 않는다.
+        // 디스크에 저장된 시나리오의 `s.prompt`와 `s.source.search_queries`가 모두 비어 있는
+        // `ScenarioSettings::default()` 상태에서도, 호출 인자 `prompt`("manual keyword")만으로
+        // Search 자격이 인정되어 성공해야 한다.
         let mut s = ScenarioSettings::default();
         s.provider_order = vec![ImageProvider::Search];
-        s.prompt = "manual keyword".to_string();
-        assert!(
-            provider_is_configured(&s, ImageProvider::Search),
-            "prompt alone must qualify Search (no saved keyword list required)"
-        );
+        assert!(s.prompt.is_empty());
+        assert!(s.source.search_queries.is_empty());
         let dest = PathBuf::from("dummy.jpg");
         let (used, _) =
             generate_ai_with_fallback_with(&s, "manual keyword", &dest, |p, query, d| {
@@ -1596,8 +1614,14 @@ mod tests {
                 assert_eq!(query, "manual keyword");
                 Ok(d.clone())
             })
-            .expect("search must run with the prompt when no keyword list exists");
+            .expect("search must run with manual prompt arg even when s.prompt and search_queries are empty");
         assert_eq!(used, ImageProvider::Search);
+
+        // disabled_providers 에 Search 가 있으면 수동 prompt 가 있어도 스킵되어야 한다.
+        s.disabled_providers = vec![ImageProvider::Search];
+        let err = generate_ai_with_fallback_with(&s, "manual keyword", &dest, |_, _, d| Ok(d.clone()))
+            .expect_err("disabled Search must be skipped even when manual prompt is given");
+        assert!(matches!(err, WallpaperError::CandidateLoad(_)));
     }
 
     #[test]
@@ -1654,6 +1678,46 @@ mod tests {
         // 직렬화 왕복: 필드가 항상 기록되어 저장 후 재조회에서 유지된다.
         let json = serde_json::to_string(&parsed).expect("serialize");
         assert!(json.contains("search_queries"));
+    }
+
+    #[test]
+    fn test_search_rotation_advances_next_index_and_formats_query_detail() {
+        let mut s = ScenarioSettings::default();
+        s.provider_order = vec![ImageProvider::Search];
+        s.source.search_queries = vec!["first_kw".to_string(), "second_kw".to_string()];
+        s.prompt = "shared prompt".to_string();
+        s.order = ScenarioOrder::Sequential;
+        s.next_index = 0;
+
+        let dest = PathBuf::from("dummy.jpg");
+        // 1회차: first_kw 선택
+        let (used1, _) = generate_ai_with_fallback_with(&s, &s.prompt, &dest, |p, q, d| {
+            assert_eq!(p, ImageProvider::Search);
+            assert_eq!(q, "first_kw");
+            Ok(d.clone())
+        })
+        .expect("1st search attempt");
+        assert_eq!(used1, ImageProvider::Search);
+        let q1 = search_query_for(&s, &s.prompt, 0).expect("q1");
+        let detail1 = format!("{} · query: {q1}", generation_source_detail(&s, used1));
+        assert!(detail1.contains("· query: first_kw"));
+        let query_count = valid_search_queries(&s).len();
+        s.next_index = s.next_index.wrapping_add(1) % query_count;
+        assert_eq!(s.next_index, 1);
+
+        // 2회차: second_kw 선택 후 0으로 모듈로 순환
+        let (used2, _) = generate_ai_with_fallback_with(&s, &s.prompt, &dest, |p, q, d| {
+            assert_eq!(p, ImageProvider::Search);
+            assert_eq!(q, "second_kw");
+            Ok(d.clone())
+        })
+        .expect("2nd search attempt");
+        assert_eq!(used2, ImageProvider::Search);
+        let q2 = search_query_for(&s, &s.prompt, 0).expect("q2");
+        let detail2 = format!("{} · query: {q2}", generation_source_detail(&s, used2));
+        assert!(detail2.contains("· query: second_kw"));
+        s.next_index = s.next_index.wrapping_add(1) % query_count;
+        assert_eq!(s.next_index, 0);
     }
 
 }

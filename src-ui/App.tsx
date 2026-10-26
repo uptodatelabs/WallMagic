@@ -765,10 +765,28 @@ export function App(): React.ReactElement {
     }
   };
 
+  // 검색(Search) 공급자의 ② 버튼 입력 판정 — ⑤ 키워드 또는 ② 프롬프트 중 하나라도 있으면 실행 가능.
+  // 검색은 생성 API 가 아니라 키워드 검색이므로 "프롬프트 필수" 규칙을 그대로 적용하면
+  // 키워드만 저장한 시나리오에서 버튼이 영구 비활성화된다.
+  const searchNeedsInput =
+    scProvider === "search" &&
+    !prompt.trim() &&
+    !scSearchQueries.trim();
+  // ⑤ 검색 키워드 목록(줄바꿈 구분). 저장 payload 와 ② 버튼이 같은 규칙을 쓰도록 한 곳에서 파생한다.
+  const searchKeywords = scSearchQueries
+    .split("\n")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+
   const handleGenerate = async () => {
     const aiPrompt = prompt.trim();
-    if (!aiPrompt) {
-      reportError("프롬프트를 입력하세요.");
+    // 검색은 프롬프트가 아니라 ⑤ 키워드로도 실행된다 — 프롬프트 공백만으로 막지 않는다.
+    if (!aiPrompt && !(scProvider === "search" && searchKeywords.length > 0)) {
+      reportError(
+        scProvider === "search"
+          ? "검색 키워드(⑤) 또는 프롬프트(②) 중 하나를 입력하세요."
+          : "프롬프트를 입력하세요.",
+      );
       return;
     }
     // 개별 On/Off: Off 로 둔 공급자는 ② 생성에서도 시도하지 않는다.
@@ -777,6 +795,30 @@ export function App(): React.ReactElement {
       reportError(
         `선택한 공급자(${providerLabel(scProvider)})가 Off(비활성)입니다 — 우선순위 목록에서 On 으로 바꾼 뒤 다시 시도하세요.`,
       );
+      return;
+    }
+    // 검색(Search) 공급자: 생성 API 가 아니라 **키워드 검색**이다.
+    // ⑤ 시나리오에 저장한 키워드(첫 항목)를 우선 쓰고, 없으면 ② 프롬프트를 검색어로 쓴다.
+    // 생성과 달리 배경을 바로 적용하지 않는다 — 결과는 후보로만 추가하고 적용은 ④ 에서 한다.
+    if (scProvider === "search") {
+      const keyword = searchKeywords.length > 0 ? searchKeywords[0] : aiPrompt;
+      const keywordSource = searchKeywords.length > 0 ? "⑤ 시나리오 키워드" : "② 프롬프트";
+      setBusy(true);
+      try {
+        const candidate = await invoke<WallpaperCandidate>(
+          "generate_library_wallpaper_with_provider",
+          { prompt: keyword, provider: "search", accountId: null, apiToken: null, model: null },
+        );
+        setCandidates((prev) => [candidate, ...prev.filter((c) => c.path !== candidate.path)]);
+        setSelected(candidate);
+        reportOk(
+          `검색 완료 (Search): ${candidate.file_name} — 검색어: "${keyword}" (${keywordSource}) · 배경 적용은 ④ 바탕화면에 적용`,
+        );
+      } catch (err) {
+        reportError(`검색 실패: ${formatErr(err)}`);
+      } finally {
+        setBusy(false);
+      }
       return;
     }
     setBusy(true);
@@ -1450,9 +1492,9 @@ export function App(): React.ReactElement {
               type="button"
               className="primary block"
               onClick={() => void handleGenerate()}
-              disabled={busy}
+              disabled={busy || searchNeedsInput}
             >
-              생성 ({providerLabel(scProvider)})
+              {scProvider === "search" ? "검색 실행 (Search)" : `생성 (${providerLabel(scProvider)})`}
             </button>
           </section>
         </aside>

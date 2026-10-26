@@ -16,7 +16,7 @@ pub mod wallpaper;
 pub use scenario::{
     cloudflare_ai_url, default_cf_model, default_openai_model, default_provider_order,
     effective_provider_order, failure_retry_allowed_at, generate_ai_with_fallback,
-    generation_source_detail, provider_is_configured,
+    generation_source_detail, provider_is_configured, search_query_for, valid_search_queries,
     generate_cloudflare_wallpaper, generate_openai_wallpaper, load_scenario, needs_cursor_reset,
     now_unix_secs, openai_images_url, parse_cf_image_response, parse_openai_image_response,
     pick_next_url, save_scenario, scenario_file_path, scenario_http_status_error, should_run,
