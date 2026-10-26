@@ -112,6 +112,26 @@ check("generate_ai_with_fallback 이 Search 분기를 명시한다", () => {
   return /ImageProvider::Search =>/.test(body);
 });
 
+check("search_query_for 가 저장 키워드를 공용 프롬프트보다 우선한다", () => {
+  const body = fnBody(scenario, "search_query_for");
+  if (!body) return false;
+  const keywordIdx = body.indexOf("valid_search_queries");
+  const promptIdx = body.indexOf("prompt.trim()");
+  // 키워드 목록 검사를 먼저 하고, 프롬프트는 폴백으로만 쓰여야 한다.
+  return keywordIdx >= 0 && promptIdx > keywordIdx;
+});
+
+check("provider_is_configured 의 Search 가 프롬프트만으로도 자격을 인정한다", () => {
+  const body = fnBody(scenario, "provider_is_configured");
+  const arm = /ImageProvider::Search => \{[\s\S]*?\n        \}/.exec(body);
+  return Boolean(arm) && /search_queries/.test(arm[0]) && /settings\.prompt/.test(arm[0]);
+});
+
+check("generate_ai_with_fallback_with 가 Search 에 키워드 기반 질의를 전달한다", () => {
+  const body = fnBody(scenario, "generate_ai_with_fallback_with");
+  return /search_query_for/.test(body) && /attempt\(provider, &query/.test(body);
+});
+
 check("tick_scenario 가 검색 소스 분기를 갖는다", () => {
   const body = fnBody(scenario, "tick_scenario");
   return /search_queries/.test(body) && /generate_search_wallpaper/.test(body);

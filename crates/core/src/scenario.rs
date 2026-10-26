@@ -170,12 +170,19 @@ pub fn provider_is_configured(settings: &ScenarioSettings, provider: ImageProvid
                 && !settings.cloudflare.api_token.trim().is_empty()
         }
         ImageProvider::Openai => !settings.openai.api_key.trim().is_empty(),
-        // 검색(Search)은 키가 필요 없지만, 키워드가 1개 이상 있어야 후보를 만들 수 있다.
-        ImageProvider::Search => settings
-            .source
-            .search_queries
-            .iter()
-            .any(|q| !q.trim().is_empty()),
+        // 검색(Search)은 키가 필요 없다. 검색어는 ① 시나리오 키워드 목록
+        // (`source.search_queries`) ② 공용 프롬프트(`settings.prompt`) 순으로 쓰이므로
+        // 둘 중 하나에 유효한 검색어가 있으면 시도 자격이 있다.
+        // (검수 지적 [high]: 키워드 목록만 검사하면 디스크의 scenario.json 에 키워드가 없을 때
+        //  수동 생성이 "Search skipped: missing credentials" 로 무조건 실패했다)
+        ImageProvider::Search => {
+            settings
+                .source
+                .search_queries
+                .iter()
+                .any(|q| !q.trim().is_empty())
+                || !settings.prompt.trim().is_empty()
+        }
         // Puter는 WebView 전용 SDK라 Rust 백엔드에서 직접 생성할 수 없어 항상 스킵한다.
         ImageProvider::Puter => false,
     }
@@ -192,8 +199,50 @@ pub fn provider_is_configured(settings: &ScenarioSettings, provider: ImageProvid
 ///   (공식 문서: https://docs.puter.com/AI/txt2img/ — TODO:将来 브라우저 전용 무료 경로가
 ///   필요해지면 프론트 전용 옵션으로 별도 provider 추가를 검토)
 ///
+/// `source.search_queries` 에서 **실제로 쓸 수 있는** 키워드만 추린다 (공백 키워드 제외).
+/// 순서는 저장된 순서를 유지한다(순차 순환의 기준).
+pub fn valid_search_queries(settings: &ScenarioSettings) -> Vec<String> {
+    settings
+        .source
+        .search_queries
+        .iter()
+        .map(|q| q.trim().to_string())
+        .filter(|q| !q.is_empty())
+        .collect()
+}
+
+/// 검색(Search) 공급자가 이번 시도에 쓸 검색어를 고른다.
+///
+/// 우선순위 (검수 지적 [medium] 반영):
+/// 1. 사용자가 시나리오에 작성한 키워드 목록(`source.search_queries`) — `order` 와
+///    `next_index`(순차) / `seed`(랜덤) 로 순환한다.
+/// 2. 키워드 목록이 비어 있을 때만 공용 프롬프트를 검색어로 쓴다
+///    (수동 생성 경로에서 prompt = 사용자가 입력한 키워드).
+///
+/// 둘 다 비어 있으면 `None` — 호출자는 네트워크 호출 없이 스킵해야 한다.
+pub fn search_query_for(settings: &ScenarioSettings, prompt: &str, seed: u64) -> Option<String> {
+    let queries = valid_search_queries(settings);
+    if !queries.is_empty() {
+        let idx = match settings.order {
+            ScenarioOrder::Sequential => settings.next_index % queries.len(),
+            ScenarioOrder::Random => (seed as usize) % queries.len(),
+        };
+        return Some(queries[idx].clone());
+    }
+    let trimmed = prompt.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 /// 결정적 테스트를 위해 실제 시도 함수는 `attempt` 클로저로 주입받는다.
 /// 네트워크 의존 생성 함수는 이 클로저로 분리되어 단위 테스트에서 모의 가능하다.
+///
+/// `attempt` 에 넘기는 두 번째 인자는 **해당 공급자에 실제로 쓸 질의문**이다:
+/// - Search 는 `source.search_queries` 를 우선 사용하고(순환), 비어 있을 때만 프롬프트를 쓴다.
+/// - 그 외 공급자는 공용 프롬프트를 그대로 쓴다.
 pub fn generate_ai_with_fallback_with<F>(
     settings: &ScenarioSettings,
     prompt: &str,
@@ -204,7 +253,9 @@ where
     F: Fn(ImageProvider, &str, &PathBuf) -> Result<PathBuf, WallpaperError>,
 {
     let trimmed = prompt.trim();
-    if trimmed.is_empty() {
+    // 프롬프트가 비어 있어도 Search 키워드가 있으면 실행 가능하다
+    // (검수 지적 [high]: 키워드만 있는 시나리오가 "empty prompt" 로 무조건 실패했다).
+    if trimmed.is_empty() && valid_search_queries(settings).is_empty() {
         return Err(WallpaperError::CandidateLoad(
             "empty prompt: image generation needs a text prompt".to_string(),
         ));
@@ -217,6 +268,7 @@ where
     }
     let mut last_err: Option<WallpaperError> = None;
     let mut skipped = 0usize;
+    let seed = now_unix_secs();
     for provider in order {
         if !provider_is_configured(settings, provider) {
             skipped += 1;
@@ -225,7 +277,31 @@ where
             )));
             continue;
         }
-        match attempt(provider, trimmed, dest) {
+        // 공급자별 실제 질의문 — Search 만 키워드 목록을 우선한다.
+        let query: String = if provider == ImageProvider::Search {
+            match search_query_for(settings, trimmed, seed) {
+                Some(q) => q,
+                None => {
+                    skipped += 1;
+                    last_err = Some(WallpaperError::CandidateLoad(
+                        "Search skipped: no search keyword (search_queries/prompt both empty)"
+                            .to_string(),
+                    ));
+                    continue;
+                }
+            }
+        } else {
+            if trimmed.is_empty() {
+                // 프롬프트가 없으면 이미지 생성 공급자는 질의문을 만들 수 없다 — 스킵.
+                skipped += 1;
+                last_err = Some(WallpaperError::CandidateLoad(format!(
+                    "{provider:?} skipped: empty prompt"
+                )));
+                continue;
+            }
+            trimmed.to_string()
+        };
+        match attempt(provider, &query, dest) {
             Ok(p) => return Ok((provider, p)),
             Err(e) => {
                 last_err = Some(e);
@@ -861,26 +937,18 @@ pub fn tick_scenario(now_secs: u64) -> Result<Option<WallpaperState>, WallpaperE
         }
     }
 
-    // 검색(Search) 소스: 프롬프트 없이 키워드(`search_queries`)만으로 실행한다.
-    // 프롬프트가 있으면 위 AI 분기가 Search 를 프롬프트로도 처리하므로, 여기서는
-    // 프롬프트가 비어 있고 Search 가 우선순위(On) 일 때만 키워드 순환으로 1건 확정한다.
+    // 검색(Search) 소스: 키워드(`search_queries`)만으로도 실행한다.
+    // - 프롬프트가 있으면 위 AI 분기가 Search 를 처리하며, 그 경로에서도
+    //   `search_query_for` 가 키워드 목록을 우선 사용한다(순차/랜덤 순환).
+    // - 여기서는 프롬프트가 비어 위 분기를 통과하지 못한 경우를 담당한다.
+    // 질의 선택 규칙은 `search_query_for` 한 곳에서만 결정한다 — 이전 구현은 순환
+    // 로직을 이 블록에 복제해 두 경로가 서로 다른 규칙을 갖는 결함이 있었다.
     if settings.prompt.trim().is_empty()
         && effective_provider_order(&settings).contains(&ImageProvider::Search)
         && provider_is_configured(&settings, ImageProvider::Search)
     {
-        let queries: Vec<String> = settings
-            .source
-            .search_queries
-            .iter()
-            .map(|q| q.trim().to_string())
-            .filter(|q| !q.is_empty())
-            .collect();
-        if !queries.is_empty() {
-            let idx = match settings.order {
-                ScenarioOrder::Sequential => settings.next_index % queries.len(),
-                ScenarioOrder::Random => (now_secs as usize) % queries.len(),
-            };
-            let query = queries[idx].clone();
+        let query_count = valid_search_queries(&settings).len();
+        if let Some(query) = search_query_for(&settings, &settings.prompt, now_secs) {
             let tmp = app_data_dir()
                 .join("online_cache")
                 .join("scenario_search.jpg");
@@ -897,7 +965,7 @@ pub fn tick_scenario(now_secs: u64) -> Result<Option<WallpaperState>, WallpaperE
                     ) {
                         Ok(st) => {
                             settings.next_index =
-                                settings.next_index.wrapping_add(1) % queries.len().max(1);
+                                settings.next_index.wrapping_add(1) % query_count.max(1);
                             settings.last_run_at = Some(now_secs);
                             save_scenario(&settings)?;
                             return Ok(Some(st));
@@ -1353,6 +1421,108 @@ mod tests {
         assert!(!provider_is_configured(&s, ImageProvider::Search));
     }
 
+    /// 검수 지적 [high]: 디스크 scenario.json 에 키워드가 없어도, 수동 생성이 넘긴
+    /// prompt 가 있으면 Search 는 "missing credentials" 로 무조건 실패하지 않는다.
+    #[test]
+    fn test_provider_is_configured_search_accepts_prompt_only() {
+        let mut s = ScenarioSettings::default();
+        assert!(valid_search_queries(&s).is_empty());
+        s.prompt = "neon harbor".to_string();
+        assert!(
+            provider_is_configured(&s, ImageProvider::Search),
+            "prompt 만 있는 수동 생성도 Search 자격을 인정해야 한다"
+        );
+        // 공백 프롬프트는 자격 없음 (네트워크 호출 금지).
+        s.prompt = "   ".to_string();
+        assert!(!provider_is_configured(&s, ImageProvider::Search));
+    }
+
+    /// 검수 지적 [medium]: 시나리오 키워드 목록이 있으면 공용 프롬프트보다 우선하며,
+    /// `order`/`next_index` 로 순환한다.
+    #[test]
+    fn test_search_query_for_prefers_keywords_over_prompt() {
+        let mut s = ScenarioSettings::default();
+        s.prompt = "shared prompt".to_string();
+        s.source.search_queries = vec!["aurora".to_string(), "neon city".to_string()];
+        s.order = ScenarioOrder::Sequential;
+        s.next_index = 0;
+        assert_eq!(search_query_for(&s, &s.prompt, 7).as_deref(), Some("aurora"));
+        s.next_index = 1;
+        assert_eq!(
+            search_query_for(&s, &s.prompt, 7).as_deref(),
+            Some("neon city"),
+            "순차 모드는 next_index 로 순환해야 한다"
+        );
+        // 랜덤 모드: seed 로 인덱스가 결정된다(같은 seed = 같은 키워드).
+        s.order = ScenarioOrder::Random;
+        let a = search_query_for(&s, &s.prompt, 2);
+        let b = search_query_for(&s, &s.prompt, 2);
+        assert_eq!(a, b);
+        assert_eq!(a.as_deref(), Some("aurora"));
+    }
+
+    #[test]
+    fn test_search_query_for_falls_back_to_prompt_and_none_when_empty() {
+        let mut s = ScenarioSettings::default();
+        // 키워드 목록이 비면 프롬프트를 검색어로 쓴다 (수동 생성 경로).
+        s.prompt = "mountain lake".to_string();
+        assert_eq!(
+            search_query_for(&s, &s.prompt, 0).as_deref(),
+            Some("mountain lake")
+        );
+        // 공백 키워드만 있는 경우도 프롬프트 폴백.
+        s.source.search_queries = vec!["   ".to_string()];
+        assert_eq!(
+            search_query_for(&s, &s.prompt, 0).as_deref(),
+            Some("mountain lake")
+        );
+        // 둘 다 비면 None — 호출자는 네트워크 호출 없이 스킵해야 한다.
+        s.source.search_queries.clear();
+        assert_eq!(search_query_for(&s, "", 0), None);
+    }
+
+    /// 폴백 루프가 Search 에 **키워드**를 넘기는지 (이전 구현은 항상 prompt 를 넘겨
+    /// 사용자가 작성한 키워드 목록이 무시되었다).
+    #[test]
+    fn test_fallback_passes_keyword_not_prompt_to_search() {
+        let mut s = ScenarioSettings::default();
+        s.provider_order = vec![ImageProvider::Search];
+        s.source.search_queries = vec!["aurora".to_string()];
+        s.next_index = 0;
+        let dest = PathBuf::from("dummy.jpg");
+        let (used, _) = generate_ai_with_fallback_with(&s, "shared prompt", &dest, |p, query, d| {
+            assert_eq!(p, ImageProvider::Search);
+            assert_eq!(
+                query, "aurora",
+                "키워드 목록이 프롬프트보다 우선해야 한다"
+            );
+            Ok(d.clone())
+        })
+        .expect("search must use the scenario keyword");
+        assert_eq!(used, ImageProvider::Search);
+    }
+
+    /// 프롬프트가 비어 있어도 키워드만으로 실행된다 (이전 구현은 "empty prompt" 오류).
+    #[test]
+    fn test_fallback_allows_empty_prompt_when_keywords_exist() {
+        let mut s = ScenarioSettings::default();
+        s.provider_order = vec![ImageProvider::Search];
+        s.source.search_queries = vec!["neon city".to_string()];
+        let dest = PathBuf::from("dummy.jpg");
+        let (used, _) = generate_ai_with_fallback_with(&s, "", &dest, |p, query, d| {
+            assert_eq!(p, ImageProvider::Search);
+            assert_eq!(query, "neon city");
+            Ok(d.clone())
+        })
+        .expect("keywords-only scenario must not fail on empty prompt");
+        assert_eq!(used, ImageProvider::Search);
+        // 키워드도 프롬프트도 없으면 여전히 명시적 오류 (조용한 폴스루 금지).
+        s.source.search_queries.clear();
+        let err = generate_ai_with_fallback_with(&s, "", &dest, |_, _, d| Ok(d.clone()))
+            .expect_err("no prompt and no keyword must be an explicit error");
+        assert!(matches!(err, WallpaperError::CandidateLoad(_)));
+    }
+
     #[test]
     fn test_should_run_true_with_search_queries_only() {
         // 프롬프트·URL·로컬 폴더가 모두 비어 있어도 검색 키워드만으로 실행 조건을 만족한다.
@@ -1381,6 +1551,95 @@ mod tests {
         })
         .expect("search provider must be attempted when configured");
         assert_eq!(used, ImageProvider::Search);
+    }
+
+    // ── 검색 질의 우선순위 회귀 테스트 (검수 지적 [high]/[medium]) ──
+
+    #[test]
+    fn test_search_prefers_saved_keywords_over_shared_prompt() {
+        // 시나리오에 저장된 키워드 목록이 있으면 공용 프롬프트보다 우선한다.
+        // (이전 구현은 항상 prompt 만 검색어로 써서 사용자가 작성한 키워드 순환이 무시됐다)
+        let mut s = ScenarioSettings::default();
+        s.provider_order = vec![ImageProvider::Search];
+        s.source.search_queries = vec!["aurora".to_string(), "neon city".to_string()];
+        s.prompt = "shared prompt".to_string();
+        let prompt = s.prompt.clone();
+        let dest = PathBuf::from("dummy.jpg");
+        let (used, _) = generate_ai_with_fallback_with(&s, &prompt, &dest, |p, query, d| {
+            assert_eq!(p, ImageProvider::Search);
+            assert_eq!(
+                query, "aurora",
+                "saved keyword must win over the shared prompt"
+            );
+            Ok(d.clone())
+        })
+        .expect("search must run with saved keywords");
+        assert_eq!(used, ImageProvider::Search);
+    }
+
+    #[test]
+    fn test_search_uses_prompt_when_keywords_are_empty() {
+        // 저장된 키워드가 없으면 공용 프롬프트를 검색어로 쓴다 (수동 생성 경로).
+        // 이때도 `provider_is_configured` 가 자격을 인정해야 디스크 scenario.json 에
+        // 키워드가 없는 상태에서 수동 검색이 "missing credentials" 로 실패하지 않는다.
+        let mut s = ScenarioSettings::default();
+        s.provider_order = vec![ImageProvider::Search];
+        s.prompt = "manual keyword".to_string();
+        assert!(
+            provider_is_configured(&s, ImageProvider::Search),
+            "prompt alone must qualify Search (no saved keyword list required)"
+        );
+        let dest = PathBuf::from("dummy.jpg");
+        let (used, _) =
+            generate_ai_with_fallback_with(&s, "manual keyword", &dest, |p, query, d| {
+                assert_eq!(p, ImageProvider::Search);
+                assert_eq!(query, "manual keyword");
+                Ok(d.clone())
+            })
+            .expect("search must run with the prompt when no keyword list exists");
+        assert_eq!(used, ImageProvider::Search);
+    }
+
+    #[test]
+    fn test_search_runs_with_empty_prompt_when_keywords_exist() {
+        // 프롬프트가 비어 있어도 키워드 목록만으로 실행된다
+        // ("empty prompt: image generation needs a text prompt" 로 무조건 실패하면 결함).
+        let mut s = ScenarioSettings::default();
+        s.provider_order = vec![ImageProvider::Search];
+        s.source.search_queries = vec!["only keyword".to_string()];
+        assert!(s.prompt.trim().is_empty());
+        let dest = PathBuf::from("dummy.jpg");
+        let (used, _) = generate_ai_with_fallback_with(&s, "", &dest, |p, query, d| {
+            assert_eq!(p, ImageProvider::Search);
+            assert_eq!(query, "only keyword");
+            Ok(d.clone())
+        })
+        .expect("keyword-only scenario must not fail with 'empty prompt'");
+        assert_eq!(used, ImageProvider::Search);
+    }
+
+    #[test]
+    fn test_search_query_for_rotates_and_falls_back() {
+        let mut s = ScenarioSettings::default();
+        s.source.search_queries = vec![
+            "first".to_string(),
+            "  ".to_string(),
+            "second".to_string(),
+        ];
+        s.order = ScenarioOrder::Sequential;
+        s.next_index = 0;
+        // 공백 키워드는 후보에서 제외되고 저장 순서대로 순환한다.
+        assert_eq!(search_query_for(&s, "ignored", 0).as_deref(), Some("first"));
+        s.next_index = 1;
+        assert_eq!(search_query_for(&s, "ignored", 0).as_deref(), Some("second"));
+        // 키워드가 모두 공백이면 프롬프트로 폴백(공백은 trim).
+        s.source.search_queries = vec!["   ".to_string()];
+        assert_eq!(
+            search_query_for(&s, " fallback ", 0).as_deref(),
+            Some("fallback")
+        );
+        // 둘 다 비면 None — 호출자는 네트워크 호출 없이 스킵해야 한다.
+        assert_eq!(search_query_for(&s, "   ", 0), None);
     }
 
     #[test]
