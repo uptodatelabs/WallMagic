@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  formatMicrocents,
+  formatUsage,
+  usageUnitLabel,
   puterUsageSummary,
   stringifyUsageRaw,
   type PuterUsageResult,
@@ -1820,15 +1821,15 @@ export function App(): React.ReactElement {
                     {puterUsageBusy
                       ? "조회 중..."
                       : puterUsage
-                        ? `남은 크레딧: ${formatMicrocents(puterUsage.summary.remaining)}${
+                        ? `남은 크레딧: ${formatUsage(puterUsage.summary.remaining, puterUsage.summary.unit)}${usageUnitLabel(puterUsage.summary.unit)}${
                             puterUsage.summary.allowance !== null
-                              ? ` / 월 한도 ${formatMicrocents(puterUsage.summary.allowance)}`
+                              ? ` / 월 한도 ${formatUsage(puterUsage.summary.allowance, puterUsage.summary.unit)}`
                               : ""
                           }${
                             puterUsage.summary.spent !== null
-                              ? ` · 사용 ${formatMicrocents(puterUsage.summary.spent)}`
+                              ? ` · 사용 ${formatUsage(puterUsage.summary.spent, puterUsage.summary.unit)}`
                               : ""
-                          } · 값 경로: ${puterUsage.summary.remainingPath ?? "없음"}`
+                          } · 단위: ${puterUsage.summary.unit ?? "미표기"}(${puterUsage.summary.unitPath ?? "?"}) · 경로: 남음 ${puterUsage.summary.remainingPath ?? "없음"} / 한도 ${puterUsage.summary.allowancePath ?? "없음"} / 사용 ${puterUsage.summary.spentPath ?? "없음"}`
                         : "(아직 조회하지 않았습니다 — [크레딧 조회]를 누르세요)"}
                   </div>
                   {puterUsage && (

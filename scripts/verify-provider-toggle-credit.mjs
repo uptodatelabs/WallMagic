@@ -122,12 +122,23 @@ check("Puter 크레딧은 auth.getMonthlyUsage 로 조회한다", () => {
   return /getMonthlyUsage/.test(app);
 });
 
-check("남은 크레딧(microcents)을 표시 문자열로 변환한다", () => {
-  // 계산은 순수 모듈(usage)이 담당한다. 1센트 미만은 4자리로 보여 실제 값을 가리지 않는다.
+check("남은 크레딧을 단위에 맞는 표시 문자열로 변환한다", () => {
+  // 계산·표시는 순수 모듈(usage)이 담당한다.
+  // credits 응답은 통화 기호 없이 소수 2자리(578.70), microcents 는 1센트 미만을 4자리($0.0050)로 보인다.
   return (
     /PUTER_MICROCENTS_PER_CENT\s*=\s*1_000_000/.test(usage) &&
-    /toFixed\(/.test(usage) &&
-    /formatMicrocents/.test(app)
+    /export function formatUsage/.test(usage) &&
+    /unit === "credits"/.test(usage) &&
+    /formatMicrocents\(value\)/.test(usage) &&
+    /formatUsage\(puterUsage\.summary\.remaining, puterUsage\.summary\.unit\)/.test(app)
+  );
+});
+
+check("credits 단위에서는 통화 기호 대신 ' credits' 라벨을 붙인다", () => {
+  return (
+    /export function usageUnitLabel/.test(usage) &&
+    /if \(unit === "credits"\) return " credits"/.test(usage) &&
+    /usageUnitLabel\(puterUsage\.summary\.unit\)/.test(app)
   );
 });
 
@@ -148,7 +159,8 @@ check("크레딧 미확인(null)과 0 을 구분해 표시한다", () => {
   //  app 쪽은 조회 결과를 그대로 formatMicrocents 에 넘기는지(중간 0 변환 없음)만 본다.)
   const nullIsUnknown = /value === null\) return "알 수 없음"/.test(usage);
   const zeroIsZero = /value === 0\) return "\$0\.00"/.test(usage);
-  const appPassesThrough = /formatMicrocents\(puterUsage\.summary\.remaining\)/.test(app);
+  const appPassesThrough =
+    /formatUsage\(puterUsage\.summary\.remaining, puterUsage\.summary\.unit\)/.test(app);
   return nullIsUnknown && zeroIsZero && appPassesThrough;
 });
 
