@@ -3,3 +3,4 @@
 /dist/
 /.multicode-backups/
 *.log
+/e2e-verify.txt

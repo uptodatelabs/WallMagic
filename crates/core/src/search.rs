@@ -354,11 +354,16 @@ pub fn search_wallpapers(
 /// 프롬프트 기반으로 배경화면을 생성(Pollinations 무료 이미지 API, 키 불필요)해
 /// 앱 라이브러리(`app_data_dir()/library`)에 저장하고,
 /// GUI가 바로 선택·적용할 수 있는 `WallpaperCandidate`(썸네일 포함)로 반환한다.
-pub fn generate_library_wallpaper(prompt: &str) -> Result<WallpaperCandidate, WallpaperError> {
+/// 프롬프트 기반 생성 결과를 저장할 라이브러리 파일 경로를 만든다.
+///
+/// 파일명: 프롬프트 슬러그 + FNV-1a 해시 8자리 (같은 프롬프트 = 같은 파일, 재생성 시 덮어씀).
+/// 공급자별 생성 경로(Pollinations/Cloudflare/OpenAI)가 **같은 이름 규칙**을 공유하도록
+/// 별도 함수로 분리했다 — 규칙이 갈라지면 같은 프롬프트로 공급자를 바꿔 생성할 때
+/// 라이브러리에 중복 파일이 쌓인다.
+pub fn library_output_path(prompt: &str) -> Result<PathBuf, WallpaperError> {
     let library = crate::wallpaper::app_data_dir().join("library");
     std::fs::create_dir_all(&library)?;
 
-    // 파일명: 프롬프트 슬러그 + FNV-1a 해시 8자리 (같은 프롬프트 = 같은 파일, 재생성 시 덮어씀)
     let mut hash: u32 = 2166136261;
     for b in prompt.as_bytes() {
         hash ^= *b as u32;
@@ -369,8 +374,11 @@ pub fn generate_library_wallpaper(prompt: &str) -> Result<WallpaperCandidate, Wa
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .take(24)
         .collect();
-    let file_name = format!("generated_{slug}_{hash:08x}.jpg");
-    let out_path = library.join(file_name);
+    Ok(library.join(format!("generated_{slug}_{hash:08x}.jpg")))
+}
+
+pub fn generate_library_wallpaper(prompt: &str) -> Result<WallpaperCandidate, WallpaperError> {
+    let out_path = library_output_path(prompt)?;
 
     generate_online_wallpaper(prompt, &out_path)?;
 

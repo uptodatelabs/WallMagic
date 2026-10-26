@@ -681,21 +681,68 @@ export function App(): React.ReactElement {
   };
 
   const handleGenerate = async () => {
-    if (!prompt.trim()) {
+    const aiPrompt = prompt.trim();
+    if (!aiPrompt) {
       reportError("프롬프트를 입력하세요.");
       return;
     }
     setBusy(true);
     try {
+      // ② 생성은 **선택한 공급자(scProvider)로만** 만든다. 이전 구현은 코어의
+      // `generate_library_wallpaper`(Pollinations 하드코딩)만 호출해, 공급자를
+      // Cloudflare/OpenAI/Puter 로 바꿔도 항상 Pollinations 결과가 나왔다.
+      if (scProvider === "puter") {
+        // 생성은 WebView 의 Puter.js SDK, 저장·사이드카 기록은 Rust 커맨드가 담당한다.
+        const result = await puterGenerateWithAuth(aiPrompt, scPuterModel);
+        const dataUrl = await puterResultToBase64(result);
+        const candidate = await invoke<WallpaperCandidate>("save_generated_image", {
+          imageBase64: dataUrl,
+          // 라벨을 생략하면 백엔드가 무라벨을 'puter' 로 둔갑시키던 결함이 있었다.
+          // 선택 공급자를 명시 전달해 사이드카·생성 정보가 실제 경로와 일치하게 한다.
+          label: scProvider,
+          model: scPuterModel.trim() ? scPuterModel.trim() : null,
+        });
+        setCandidates((prev) => [candidate, ...prev.filter((c) => c.path !== candidate.path)]);
+        setSelected(candidate);
+        reportOk(`생성 완료 (${providerLabel(scProvider)}): ${candidate.file_name}`);
+        return;
+      }
+      // 비-Puter 공급자는 백엔드가 provider 문자열로 정확히 분기한다.
+      const cfModel = scCfModel.trim() || "@cf/black-forest-labs/flux-1-schnell";
+      const openaiModel = scOpenaiModel.trim() || "gpt-image-1";
+      // 공급자별 자격증명을 분리한다 — 이전 구현은 apiToken 에 scCfToken 을 고정 전달해
+      // (1) OpenAI 키(scOpenaiKey)가 전달되지 않고 (2) 입력란에 남아 있던 Cloudflare
+      // 토큰으로 인증을 시도해 실패했다. 비어 있으면 null 을 보내 백엔드가
+      // scenario.json 저장값으로 폴백하게 한다(Rust 분기의 기존 계약 유지).
+      const credential =
+        scProvider === "openai"
+          ? scOpenaiKey.trim()
+          : scProvider === "cloudflare-workers-ai"
+            ? scCfToken.trim()
+            : "";
       const candidate = await invoke<WallpaperCandidate>(
-        "generate_library_wallpaper",
-        { prompt: prompt.trim() },
+        "generate_library_wallpaper_with_provider",
+        {
+          prompt: aiPrompt,
+          provider: scProvider,
+          accountId:
+            scProvider === "cloudflare-workers-ai" && scCfAccount.trim()
+              ? scCfAccount.trim()
+              : null,
+          apiToken: credential ? credential : null,
+          model:
+            scProvider === "cloudflare-workers-ai"
+              ? cfModel
+              : scProvider === "openai"
+                ? openaiModel
+                : null,
+        },
       );
       setCandidates((prev) => [candidate, ...prev.filter((c) => c.path !== candidate.path)]);
       setSelected(candidate);
-      reportOk(`생성 완료: ${candidate.file_name}`);
+      reportOk(`생성 완료 (${providerLabel(scProvider)}): ${candidate.file_name}`);
     } catch (err) {
-      reportError(`생성 실패: ${formatErr(err)}`);
+      reportError(`생성 실패 (${providerLabel(scProvider)}): ${formatErr(err)}`);
     } finally {
       setBusy(false);
     }
@@ -1221,7 +1268,7 @@ export function App(): React.ReactElement {
               onClick={() => void handleGenerate()}
               disabled={busy}
             >
-              생성
+              생성 ({providerLabel(scProvider)})
             </button>
           </section>
         </aside>

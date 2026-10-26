@@ -266,6 +266,188 @@ pub fn generate_library_wallpaper_impl(prompt: &str) -> Result<WallpaperCandidat
     wallmagic_core::generate_library_wallpaper(prompt).map_err(err_to_string)
 }
 
+/// IPC #2b (액션 ② 생성): **선택한 공급자**로 프롬프트 기반 이미지를 생성해 라이브러리에 저장한다.
+///
+/// 배경(결함): ② 생성이 코어의 `generate_library_wallpaper`(Pollinations 하드코딩)만 호출해,
+/// 이미지 공급자를 Cloudflare/OpenAI 로 설정해도 항상 Pollinations 결과가 만들어졌다.
+/// 이 커맨드는 프론트가 보낸 공급자 id(`scProvider`)로 **명시적으로 분기**하고,
+/// 미지원 값은 조용한 폴스루 없이 오류로 실패시킨다.
+#[tauri::command]
+fn generate_library_wallpaper_with_provider(
+    prompt: String,
+    provider: String,
+    account_id: Option<String>,
+    api_token: Option<String>,
+    model: Option<String>,
+) -> Result<WallpaperCandidate, String> {
+    generate_library_wallpaper_with_provider_impl(
+        &prompt,
+        &provider,
+        account_id.as_deref(),
+        api_token.as_deref(),
+        model.as_deref(),
+    )
+}
+
+pub fn generate_library_wallpaper_with_provider_impl(
+    prompt: &str,
+    provider: &str,
+    account_id: Option<&str>,
+    api_token: Option<&str>,
+    model: Option<&str>,
+) -> Result<WallpaperCandidate, String> {
+    let trimmed_prompt = prompt.trim();
+    if trimmed_prompt.is_empty() {
+        return Err(
+            "generate_library_wallpaper_with_provider: 프롬프트가 필요합니다".to_string(),
+        );
+    }
+    let dest = wallmagic_core::library_output_path(trimmed_prompt).map_err(err_to_string)?;
+    // 공급자별 생성 경로를 명시적 match 로 분기한다 (미구현 공급자를 조용히 폴스루하지 않는다).
+    let detail = match provider {
+        "pollinations" => {
+            wallmagic_core::generate_online_wallpaper(trimmed_prompt, &dest)
+                .map_err(err_to_string)?;
+            format!("Pollinations image API (image.pollinations.ai · 무료·키 불필요) · prompt: {trimmed_prompt}")
+        }
+        "cloudflare-workers-ai" => {
+            let account = account_id.map(str::trim).unwrap_or_default();
+            if account.is_empty() {
+                return Err(
+                    "Cloudflare Workers AI: Account ID가 필요합니다 (설정에서 입력 후 저장)"
+                        .to_string(),
+                );
+            }
+            // 수동 생성 경로와 동일 규칙: 입력 토큰이 비면 디스크 scenario.json 저장 토큰으로 폴백.
+            let token = match api_token.map(str::trim).filter(|t| !t.is_empty()) {
+                Some(t) => t.to_string(),
+                None => wallmagic_core::load_scenario()
+                    .map(|s| s.cloudflare.api_token)
+                    .unwrap_or_default(),
+            };
+            if token.trim().is_empty() {
+                return Err(
+                    "Cloudflare Workers AI: API Token이 없습니다 (설정에서 입력 후 저장)".to_string(),
+                );
+            }
+            let cf_model = match model.map(str::trim).filter(|m| !m.is_empty()) {
+                Some(m) => m.to_string(),
+                None => wallmagic_core::default_cf_model(),
+            };
+            wallmagic_core::generate_cloudflare_wallpaper(
+                account,
+                &token,
+                &cf_model,
+                trimmed_prompt,
+                &dest,
+            )
+            .map_err(err_to_string)?;
+            format!("Cloudflare Workers AI · model={cf_model}")
+        }
+        "openai" => {
+            let key = match api_token.map(str::trim).filter(|k| !k.is_empty()) {
+                Some(k) => k.to_string(),
+                None => wallmagic_core::load_scenario()
+                    .map(|s| s.openai.api_key)
+                    .unwrap_or_default(),
+            };
+            if key.trim().is_empty() {
+                return Err("OpenAI: API Key가 없습니다 (설정에서 입력 후 저장)".to_string());
+            }
+            let oa_model = match model.map(str::trim).filter(|m| !m.is_empty()) {
+                Some(m) => m.to_string(),
+                None => wallmagic_core::default_openai_model(),
+            };
+            wallmagic_core::generate_openai_wallpaper(&key, &oa_model, trimmed_prompt, &dest)
+                .map_err(err_to_string)?;
+            format!("OpenAI Images API · model={oa_model}")
+        }
+        // Puter 는 브라우저 SDK 전용이라 이 커맨드로 생성할 수 없다 — 프론트가 만든 이미지는
+        // `save_generated_image` 로 저장한다. 조용히 다른 공급자로 대체하지 않는다.
+        "puter" => {
+            return Err(
+                "Puter는 WebView 전용 SDK 경로입니다 — 프론트가 생성한 이미지는 save_generated_image 로 저장하세요"
+                    .to_string(),
+            )
+        }
+        other => {
+            return Err(format!(
+                "unknown provider '{other}' (expected: pollinations|cloudflare-workers-ai|openai|puter)"
+            ))
+        }
+    };
+    // 생성 파일 자체에 귀속을 남긴다 — ② 생성은 배경을 적용하지 않으므로 state.json 이
+    // 갱신되지 않는다. 사이드카가 없으면 미리보기가 "현재 배경" 기록과 오귀속된다.
+    wallmagic_core::write_generation_sidecar(&dest, Some(provider), Some(&detail))
+        .map_err(err_to_string)?;
+    wallmagic_core::load_candidate(&dest).ok_or_else(|| {
+        format!(
+            "generate_library_wallpaper_with_provider: 후보 생성 실패 — {}",
+            dest.display()
+        )
+    })
+}
+
+/// IPC #2c (액션 ② 생성): WebView(Puter.js SDK)가 만든 base64 이미지를 **라이브러리**에 저장하고
+/// 썸네일 후보로 반환한다.
+///
+/// `apply_generated_image` 는 배경까지 적용하는 커맨드이므로, ② 생성(후보만 추가)에는
+/// 이 커맨드를 쓴다. 저장 파일 옆에 사이드카를 남겨 미리보기가 자기 생성 경로를 표시한다.
+#[tauri::command]
+fn save_generated_image(
+    image_base64: String,
+    label: Option<String>,
+    model: Option<String>,
+) -> Result<WallpaperCandidate, String> {
+    save_generated_image_impl(&image_base64, label.as_deref(), model.as_deref())
+}
+
+pub fn save_generated_image_impl(
+    image_base64: &str,
+    label: Option<&str>,
+    model: Option<&str>,
+) -> Result<WallpaperCandidate, String> {
+    let bytes = decode_image_payload(image_base64)?;
+    let library = wallmagic_core::app_data_dir().join("library");
+    std::fs::create_dir_all(&library).map_err(|e| format!("create library failed: {e}"))?;
+    // 무라벨 호출을 'puter' 로 둔갑시키지 않는다 — `apply_generated_image` 와 같은 계약.
+    // 기본값이 있으면 프론트가 label 을 빠뜨려도 provider 가 조용히 "puter" 로 기록되어
+    // "다른 공급자로 생성했는데 Puter 로 표시"되는 오귀속이 재발한다.
+    let label = label
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "save_generated_image: label(공급자 id)이 필요합니다".to_string())?;
+    let safe: String = label
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .take(24)
+        .collect();
+    // 같은 이미지 = 같은 파일명(FNV-1a) — 재생성 시 라이브러리에 중복 파일이 쌓이지 않는다.
+    // 접두어는 라벨에서 파생한다(파일 경로만 보고 공급자를 오판하지 않도록).
+    let mut hash: u32 = 2166136261;
+    for b in &bytes {
+        hash ^= *b as u32;
+        hash = hash.wrapping_mul(16777619);
+    }
+    let path = library.join(format!("generated_{safe}_{hash:08x}.png"));
+    std::fs::write(&path, &bytes).map_err(|e| format!("write generated image failed: {e}"))?;
+    // 상세 문구도 라벨에 종속시킨다 (puter 가 아닌 라벨에 "Puter.js txt2img" 기록 금지).
+    let detail = match (label == "puter", model.map(str::trim).filter(|m| !m.is_empty())) {
+        (true, Some(m)) => format!("Puter.js txt2img (WebView 브라우저 SDK) · model={m}"),
+        (true, None) => "Puter.js txt2img (WebView 브라우저 SDK) · Puter 기본 모델".to_string(),
+        (false, Some(m)) => format!("save_generated_image (WebView) · provider={label} · model={m}"),
+        (false, None) => format!("save_generated_image (WebView) · provider={label}"),
+    };
+    wallmagic_core::write_generation_sidecar(&path, Some(label), Some(&detail))
+        .map_err(err_to_string)?;
+    wallmagic_core::load_candidate(&path).ok_or_else(|| {
+        format!(
+            "save_generated_image: 후보 생성 실패 — {}",
+            path.display()
+        )
+    })
+}
+
 /// IPC #10: Cloudflare Workers AI 이미지 생성 → 디코드 → 배경 적용.
 /// - `POST https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model}`
 /// - 토큰은 이 Rust 커맨드 안에서만 `Authorization: Bearer`로 사용한다
@@ -580,6 +762,8 @@ pub fn run() {
             save_scenario,
             tick_scenario_now,
             generate_wallpaper_priority,
+            generate_library_wallpaper_with_provider,
+            save_generated_image,
             apply_generated_image,
             open_external_url,
         ])
@@ -692,6 +876,158 @@ mod tests {
         assert!(
             !other.contains("label(공급자 id)이 필요합니다"),
             "정상 label 이 label 검사에서 막히면 안 된다: {other}"
+        );
+    }
+
+    /// 회귀 테스트 (요구: "설정된 공급자로 정확하게 생성"):
+    /// ② 생성은 `generate_library_wallpaper_with_provider` 로 선택 공급자를 명시 전달한다.
+    /// 미지원·미구현 공급자를 조용히 Pollinations 로 대체하면 "Puter/Cloudflare 로
+    /// 설정했는데 Pollinations 결과가 나온다"는 신고 증상이 재발한다.
+    /// 네트워크 호출 **전** 단계에서 명시적 오류를 반환하는지 확인한다(오프라인 결정적).
+    #[test]
+    fn test_generate_library_with_provider_routes_or_fails_explicitly() {
+        let _guard = DataDirGuard::new("provider_routing");
+
+        // (1) 미지원 공급자 → 오류 문구에 공급자 이름이 그대로 나와야 한다.
+        let err = generate_library_wallpaper_with_provider_impl(
+            "neon harbor",
+            "midjourney",
+            None,
+            None,
+            None,
+        )
+        .expect_err("unknown provider must fail");
+        assert!(
+            err.contains("unknown provider 'midjourney'"),
+            "unknown provider must be named in the error: {err}"
+        );
+
+        // (2) puter 는 백엔드 생성 경로가 없다 → 프론트 저장 커맨드를 안내하는 명시적 오류.
+        //     (Pollinations 결과로 조용히 대체되지 않아야 한다)
+        let err =
+            generate_library_wallpaper_with_provider_impl("neon harbor", "puter", None, None, None)
+                .expect_err("puter must not be generated by the backend");
+        assert!(
+            err.contains("save_generated_image"),
+            "puter error must point to the front-end save command: {err}"
+        );
+        assert!(
+            !err.contains("pollinations"),
+            "puter 호출이 Pollinations 로 폴스루되면 안 된다: {err}"
+        );
+
+        // (3) 빈 프롬프트 → 오류 (빈 프롬프트로 생성 API 를 호출하지 않는다)
+        assert!(generate_library_wallpaper_with_provider_impl(
+            "   ",
+            "pollinations",
+            None,
+            None,
+            None
+        )
+        .is_err());
+
+        // (4) Cloudflare: Account ID 가 비면 네트워크 호출 전에 실패해야 한다.
+        let err = generate_library_wallpaper_with_provider_impl(
+            "neon harbor",
+            "cloudflare-workers-ai",
+            Some("   "),
+            Some("token"),
+            None,
+        )
+        .expect_err("cloudflare without account id must fail");
+        assert!(
+            err.contains("Account ID"),
+            "error must name the missing field: {err}"
+        );
+
+        // (5) OpenAI: 입력·저장 키가 모두 비면 명시적 오류 (조용한 폴스루 금지).
+        let _ = wallmagic_core::save_scenario(&wallmagic_core::ScenarioSettings::default());
+        let err = generate_library_wallpaper_with_provider_impl(
+            "neon harbor",
+            "openai",
+            None,
+            None,
+            None,
+        )
+        .expect_err("openai without api key must fail");
+        assert!(
+            err.contains("API Key"),
+            "error must name the missing field: {err}"
+        );
+    }
+
+    /// 회귀 가드 (검수 지적 [high]: 공급자별 자격증명 교차 전달).
+    /// 수정 전 `handleGenerate` 는 OpenAI 선택 시에도 `apiToken` 에 Cloudflare 토큰을
+    /// 넘겼고, 백엔드 openai 분기는 그 값을 API 키로 썼다. 그래서 (1) OpenAI 키를
+    /// 입력해도 전달되지 않고 (2) 남아 있던 Cloudflare 토큰으로 인증을 시도했다.
+    /// 프론트는 `credential` 분기로 고쳤고, 백엔드는 **디스크 폴백에서도 교차 사용하지
+    /// 않는다**는 계약을 여기서 고정한다: cloudflare.api_token 만 저장된 상태에서
+    /// openai 요청은 네트워크 호출 전에 키 부재 오류로 끝나야 한다.
+    #[test]
+    fn test_provider_credentials_are_not_cross_used() {
+        let _guard = DataDirGuard::new("credential_isolation");
+        let mut seed = scenario_with_token("cf-only-token", false);
+        seed.openai = wallmagic_core::OpenAiConfig {
+            api_key: String::new(),
+            model: wallmagic_core::default_openai_model(),
+        };
+        wallmagic_core::save_scenario(&seed).expect("seed scenario with cloudflare token only");
+
+        let err =
+            generate_library_wallpaper_with_provider_impl("neon harbor", "openai", None, None, None)
+                .expect_err("openai must not fall back to the cloudflare token");
+        assert!(
+            err.contains("API Key"),
+            "openai 는 cloudflare.api_token 을 키로 쓰면 안 된다: {err}"
+        );
+        assert!(
+            !err.contains("cf-only-token"),
+            "오류 문구에 Cloudflare 토큰이 노출되면 안 된다: {err}"
+        );
+    }
+
+    /// ② 생성의 Puter 경로는 프론트가 만든 base64 이미지를 `save_generated_image` 로
+    /// 라이브러리에 저장한다. 이 커맨드도 무라벨을 'puter' 로 둔갑시키면 다른 공급자
+    /// 결과가 Puter 로 오표시되고, 파일명 접두어까지 puter_ 로 고정되어 경로만 보고도
+    /// 공급자를 오판하게 된다. label 필수 계약과 라벨 파생 파일명을 함께 검증한다.
+    #[test]
+    fn test_save_generated_image_requires_label_and_derives_file_name() {
+        let _guard = DataDirGuard::new("save_requires_label");
+        // 1x1 PNG — label 검사는 디코딩 직후, 후보 변환(640x480) 전에 수행된다.
+        let png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==";
+
+        let err = save_generated_image_impl(png, None, None)
+            .expect_err("label 없이 호출하면 오류여야 한다");
+        assert!(
+            err.contains("label"),
+            "label 누락은 label 오류로 보고돼야 한다(무라벨→puter 둔갑 금지): {err}"
+        );
+
+        let err_blank = save_generated_image_impl(png, Some("   "), None)
+            .expect_err("공백 label 도 오류여야 한다");
+        assert!(
+            err_blank.contains("label"),
+            "공백 label 은 label 오류로 보고돼야 한다: {err_blank}"
+        );
+
+        // 대조군: 정상 label 은 label 검사에 걸리지 않는다 (1x1 이라 후보 변환에서 실패).
+        let err = save_generated_image_impl(png, Some("pollinations"), Some("flux"))
+            .expect_err("1x1 이미지는 후보 변환(640x480)에서 실패해야 한다");
+        assert!(
+            !err.contains("label(공급자 id)이 필요합니다"),
+            "정상 label 이 label 검사에서 막히면 안 된다: {err}"
+        );
+
+        // 파일명 접두어가 라벨에서 파생됐는지 실제 라이브러리 디렉터리로 확인한다.
+        let library = wallmagic_core::app_data_dir().join("library");
+        let names: Vec<String> = std::fs::read_dir(&library)
+            .expect("library dir must exist")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert!(
+            names.iter().any(|n| n.starts_with("generated_pollinations_")),
+            "저장 파일명 접두어는 라벨에서 파생되어야 한다(puter_ 고정 금지): {names:?}"
         );
     }
 
