@@ -281,13 +281,45 @@ pub fn normalize_to_hd(img: image::DynamicImage) -> Result<image::DynamicImage, 
     })
 }
 
+/// Pollinations 이미지 URL 을 만든다 (순수 함수 — 네트워크 없이 테스트 가능).
+///
+/// `seed` 가 `Some` 이면 `&seed=N` 을 덧붙인다.
+///
+/// 배경(실측): 수정 전 URL 은 `?width=1920&height=1080&nologo=true` 뿐이었고 seed 파라미터가
+/// 없었다. Pollinations 는 프롬프트+파라미터가 같은 URL 에 대해 캐시된 동일 이미지를
+/// 돌려주므로, seed 없이는 **같은 프롬프트가 항상 같은 이미지**가 된다.
+pub fn pollinations_image_url(prompt: &str, seed: Option<u64>) -> String {
+    let encoded = urlencoding::encode(prompt.trim());
+    let mut url = format!(
+        "https://image.pollinations.ai/prompt/{encoded}?width=1920&height=1080&nologo=true"
+    );
+    if let Some(s) = seed {
+        url.push_str(&format!("&seed={s}"));
+    }
+    url
+}
+
 /// Generate a wallpaper via the free Pollinations image API (no key needed).
 ///
 /// GETs a JPEG from image.pollinations.ai and saves it to `output_path`.
 /// Failures are returned as Network/HttpStatus/CandidateLoad so the UI
 /// can show a clear error instead of a silent offline gradient.
+///
+/// seed 없는 하위호환 래퍼 — seed 정책을 쓰는 호출부는
+/// `generate_online_wallpaper_with_seed` 를 써야 한다.
 pub fn generate_online_wallpaper(
     prompt: &str,
+    output_path: &Path,
+) -> Result<PathBuf, WallpaperError> {
+    generate_online_wallpaper_with_seed(prompt, None, output_path)
+}
+
+/// seed 를 명시해 Pollinations 이미지를 생성한다.
+///
+/// `seed = Some(n)` 이면 URL 에 `&seed=n` 이 붙어 같은 프롬프트라도 다른 결과가 나온다.
+pub fn generate_online_wallpaper_with_seed(
+    prompt: &str,
+    seed: Option<u64>,
     output_path: &Path,
 ) -> Result<PathBuf, WallpaperError> {
     let trimmed = prompt.trim();
@@ -299,10 +331,7 @@ pub fn generate_online_wallpaper(
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let encoded = urlencoding::encode(trimmed);
-    let url = format!(
-        "https://image.pollinations.ai/prompt/{encoded}?width=1920&height=1080&nologo=true"
-    );
+    let url = pollinations_image_url(trimmed, seed);
     let response = ureq::get(&url)
         .timeout(Duration::from_secs(90))
         .call()

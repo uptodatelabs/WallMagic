@@ -307,9 +307,17 @@ pub fn generate_library_wallpaper_with_provider_impl(
     // 공급자별 생성 경로를 명시적 match 로 분기한다 (미구현 공급자를 조용히 폴스루하지 않는다).
     let detail = match provider {
         "pollinations" => {
-            wallmagic_core::generate_online_wallpaper(trimmed_prompt, &dest)
-                .map_err(err_to_string)?;
-            format!("Pollinations image API (image.pollinations.ai · 무료·키 불필요) · prompt: {trimmed_prompt}")
+            // 수동 ② 생성도 seed 정책(`scenario.json` 의 seed_mode)을 따른다.
+            // seed 없이 요청하면 Pollinations 가 같은 URL(프롬프트+파라미터)을 캐시해
+            // **같은 프롬프트 = 항상 같은 이미지**가 된다(사용자 보고 결함).
+            let seed = wallmagic_core::take_generation_seed();
+            wallmagic_core::generate_online_wallpaper_with_seed(
+                trimmed_prompt,
+                Some(seed),
+                &dest,
+            )
+            .map_err(err_to_string)?;
+            format!("Pollinations image API (image.pollinations.ai · 무료·키 불필요) · prompt: {trimmed_prompt} · seed: {seed}")
         }
         "cloudflare-workers-ai" => {
             let account = account_id.map(str::trim).unwrap_or_default();
@@ -1396,6 +1404,11 @@ mod tests {
             openai: wallmagic_core::OpenAiConfig::default(),
             clear_api_key: false,
             disabled_providers: Vec::new(),
+            // seed 정책 기본값 — `ScenarioSettings::default()` 와 동일하게 Random.
+            // (구조체 리터럴이라 필드 누락 시 컴파일 오류가 나므로 여기서도 명시한다)
+            seed_mode: wallmagic_core::SeedMode::Random,
+            seed_fixed: 0,
+            seed_next: 0,
         }
     }
 

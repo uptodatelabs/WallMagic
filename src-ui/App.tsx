@@ -359,6 +359,16 @@ export interface ScenarioSettings {
   };
   order: "sequential" | "random";
   next_index: number;
+  /**
+   * seed 정책 — `fixed`(고정값) | `incremental`(순차 증가) | `random`(기본값).
+   * seed 를 보내지 않으면 Pollinations 가 같은 URL 을 캐시해 같은 프롬프트가
+   * 항상 같은 이미지가 된다. 기본값 random 이 그 문제를 제거한다.
+   */
+  seed_mode?: "fixed" | "incremental" | "random";
+  /** `seed_mode === "fixed"` 일 때 쓸 고정 seed 값. */
+  seed_fixed?: number;
+  /** `seed_mode !== "fixed"` 카운터 — 백엔드가 생성 성공 시 1씩 전진시켜 저장한다. */
+  seed_next?: number;
   last_run_at: number | null;
   position: string;
   provider: "pollinations" | "cloudflare-workers-ai" | "openai" | "search";
@@ -418,6 +428,11 @@ export function App(): React.ReactElement {
   // 검색(Search) 소스 — 줄바꿈 구분 키워드 목록. 시나리오 자동 실행에서 순환 사용된다.
   const [scSearchQueries, setScSearchQueries] = useState<string>("");
   const [scOrder, setScOrder] = useState<"sequential" | "random">("sequential");
+  // seed 정책 — 기본값 random. seed 를 요청에 넣지 않으면 Pollinations 는 같은 URL 을
+  // 캐시해 "같은 프롬프트 = 항상 같은 이미지"가 된다(사용자 보고 결함의 원인).
+  const [scSeedMode, setScSeedMode] = useState<"fixed" | "incremental" | "random">("random");
+  const [scSeedFixed, setScSeedFixed] = useState<number>(0);
+  const [scSeedNext, setScSeedNext] = useState<number>(0);
   // `ProviderId`: 이미지 공급자 전체 집합(4종) — select 옵션·우선순위 목록이 같은 PROVIDERS 상수에서 파생된다.
   type ProviderId = "pollinations" | "puter" | "cloudflare-workers-ai" | "openai" | "search";
   const PROVIDERS: { id: ProviderId; label: string; backend: boolean }[] = [
@@ -640,6 +655,10 @@ export function App(): React.ReactElement {
       // 검색(Search) 소스 키워드 복원 — 저장된 키워드가 없으면 빈 문자열.
       setScSearchQueries((sc.source.search_queries ?? []).join("\n"));
       setScOrder(sc.order);
+      // seed 정책 복원 — 구 scenario.json(필드 없음)은 기본값 random 으로 해석한다.
+      setScSeedMode(sc.seed_mode ?? "random");
+      setScSeedFixed(sc.seed_fixed ?? 0);
+      setScSeedNext(sc.seed_next ?? 0);
       setScProvider(sc.provider ?? "pollinations");
       const rawOrd = (sc as unknown as { provider_order?: unknown }).provider_order;
       if (Array.isArray(rawOrd) && rawOrd.length > 0) {
@@ -1206,6 +1225,10 @@ export function App(): React.ReactElement {
           source: { urls, local_dir: localDir, search_queries: searchQueries },
           order: scOrder,
           next_index: nextIndex,
+          // seed 정책 — 저장해야 시나리오 자동 실행(tick)과 수동 ② 생성이 같은 규칙을 쓴다.
+          seed_mode: scSeedMode,
+          seed_fixed: Number.isFinite(scSeedFixed) ? scSeedFixed : 0,
+          seed_next: scSeedNext,
           last_run_at: lastRunAt,
           position,
           provider,
@@ -1827,6 +1850,38 @@ export function App(): React.ReactElement {
                 <option value="sequential">순차 (sequential)</option>
                 <option value="random">랜덤 (random)</option>
               </select>
+            </div>
+            <div className="field">
+              <label htmlFor="scSeedMode">이미지 seed (같은 이미지 반복 방지)</label>
+              <select
+                id="scSeedMode"
+                value={scSeedMode}
+                onChange={(e) =>
+                  setScSeedMode(e.target.value as "fixed" | "incremental" | "random")
+                }
+              >
+                <option value="fixed">고정 (fixed — 같은 seed = 같은 이미지)</option>
+                <option value="incremental">순차 (incremental — 생성마다 +1)</option>
+                <option value="random">랜덤 (random — 기본, 매번 다른 이미지)</option>
+              </select>
+              {scSeedMode === "fixed" ? (
+                <input
+                  id="scSeedFixed"
+                  type="number"
+                  min={0}
+                  value={scSeedFixed}
+                  onChange={(e) => setScSeedFixed(Number(e.target.value))}
+                  placeholder="고정 seed 값 (예: 12345)"
+                  style={{ marginTop: "6px" }}
+                />
+              ) : null}
+              <div className="detail">
+                Pollinations 는 같은 프롬프트·같은 seed 면 캐시된 동일 이미지를 돌려줍니다.
+                기본값 <b>랜덤</b>이면 생성마다 seed 가 달라져 결과가 매번 달라집니다.
+                {scSeedMode === "fixed" ? null : <> 현재 카운터: <b>{scSeedNext}</b></>}
+                Cloudflare 는 flux 계열 모델만 seed 를 받고, OpenAI Images API 는 seed 를
+                지원하지 않아 전송하지 않습니다.
+              </div>
             </div>
             <div className="field">
               <label htmlFor="scProvider">이미지 공급자</label>

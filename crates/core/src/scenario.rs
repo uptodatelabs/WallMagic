@@ -49,6 +49,121 @@ pub enum ScenarioOrder {
     Random,
 }
 
+/// 이미지 생성 seed 정책.
+///
+/// 배경(실측): Pollinations 요청 URL 은 `?width=1920&height=1080&nologo=true` 뿐이고
+/// `seed` 파라미터가 없었다. Pollinations 는 **같은 URL(프롬프트+파라미터)에 대해 캐시된
+/// 동일 이미지**를 돌려주므로, seed 없이는 같은 프롬프트가 항상 같은 결과를 낸다.
+/// 그래서 기본값을 `Random` 으로 두어 "같은 프롬프트 = 같은 이미지"를 제거한다.
+///
+/// - `Fixed`: `seed_fixed` 고정값을 매번 사용 (재현성 필요 시).
+/// - `Incremental`: `seed_next` 카운터를 1씩 전진 (생성마다 다른 결과, 추적 가능).
+/// - `Random`: 현재 시각 + 카운터를 섞은 값 (기본값 — 같은 프롬프트도 매번 달라짐).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SeedMode {
+    Fixed,
+    Incremental,
+    #[default]
+    Random,
+}
+
+/// seed 혼합 함수 — 시각과 카운터를 64비트로 섞는다 (순수 함수).
+///
+/// `splitmix64` 최종화 단계를 사용한다. 같은 초에 두 번 생성해도 카운터가 다르므로
+/// 서로 다른 seed 가 나온다(초 단위 시각만 쓰면 같은 초 재생성이 동일 결과가 된다).
+pub fn mix_seed(now_secs: u64, counter: u64) -> u64 {
+    let mut z = now_secs
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(counter.wrapping_mul(0xBF58_476D_1CE4_E5B9));
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// 모드별로 이번 생성에 쓸 seed 값을 결정한다 (순수 함수 — 네트워크·IO 없음).
+pub fn next_seed_value(mode: SeedMode, fixed: u64, counter: u64, now_secs: u64) -> u64 {
+    match mode {
+        SeedMode::Fixed => fixed,
+        SeedMode::Incremental => counter,
+        SeedMode::Random => mix_seed(now_secs, counter),
+    }
+}
+
+/// 생성 성공 후 seed 카운터를 전진시킨다. `Fixed` 는 고정값이므로 전진하지 않는다.
+pub fn advance_seed(settings: &mut ScenarioSettings) {
+    match settings.seed_mode {
+        SeedMode::Fixed => {}
+        _ => {
+            settings.seed_next = settings.seed_next.wrapping_add(1);
+        }
+    }
+}
+
+/// 생성 성공 후 **커서(next_index)와 seed 카운터(seed_next)를 함께 전진**시킨다 (IO 없음).
+///
+/// 배경(실측 결함): `tick_scenario`/`generate_wallpaper_priority_impl` 은 `next_index` 만
+/// 전진시키고 `seed_next` 는 건드리지 않았다. `next_seed_value(Incremental, ..)` 는
+/// `counter = seed_next` 를 그대로 반환하므로, 두 경로에서는 카운터가 0 에 고정되어
+/// **매 생성이 같은 seed → 같은 이미지**가 됐다(수동 ② 생성만 `take_generation_seed` 로
+/// 전진하고 있었다). 전진 규칙을 한 함수로 모아 네 경로가 같은 규칙을 쓰게 한다.
+pub fn advance_after_generation(settings: &mut ScenarioSettings, used: ImageProvider) {
+    advance_seed(settings);
+    if used == ImageProvider::Search {
+        let query_count = valid_search_queries(settings).len();
+        if query_count > 0 {
+            settings.next_index = settings.next_index.wrapping_add(1) % query_count;
+            return;
+        }
+    }
+    settings.next_index = settings.next_index.wrapping_add(1);
+}
+
+/// 수동 생성 1회용 seed 를 결정하고 카운터를 전진·저장한다.
+///
+/// 디스크 `scenario.json` 의 seed 정책을 읽어 값을 만들고, `Fixed` 가 아니면 카운터를
+/// 전진시켜 저장한다. 저장 실패는 치명적이지 않으므로 경고만 남기고 진행한다
+/// (생성 자체를 막으면 "설정 저장 실패 때문에 이미지가 안 나오는" 2차 결함이 된다).
+pub fn take_generation_seed() -> u64 {
+    let mut settings = load_scenario().unwrap_or_default();
+    let seed = next_seed_value(
+        settings.seed_mode,
+        settings.seed_fixed,
+        settings.seed_next,
+        now_unix_secs(),
+    );
+    advance_seed(&mut settings);
+    if let Err(e) = save_scenario(&settings) {
+        tracing::warn!("seed counter save failed: {e}");
+    }
+    seed
+}
+
+/// 해당 공급자가 seed 파라미터를 지원하는가.
+///
+/// - Pollinations: 지원 (`&seed=N` 쿼리).
+/// - Cloudflare Workers AI: flux 계열만 지원 (`cloudflare_accepts_seed` 로 모델 판정).
+/// - OpenAI Images API: **미지원** — 공식 문서에 seed 파라미터가 없다. 보내면 400 이 될 수
+///   있으므로 요청 바디에 넣지 않는다.
+/// - Search / Puter: 이미지 생성 모델이 아니므로 해당 없음.
+pub fn provider_supports_seed(provider: ImageProvider) -> bool {
+    match provider {
+        ImageProvider::Pollinations => true,
+        ImageProvider::CloudflareWorkersAi => true,
+        ImageProvider::Openai => false,
+        ImageProvider::Search => false,
+        ImageProvider::Puter => false,
+    }
+}
+
+/// Cloudflare Workers AI 모델이 seed 를 받는가.
+///
+/// 배경(실측): Workers AI 는 모델마다 입력 스키마가 다르고, flux 계열만 `seed` 를
+/// 받는다. 미지원 모델에 seed 를 보내면 400 이 되므로 모델명으로 게이팅한다.
+pub fn cloudflare_accepts_seed(model: &str) -> bool {
+    model.to_ascii_lowercase().contains("flux")
+}
+
 /// 이미지 공급자 (시나리오 자동 업데이트·수동 생성 공용).
 /// Puter는 WebView 전용 SDK라 Rust에서 직접 생성할 수 없어 스킵된다 —
 /// 프론트가 화면 순서 자리에서 직접 시도하므로 순서를 보존하기 위해 variant로 유지한다.
@@ -232,14 +347,19 @@ pub fn search_query_for(settings: &ScenarioSettings, seed: u64) -> Option<String
 /// `attempt` 에 넘기는 두 번째 인자는 **해당 공급자에 실제로 쓸 질의문**이다:
 /// - Search 는 `source.search_queries` 를 우선 사용하고(순환), 비어 있을 때만 프롬프트를 쓴다.
 /// - 그 외 공급자는 공용 프롬프트를 그대로 쓴다.
-pub fn generate_ai_with_fallback_with_query<F>(
+///
+/// `seed` 는 호출자가 `next_seed_value` 로 결정해 넘긴다. 실제 시도 함수에 그대로
+/// 전달되므로, seed 를 지원하지 않는 공급자는 받은 seed 를 무시해야 한다
+/// (`provider_supports_seed` 로 판단).
+pub fn generate_ai_with_fallback_with_seed<F>(
     settings: &ScenarioSettings,
     prompt: &str,
     dest: &PathBuf,
+    seed: u64,
     attempt: F,
 ) -> Result<(ImageProvider, PathBuf, String), WallpaperError>
 where
-    F: Fn(ImageProvider, &str, &PathBuf) -> Result<PathBuf, WallpaperError>,
+    F: Fn(ImageProvider, &str, u64, &PathBuf) -> Result<PathBuf, WallpaperError>,
 {
     let trimmed = prompt.trim();
     // 프롬프트가 비어 있어도 Search 키워드가 있으면 실행 가능하다
@@ -257,7 +377,6 @@ where
     }
     let mut last_err: Option<WallpaperError> = None;
     let mut skipped = 0usize;
-    let seed = now_unix_secs();
     for provider in order {
         // Search 자격은 **검색어(`source.search_queries`) 단독**으로 판정한다 (공급자 단일 판정 헬퍼).
         // 프롬프트(`settings.prompt`)도, 호출 인자 `prompt` 도 검색 자격에 관여하지 않는다 —
@@ -295,7 +414,7 @@ where
             }
             trimmed.to_string()
         };
-        match attempt(provider, &query, dest) {
+        match attempt(provider, &query, seed, dest) {
             // 실제로 사용된 질의문을 함께 돌려준다 — 호출자가 search_query_for 를 다시
             // 호출하면 순차/랜덤 순환에서 다른 값이 나와 기록과 실제 검색어가 어긋난다.
             Ok(p) => return Ok((provider, p, query)),
@@ -310,6 +429,29 @@ where
             "all image providers failed (skipped: {skipped})"
         ))
     }))
+}
+
+/// seed 를 클로저 인자로 받지 않는 호출부·테스트용 래퍼.
+///
+/// seed 는 설정(`seed_mode`/`seed_fixed`/`seed_next`)에서 계산해 시도 함수에 넘긴다.
+pub fn generate_ai_with_fallback_with_query<F>(
+    settings: &ScenarioSettings,
+    prompt: &str,
+    dest: &PathBuf,
+    attempt: F,
+) -> Result<(ImageProvider, PathBuf, String), WallpaperError>
+where
+    F: Fn(ImageProvider, &str, &PathBuf) -> Result<PathBuf, WallpaperError>,
+{
+    let seed = next_seed_value(
+        settings.seed_mode,
+        settings.seed_fixed,
+        settings.seed_next,
+        now_unix_secs(),
+    );
+    generate_ai_with_fallback_with_seed(settings, prompt, dest, seed, |provider, query, _s, dest| {
+        attempt(provider, query, dest)
+    })
 }
 
 /// 2-튜플 호환 래퍼 — 실제 사용된 질의문이 필요 없는 호출부·테스트용.
@@ -340,30 +482,57 @@ pub fn generate_ai_with_fallback_query(
     prompt: &str,
     dest: &PathBuf,
 ) -> Result<(ImageProvider, PathBuf, String), WallpaperError> {
-    generate_ai_with_fallback_with_query(settings, prompt, dest, |provider, trimmed, dest| match provider {
-        ImageProvider::Pollinations => {
-            crate::wallpaper::generate_online_wallpaper(trimmed, dest)
-        }
-        ImageProvider::CloudflareWorkersAi => {
-            let cf = &settings.cloudflare;
-            generate_cloudflare_wallpaper(
-                &cf.account_id,
-                &cf.api_token,
-                &cf.model,
-                trimmed,
-                dest,
-            )
-        }
-        ImageProvider::Openai => {
-            let oa = &settings.openai;
-            generate_openai_wallpaper(&oa.api_key, &oa.model, trimmed, dest)
-        }
-        // 검색(Search): 프롬프트를 검색 키워드로 사용해 공개 이미지 1건을 확정한다.
-        ImageProvider::Search => crate::search::generate_search_wallpaper(trimmed, dest),
-        ImageProvider::Puter => Err(WallpaperError::CandidateLoad(
-            "Puter skipped: browser SDK only".to_string(),
-        )),
-    })
+    let seed = next_seed_value(
+        settings.seed_mode,
+        settings.seed_fixed,
+        settings.seed_next,
+        now_unix_secs(),
+    );
+    generate_ai_with_fallback_with_seed(
+        settings,
+        prompt,
+        dest,
+        seed,
+        |provider, trimmed, seed, dest| match provider {
+            ImageProvider::Pollinations => {
+                // Pollinations 는 `?seed=N` 을 지원한다 — 같은 프롬프트라도 seed 가 다르면
+                // 다른 이미지가 나온다(seed 없으면 캐시된 동일 이미지).
+                crate::wallpaper::generate_online_wallpaper_with_seed(trimmed, Some(seed), dest)
+            }
+            ImageProvider::CloudflareWorkersAi => {
+                let cf = &settings.cloudflare;
+                if cloudflare_accepts_seed(&cf.model) {
+                    generate_cloudflare_wallpaper_with_seed(
+                        &cf.account_id,
+                        &cf.api_token,
+                        &cf.model,
+                        trimmed,
+                        Some(seed),
+                        dest,
+                    )
+                } else {
+                    // seed 미지원 모델에 seed 를 보내면 400 이 온다 — 게이팅해서 보내지 않는다.
+                    generate_cloudflare_wallpaper(
+                        &cf.account_id,
+                        &cf.api_token,
+                        &cf.model,
+                        trimmed,
+                        dest,
+                    )
+                }
+            }
+            ImageProvider::Openai => {
+                // OpenAI Images API 는 seed 파라미터를 지원하지 않는다 — 보내지 않는다.
+                let oa = &settings.openai;
+                generate_openai_wallpaper(&oa.api_key, &oa.model, trimmed, dest)
+            }
+            // 검색(Search): 프롬프트를 검색 키워드로 사용해 공개 이미지 1건을 확정한다.
+            ImageProvider::Search => crate::search::generate_search_wallpaper(trimmed, dest),
+            ImageProvider::Puter => Err(WallpaperError::CandidateLoad(
+                "Puter skipped: browser SDK only".to_string(),
+            )),
+        },
+    )
 }
 
 /// 2-튜플 호환 래퍼 — 실제 사용된 질의문이 필요 없는 호출부용.
@@ -435,6 +604,17 @@ pub struct ScenarioSettings {
     /// OpenAI api_key 명시적 삭제 플래그 (clear_api_token과 동일 패턴).
     #[serde(default)]
     pub clear_api_key: bool,
+    /// seed 정책 — 기본값 `Random`. seed 를 보내지 않으면 Pollinations 는
+    /// 같은 프롬프트(같은 URL)에 캐시된 동일 이미지를 돌려주므로,
+    /// 기본값이 `Random` 이어야 "같은 프롬프트 = 같은 이미지" 문제가 사라진다.
+    #[serde(default)]
+    pub seed_mode: SeedMode,
+    /// `SeedMode::Fixed` 일 때 쓸 고정 seed 값.
+    #[serde(default)]
+    pub seed_fixed: u64,
+    /// `Incremental`/`Random` 모드의 카운터 (생성마다 1씩 전진, 저장·복원됨).
+    #[serde(default)]
+    pub seed_next: u64,
 }
 
 fn default_interval() -> u64 {
@@ -463,6 +643,9 @@ impl Default for ScenarioSettings {
             disabled_providers: Vec::new(),
             clear_api_token: false,
             clear_api_key: false,
+            seed_mode: SeedMode::Random,
+            seed_fixed: 0,
+            seed_next: 0,
         }
     }
 }
@@ -724,6 +907,22 @@ pub fn generate_cloudflare_wallpaper(
     prompt: &str,
     dest: &PathBuf,
 ) -> Result<PathBuf, WallpaperError> {
+    generate_cloudflare_wallpaper_with_seed(account_id, api_token, model, prompt, None, dest)
+}
+
+/// seed 를 명시해 Cloudflare Workers AI 이미지를 생성한다.
+///
+/// `seed = Some(n)` 이고 모델이 seed 를 지원하면(`cloudflare_accepts_seed`) 요청 바디에
+/// `seed` 키를 넣는다. 미지원 모델(비-flux 계열)에 보내면 400 이 되므로 **모델명으로
+/// 게이팅**한다 — 게이팅 없이 무조건 보내면 기존 사용자의 생성이 갑자기 실패한다.
+pub fn generate_cloudflare_wallpaper_with_seed(
+    account_id: &str,
+    api_token: &str,
+    model: &str,
+    prompt: &str,
+    seed: Option<u64>,
+    dest: &PathBuf,
+) -> Result<PathBuf, WallpaperError> {
     if account_id.trim().is_empty() {
         return Err(WallpaperError::CandidateLoad(
             "cloudflare account_id is empty".to_string(),
@@ -745,8 +944,16 @@ pub fn generate_cloudflare_wallpaper(
         model.trim().to_string()
     };
     let url = cloudflare_ai_url(account_id, &model);
-    let req_body =
-        serde_json::json!({"prompt": prompt.trim()}).to_string();
+    let mut payload = serde_json::json!({"prompt": prompt.trim()});
+    // seed 는 모델이 지원할 때만 넣는다 — 비-flux 모델에 보내면 400 이 온다.
+    if let Some(s) = seed {
+        if cloudflare_accepts_seed(&model) {
+            if let Some(obj) = payload.as_object_mut() {
+                obj.insert("seed".to_string(), serde_json::json!(s));
+            }
+        }
+    }
+    let req_body = payload.to_string();
     let response = ureq::post(&url)
         .timeout(std::time::Duration::from_secs(90))
         .set("Authorization", &format!("Bearer {}", api_token.trim()))
@@ -959,13 +1166,10 @@ pub fn tick_scenario(now_secs: u64) -> Result<Option<WallpaperState>, WallpaperE
                         Some(&detail_with_query),
                     ) {
                         Ok(st) => {
-                            let query_count = valid_search_queries(&settings).len();
-                            if used == ImageProvider::Search && query_count > 0 {
-                                settings.next_index =
-                                    settings.next_index.wrapping_add(1) % query_count;
-                            } else {
-                                settings.next_index = settings.next_index.wrapping_add(1);
-                            }
+                            // 커서(next_index)와 seed 카운터(seed_next)를 **함께** 전진시킨다.
+                            // 이전 구현은 next_index 만 전진시켜, Incremental 모드에서
+                            // seed_next 가 0 에 고정 → 매 생성이 같은 seed → 같은 이미지가 됐다.
+                            advance_after_generation(&mut settings, used);
                             settings.last_run_at = Some(now_secs);
                             save_scenario(&settings)?;
                             return Ok(Some(st));
@@ -1013,8 +1217,11 @@ pub fn tick_scenario(now_secs: u64) -> Result<Option<WallpaperState>, WallpaperE
                         Some(&format!("{detail} · query: {query}")),
                     ) {
                         Ok(st) => {
-                            settings.next_index =
-                                settings.next_index.wrapping_add(1) % query_count.max(1);
+                            // 커서·seed 전진 규칙은 `advance_after_generation` 한 곳에 모은다
+                            // (이전 구현은 next_index 만 전진시켜 Incremental seed 가 0 에
+                            // 고정되는 결함이 있었다).
+                            advance_after_generation(&mut settings, ImageProvider::Search);
+                            let _ = query_count;
                             settings.last_run_at = Some(now_secs);
                             save_scenario(&settings)?;
                             return Ok(Some(st));
@@ -1125,6 +1332,9 @@ mod tests {
             openai: OpenAiConfig::default(),
             provider_order: default_provider_order(),
             disabled_providers: Vec::new(),
+            seed_mode: SeedMode::Random,
+            seed_fixed: 0,
+            seed_next: 0,
             clear_api_token: false,
             clear_api_key: false,
         }
@@ -1825,4 +2035,174 @@ mod tests {
         );
     }
 
+    /// seed 정책의 기본값은 `Random` 이어야 한다 — 같은 프롬프트로 항상 같은 이미지가
+    /// 나오던 결함(seed 미전송)을 기본값에서부터 제거한다.
+    ///
+    /// 구 `scenario.json`(seed 필드 없음)도 이 기본값으로 로드되어야 하므로
+    /// serde 기본값과 `Default` 구현이 같은 값을 내야 한다.
+    #[test]
+    fn test_seed_mode_defaults_to_random_for_legacy_json() {
+        // ① Default 구현
+        assert_eq!(ScenarioSettings::default().seed_mode, SeedMode::Random);
+        assert_eq!(ScenarioSettings::default().seed_fixed, 0);
+        assert_eq!(ScenarioSettings::default().seed_next, 0);
+
+        // ② 구버전 JSON(seed 필드 없음) 역직렬화 — 필드가 없어도 실패하지 않아야 한다.
+        let legacy = serde_json::json!({
+            "enabled": false,
+            "interval_minutes": 60,
+            "source": { "urls": [], "local_dir": null },
+            "order": "sequential",
+            "next_index": 0,
+            "position": "fill",
+        });
+        let parsed: ScenarioSettings =
+            serde_json::from_value(legacy).expect("legacy scenario.json must load");
+        assert_eq!(
+            parsed.seed_mode,
+            SeedMode::Random,
+            "구버전 JSON 은 seed_mode 기본값 Random 으로 로드되어야 한다"
+        );
+    }
+
+    /// 모드별 seed 결정 — 순수 함수라 네트워크 없이 검증한다.
+    #[test]
+    fn test_next_seed_value_modes() {
+        // Fixed: 고정값을 그대로 쓴다(재현성).
+        assert_eq!(next_seed_value(SeedMode::Fixed, 12345, 7, 1_700_000_000), 12345);
+        // Incremental: 카운터를 그대로 쓴다(생성마다 1씩 증가).
+        assert_eq!(next_seed_value(SeedMode::Incremental, 12345, 7, 1_700_000_000), 7);
+        // Random: 같은 (now, counter) 면 같은 값, 하나라도 다르면 다른 값.
+        let a = next_seed_value(SeedMode::Random, 0, 3, 1_700_000_000);
+        let b = next_seed_value(SeedMode::Random, 0, 3, 1_700_000_000);
+        let c = next_seed_value(SeedMode::Random, 0, 4, 1_700_000_000);
+        let d = next_seed_value(SeedMode::Random, 0, 3, 1_700_000_001);
+        assert_eq!(a, b, "같은 시각·카운터면 같은 seed (결정적)");
+        assert_ne!(a, c, "카운터가 다르면 seed 가 달라야 한다(같은 초 재생성 대응)");
+        assert_ne!(a, d, "시각이 다르면 seed 가 달라야 한다");
+    }
+
+    /// `advance_seed` 는 Fixed 가 아닐 때만 카운터를 전진시킨다 — Fixed 에서 전진시키면
+    /// "고정 seed" 라는 약속이 조용히 깨진다.
+    #[test]
+    fn test_advance_seed_increments_except_fixed() {
+        let mut fixed = ScenarioSettings::default();
+        fixed.seed_mode = SeedMode::Fixed;
+        fixed.seed_next = 5;
+        advance_seed(&mut fixed);
+        assert_eq!(fixed.seed_next, 5, "Fixed 는 카운터를 전진시키지 않는다");
+
+        for mode in [SeedMode::Incremental, SeedMode::Random] {
+            let mut s = ScenarioSettings::default();
+            s.seed_mode = mode;
+            s.seed_next = 5;
+            advance_seed(&mut s);
+            assert_eq!(s.seed_next, 6, "{mode:?} 는 카운터를 1 전진시킨다");
+        }
+    }
+
+    /// 회귀 테스트: 시나리오 tick·우선순위 생성도 **seed 카운터를 전진**시켜야 한다.
+    ///
+    /// 배경(실측 결함): 두 경로는 `next_index` 만 전진시키고 `seed_next` 는 그대로 두었다.
+    /// `next_seed_value(Incremental, ..)` 는 `counter = seed_next` 를 그대로 반환하므로
+    /// 카운터가 0 에 고정되어 **매 생성이 같은 seed → 같은 이미지**가 됐다.
+    /// (수동 ② 생성만 `take_generation_seed` 로 전진하고 있었다.)
+    #[test]
+    fn test_advance_after_generation_advances_seed_counter() {
+        // ① Incremental: 생성 1회마다 seed_next 가 전진해야 다음 생성이 다른 이미지를 만든다.
+        let mut s = ScenarioSettings::default();
+        s.seed_mode = SeedMode::Incremental;
+        s.seed_next = 0;
+        let first = next_seed_value(s.seed_mode, s.seed_fixed, s.seed_next, 0);
+        advance_after_generation(&mut s, ImageProvider::Pollinations);
+        let second = next_seed_value(s.seed_mode, s.seed_fixed, s.seed_next, 0);
+        assert_ne!(
+            first, second,
+            "시나리오 tick·우선순위 경로도 seed 카운터를 전진시켜야 한다(같은 이미지 재생 방지)"
+        );
+        assert_eq!(s.seed_next, 1);
+
+        // ② Fixed: 고정 seed 약속은 그대로 — 카운터가 전진하지 않는다.
+        let mut fixed = ScenarioSettings::default();
+        fixed.seed_mode = SeedMode::Fixed;
+        fixed.seed_fixed = 42;
+        fixed.seed_next = 7;
+        advance_after_generation(&mut fixed, ImageProvider::Pollinations);
+        assert_eq!(fixed.seed_next, 7, "Fixed 는 카운터를 전진시키지 않는다");
+        assert_eq!(
+            next_seed_value(fixed.seed_mode, fixed.seed_fixed, fixed.seed_next, 0),
+            42,
+            "Fixed 는 어떤 전진 이후에도 같은 seed 를 내야 한다"
+        );
+
+        // ③ Search: next_index 는 유효 키워드 수로 모듈로 순환하고, seed 도 함께 전진한다.
+        let mut search = ScenarioSettings::default();
+        search.seed_mode = SeedMode::Incremental;
+        search.source.search_queries = vec!["a".to_string(), "b".to_string()];
+        search.next_index = 1;
+        advance_after_generation(&mut search, ImageProvider::Search);
+        assert_eq!(search.next_index, 0, "Search 커서는 키워드 수로 모듈로 순환");
+        assert_eq!(search.seed_next, 1, "Search 경로도 seed 카운터를 전진시킨다");
+
+        // ④ 키워드 없는 Search: 0 나눗셈 없이 단순 증가.
+        let mut no_kw = ScenarioSettings::default();
+        no_kw.next_index = 3;
+        advance_after_generation(&mut no_kw, ImageProvider::Search);
+        assert_eq!(no_kw.next_index, 4);
+    }
+
+    /// seed 지원 여부 — 미지원 공급자에 seed 를 보내면 400 이 되므로 계약을 고정한다.
+    #[test]
+    fn test_provider_supports_seed_matrix() {
+        assert!(provider_supports_seed(ImageProvider::Pollinations));
+        assert!(
+            provider_supports_seed(ImageProvider::CloudflareWorkersAi),
+            "Cloudflare 는 flux 계열에서 seed 를 지원한다"
+        );
+        assert!(
+            !provider_supports_seed(ImageProvider::Openai),
+            "OpenAI Images API 는 seed 파라미터가 없다 — 보내면 안 된다"
+        );
+        assert!(!provider_supports_seed(ImageProvider::Search));
+        assert!(!provider_supports_seed(ImageProvider::Puter));
+    }
+
+    /// Cloudflare 는 모델별 입력 스키마가 다르다 — flux 계열만 seed 를 받는다.
+    #[test]
+    fn test_cloudflare_accepts_seed_only_for_flux_models() {
+        assert!(cloudflare_accepts_seed("@cf/black-forest-labs/flux-1-schnell"));
+        assert!(cloudflare_accepts_seed("FLUX.2 [dev]"));
+        assert!(!cloudflare_accepts_seed(
+            "@cf/stabilityai/stable-diffusion-xl-base-1.0"
+        ));
+    }
+
+    /// Pollinations 요청 URL 에 seed 가 실제로 붙는지 — 이 결함의 핵심 증거.
+    #[test]
+    fn test_pollinations_url_carries_seed() {
+        let with_seed = crate::wallpaper::pollinations_image_url("neon harbor", Some(42));
+        assert!(with_seed.contains("seed=42"), "seed 쿼리가 붙어야 한다: {with_seed}");
+        assert!(with_seed.starts_with("https://image.pollinations.ai/prompt/"));
+
+        // seed 미지정(하위호환)은 기존 URL 과 동일해야 한다.
+        let without = crate::wallpaper::pollinations_image_url("neon harbor", None);
+        assert!(!without.contains("seed="), "seed 미지정이면 파라미터가 없어야 한다");
+    }
+
+    /// OpenAI 요청 바디에는 seed 키가 절대 들어가면 안 된다(API 미지원).
+    /// 소스 수준이 아니라 **직렬화 결과**를 검사해 회귀를 잡는다.
+    #[test]
+    fn test_openai_request_body_has_no_seed() {
+        // generate_openai_wallpaper 가 만드는 바디와 동일한 구성.
+        let body = serde_json::json!({
+            "model": default_openai_model(),
+            "prompt": "neon harbor",
+            "n": 1,
+            "size": "1536x1024",
+        });
+        assert!(
+            body.get("seed").is_none(),
+            "OpenAI Images API 는 seed 미지원 — 바디에 넣으면 400 이 된다"
+        );
+    }
 }

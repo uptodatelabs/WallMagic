@@ -144,8 +144,11 @@ check("provider_is_configured 의 Search 는 프롬프트를 보지 않고 검�
   return /search_queries/.test(code) && !/settings\.prompt/.test(code);
 });
 
-check("generate_ai_with_fallback_with_query 가 Search 에 키워드 기반 질의를 전달하고 실제 사용 질의문을 반환한다", () => {
-  const body = fnBody(scenario, "generate_ai_with_fallback_with_query");
+// seed 정책 도입으로 폴백 루프가 `generate_ai_with_fallback_with_seed` 로 이동하고
+// `_with_query` 는 seed 를 계산해 위임하는 얇은 래퍼가 되었다. 검사 대상 함수 이름을
+// 실제 구현으로 맞춘다 — 옮겨간 함수를 계속 검사하면 본문이 비어 항상 FAIL 하는 오탐이 난다.
+check("generate_ai_with_fallback_with_seed 가 Search 에 키워드 기반 질의를 전달하고 실제 사용 질의문을 반환한다", () => {
+  const body = fnBody(scenario, "generate_ai_with_fallback_with_seed");
   return (
     /search_query_for/.test(body) &&
     /attempt\(provider, &query/.test(body) &&
@@ -153,8 +156,8 @@ check("generate_ai_with_fallback_with_query 가 Search 에 키워드 기반 질�
   );
 });
 
-check("generate_ai_with_fallback_with_query 가 Search 자격을 공급자 단일 판정 헬퍼로만 결정한다", () => {
-  const body = fnBody(scenario, "generate_ai_with_fallback_with_query");
+check("generate_ai_with_fallback_with_seed 가 Search 자격을 공급자 단일 판정 헬퍼로만 결정한다", () => {
+  const body = fnBody(scenario, "generate_ai_with_fallback_with_seed");
   // Search 전용 자격 분기(|| !trimmed.is_empty())가 남아 있으면 프롬프트가 자격에 관여한다.
   return (
     /provider_is_configured\(settings,\s*provider\)/.test(body) &&
@@ -162,13 +165,27 @@ check("generate_ai_with_fallback_with_query 가 Search 자격을 공급자 단�
   );
 });
 
-check("tick_scenario 상단 AI 분기가 Search 채택 시 실제 검색어(used_query)를 기록하고 next_index 를 모듈로 순환한다", () => {
+check("seed 정책이 실제 네트워크 시도 함수로 전달된다 (_with_query → next_seed_value → _with_seed)", () => {
+  const body = fnBody(scenario, "generate_ai_with_fallback_query");
+  return (
+    /next_seed_value\s*\(/.test(body) &&
+    /generate_ai_with_fallback_with_seed\s*\(/.test(body)
+  );
+});
+
+check("tick_scenario 상단 AI 분기가 Search 채택 시 실제 검색어(used_query)를 기록하고 전진 규칙을 단일 헬퍼에 위임한다", () => {
   const body = fnBody(scenario, "tick_scenario");
   const topBranch = body.split("if settings.prompt.trim().is_empty()")[0] || "";
+  // 커서·seed 전진은 `advance_after_generation` 한 곳으로 통일되었다(수동 ② 생성·tick·
+  // 우선순위 생성이 같은 규칙을 쓰도록). 따라서 tick 본문에는 모듈로 연산이 없고,
+  // 헬퍼 본문이 Search 순환(`wrapping_add(1) % query_count`)을 책임진다.
+  const helper = fnBody(scenario, "advance_after_generation");
   return (
     /used\s*==\s*ImageProvider::Search/.test(topBranch) &&
     /query:\s*\{used_query\}/.test(topBranch) &&
-    /wrapping_add\(1\)\s*%\s*query_count/.test(topBranch)
+    /advance_after_generation\(\s*&mut settings,\s*used\s*\)/.test(topBranch) &&
+    /wrapping_add\(1\)\s*%\s*query_count/.test(helper) &&
+    /advance_seed\(settings\)/.test(helper)
   );
 });
 

@@ -14,16 +14,18 @@ pub mod wallpaper;
 // Public facade: the canonical implementation lives in the `wallpaper` / `search` modules.
 // Types and functions are re-exported here so downstream crates keep a stable import path.
 pub use scenario::{
-    cloudflare_ai_url, default_cf_model, default_openai_model, default_provider_order,
-    effective_provider_order, failure_retry_allowed_at, generate_ai_with_fallback,
-    generate_ai_with_fallback_query, generate_ai_with_fallback_with,
-    generate_ai_with_fallback_with_query, generation_source_detail, provider_is_configured,
-    search_query_for, valid_search_queries,
-    generate_cloudflare_wallpaper, generate_openai_wallpaper, load_scenario, needs_cursor_reset,
+    advance_seed, cloudflare_accepts_seed, cloudflare_ai_url, default_cf_model,
+    default_openai_model, default_provider_order, effective_provider_order,
+    failure_retry_allowed_at, generate_ai_with_fallback, generate_ai_with_fallback_query,
+    generate_ai_with_fallback_with, generate_ai_with_fallback_with_query,
+    generate_ai_with_fallback_with_seed, generation_source_detail, provider_is_configured,
+    provider_supports_seed, search_query_for, valid_search_queries,
+    generate_cloudflare_wallpaper, generate_cloudflare_wallpaper_with_seed,
+    generate_openai_wallpaper, load_scenario, mix_seed, needs_cursor_reset, next_seed_value,
     now_unix_secs, openai_images_url, parse_cf_image_response, parse_openai_image_response,
     pick_next_url, save_scenario, scenario_file_path, scenario_http_status_error, should_run,
-    tick_scenario, CloudflareAiConfig, ImageProvider, OpenAiConfig, ScenarioOrder,
-    ScenarioSettings, ScenarioSource,
+    take_generation_seed, tick_scenario, CloudflareAiConfig, ImageProvider, OpenAiConfig,
+    ScenarioOrder, ScenarioSettings, ScenarioSource, SeedMode,
 };
 pub use search::{
     generate_library_wallpaper, generate_search_wallpaper, library_output_path, load_candidate,
@@ -31,7 +33,8 @@ pub use search::{
     should_search_online, WallpaperCandidate, SearchResult, SUPPORTED_EXTENSIONS,
 };
 pub use wallpaper::{
-    app_data_dir, generate_online_wallpaper, generate_sample_wallpaper,
+    app_data_dir, generate_online_wallpaper, generate_online_wallpaper_with_seed,
+    pollinations_image_url, generate_sample_wallpaper,
     generation_info_for_apply, generation_sidecar_path,
     get_current_wallpaper, is_staged_path, list_monitors, load_state, normalize_to_hd,
     read_generation_sidecar, record_generation, restore_wallpaper, save_state, set_wallpaper,
