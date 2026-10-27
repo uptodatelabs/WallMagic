@@ -684,6 +684,153 @@ fn generation_info_for_apply_arg(path: &str) -> (Option<String>, Option<String>)
     wallmagic_core::generation_info_for_apply(&PathBuf::from(path))
 }
 
+/// 사용자 Pictures 폴더(존재하는 경우에만).
+fn user_pictures_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("USERPROFILE").map(PathBuf::from)?;
+    let pictures = home.join("Pictures");
+    pictures.is_dir().then_some(pictures)
+}
+
+/// 삭제 가능한 루트 목록 — 앱 데이터 디렉터리(`library`·`online_cache` 등)와 사용자 Pictures.
+///
+/// 이 앱이 스스로 만들어 보여주는 이미지 파일만 지울 수 있게 하는 최소 방어선이다.
+/// 임의 경로를 그대로 받는 삭제 IPC 는 위험하므로, 허용 루트 밖 경로는
+/// `delete_within_roots` 가 **명시적 오류**로 거부한다(조용히 무시하지 않는다).
+fn allowed_delete_roots() -> Vec<PathBuf> {
+    let mut roots = vec![wallmagic_core::app_data_dir()];
+    if let Some(pictures) = user_pictures_dir() {
+        roots.push(pictures);
+    }
+    roots
+}
+
+/// 두 경로가 같은 파일인지 — 심볼릭/표기 차이를 흡수하기 위해 canonicalize 후 비교한다.
+fn same_file_path(a: &str, b: &str) -> bool {
+    let normalize = |p: &str| {
+        PathBuf::from(p)
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(p))
+            .to_string_lossy()
+            .to_lowercase()
+    };
+    normalize(a) == normalize(b)
+}
+
+/// 허용 루트 안의 파일만 삭제하고, 생성 정보 사이드카(`.geninfo.json`)도 함께 정리한다.
+///
+/// 사이드카를 남기면 같은 이름의 파일을 다시 만들었을 때 **이전 공급자 정보**가
+/// 그대로 붙어 "미리보기 파일의 생성 정보"가 실제와 어긋난다.
+fn delete_within_roots(target: &PathBuf, roots: &[PathBuf]) -> Result<(), String> {
+    let canonical = target
+        .canonicalize()
+        .map_err(|e| format!("delete_image_file: 경로를 확인할 수 없습니다 — {e}"))?;
+    let allowed = roots.iter().any(|root| match root.canonicalize() {
+        Ok(root_canon) => canonical.starts_with(&root_canon),
+        Err(_) => false,
+    });
+    if !allowed {
+        return Err(format!(
+            "delete_image_file: 라이브러리 외 경로는 삭제할 수 없습니다 — {}",
+            canonical.display()
+        ));
+    }
+    std::fs::remove_file(&canonical).map_err(|e| format!("delete_image_file: 삭제 실패 — {e}"))?;
+    let sidecar = wallmagic_core::generation_sidecar_path(&canonical);
+    if sidecar.exists() {
+        let _ = std::fs::remove_file(&sidecar);
+    }
+    Ok(())
+}
+
+/// IPC #3c: 검색/생성 이미지 파일 삭제 (라이브러리·Pictures 안의 파일만).
+fn delete_image_file_impl(path: &str) -> Result<(), String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("delete_image_file: path 가 필요합니다".to_string());
+    }
+    let target = PathBuf::from(trimmed);
+    if !target.exists() {
+        return Err(format!("delete_image_file: 파일이 없습니다 — {trimmed}"));
+    }
+    // 현재 바탕화면으로 적용된 파일을 지우면 배경이 존재하지 않는 경로를 가리키게 된다.
+    if let Ok(current) = wallmagic_core::get_current_wallpaper(None) {
+        if !current.trim().is_empty() && same_file_path(&current, trimmed) {
+            return Err(
+                "delete_image_file: 현재 바탕화면으로 적용 중인 파일은 삭제할 수 없습니다 — \
+                 먼저 다른 배경을 적용하거나 '이전 배경으로 복원' 후 다시 시도하세요."
+                    .to_string(),
+            );
+        }
+    }
+    delete_within_roots(&target, &allowed_delete_roots())
+}
+
+#[tauri::command]
+fn delete_image_file(path: String) -> Result<(), String> {
+    delete_image_file_impl(&path)
+}
+
+/// 삭제 로직 단위 테스트 — 파일 삭제·사이드카 정리·허용 루트 밖 거부.
+///
+/// 실제 사용자 데이터(`%LOCALAPPDATA%`·Pictures)를 건드리지 않도록 **임시 디렉터리를
+/// 허용 루트로 주입**한다 (`delete_within_roots(target, &roots)` 의 roots 인자).
+/// `app_data_dir()` 를 통한 전역 오버라이드(WALLMAGIC_DATA_DIR)는 다른 테스트와
+/// 경합하므로 이 테스트에서는 쓰지 않는다.
+#[cfg(test)]
+mod delete_tests {
+    use super::*;
+    use std::fs;
+
+    fn temp_root(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "wallmagic-delete-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        fs::create_dir_all(&dir).expect("임시 루트 생성");
+        dir
+    }
+
+    #[test]
+    fn test_delete_within_roots_removes_file_and_sidecar() {
+        let root = temp_root("ok");
+        let image = root.join("generated_test.jpg");
+        fs::write(&image, b"stub").expect("이미지 생성");
+        let sidecar = wallmagic_core::generation_sidecar_path(&image);
+        fs::write(&sidecar, br#"{"provider":"pollinations"}"#).expect("사이드카 생성");
+
+        delete_within_roots(&image, std::slice::from_ref(&root)).expect("허용 루트 안 파일 삭제");
+
+        assert!(!image.exists(), "이미지 파일이 삭제되어야 한다");
+        assert!(
+            !sidecar.exists(),
+            "생성 정보 사이드카(.geninfo.json)도 함께 삭제되어야 한다"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_delete_within_roots_rejects_outside_path() {
+        let root = temp_root("root");
+        let outside = temp_root("outside");
+        let image = outside.join("victim.jpg");
+        fs::write(&image, b"stub").expect("대상 파일 생성");
+
+        let err = delete_within_roots(&image, std::slice::from_ref(&root))
+            .expect_err("허용 루트 밖 경로는 거부되어야 한다");
+        assert!(
+            err.contains("삭제할 수 없습니다"),
+            "거부 사유가 설명되어야 한다 — {err}"
+        );
+        assert!(image.exists(), "거부된 경우 파일은 남아 있어야 한다");
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+}
+
 /// IPC #3 (액션 ③ 적용): 선택한 이미지를 검증·스테이징 후 바탕화면에 적용한다.
 #[tauri::command]
 fn apply_wallpaper(
@@ -810,6 +957,7 @@ pub fn run() {
             generate_library_wallpaper_with_provider,
             save_generated_image,
             apply_generated_image,
+            delete_image_file,
             open_external_url,
         ])
         .setup(|app| {

@@ -1075,6 +1075,36 @@ export function App(): React.ReactElement {
     }
   };
 
+  // 파일 삭제 — 검색/생성으로 만들어진 이미지와 그 사이드카(.geninfo.json)를 지운다.
+  // 백엔드(delete_image_file)가 (1) 허용 루트(app_data_dir/Pictures) 안인지,
+  // (2) 현재 바탕화면으로 적용 중인 파일이 아닌지 검증하고, 위반은 명시적 오류로 거부한다.
+  // 목록 갱신은 **삭제 성공 후에만** 한다 — 실패했는데 카드가 사라지면
+  // "지워지지도 않았는데 목록에서 사라진" 상태가 되어 파일이 남은 채 추적 불가가 된다.
+  // 인자는 경로 문자열(결과 카드) 또는 후보 객체(미리보기) 둘 다 받는다.
+  const handleDelete = async (target: string | WallpaperCandidate) => {
+    const path = typeof target === "string" ? target : target.path;
+    const name = typeof target === "string" ? path : target.file_name;
+    if (!path) {
+      reportError("삭제할 파일 경로가 없습니다.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await invoke("delete_image_file", { path });
+      const next = candidates.filter((c) => c.path !== path);
+      setCandidates(next);
+      // 삭제한 파일이 미리보기 중이면 다음 후보(없으면 빈 상태)로 옮긴다.
+      if (selected && selected.path === path) {
+        setSelected(next.length > 0 ? next[0] : null);
+      }
+      reportOk(`삭제 완료 — ${name}`);
+    } catch (err) {
+      reportError(`삭제 실패: ${formatErr(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleRestore = async () => {
     setBusy(true);
     try {
@@ -1527,6 +1557,17 @@ export function App(): React.ReactElement {
             >
               생성 ({providerLabel(scProvider)})
             </button>
+            {/* 생성 액션은 좌측 이 영역 하나뿐이다 — 우측 시나리오 섹션의 공급자별
+                '생성·적용' 버튼은 제거했다(같은 동작이 두 곳에 있으면 일관성이 깨진다). */}
+            <button
+              type="button"
+              className="primary block"
+              onClick={() => void handleGenerateAi()}
+              disabled={busy}
+              style={{ marginTop: "8px" }}
+            >
+              생성 후 적용
+            </button>
           </section>
           )}
         </aside>
@@ -1541,23 +1582,40 @@ export function App(): React.ReactElement {
           ) : (
             <div className="grid">
               {candidates.map((c) => (
-                <button
-                  type="button"
-                  key={c.path}
-                  className={`card${selected?.path === c.path ? " selected" : ""}`}
-                  onClick={() => setSelected(c)}
-                >
-                  <img
-                    src={`data:image/jpeg;base64,${c.thumb_base64}`}
-                    alt={c.file_name}
-                  />
-                  <div className="meta">
-                    <div className="name">{c.file_name}</div>
-                    <div>
-                      {c.width}x{c.height} · {formatBytes(c.size_bytes)}
+                <div key={c.path} className="card-wrap">
+                  <button
+                    type="button"
+                    className={`card${selected?.path === c.path ? " selected" : ""}`}
+                    onClick={() => setSelected(c)}
+                  >
+                    <img
+                      src={`data:image/jpeg;base64,${c.thumb_base64}`}
+                      alt={c.file_name}
+                    />
+                    <div className="meta">
+                      <div className="name">{c.file_name}</div>
+                      <div>
+                        {c.width}x{c.height} · {formatBytes(c.size_bytes)}
+                      </div>
                     </div>
-                  </div>
-                </button>
+                  </button>
+                  {/* 파일 삭제 — 카드 선택 클릭과 분리한다(stopPropagation).
+                      삭제는 되돌릴 수 없으므로 결과 카드에서 바로 지우되,
+                      백엔드(delete_image_file)가 허용 루트·현재 배경 보호를 검증한다. */}
+                  <button
+                    type="button"
+                    className="card-delete danger"
+                    title={`${c.file_name} 파일 삭제`}
+                    aria-label={`${c.file_name} 파일 삭제`}
+                    disabled={busy}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void handleDelete(c.path);
+                    }}
+                  >
+                    삭제
+                  </button>
+                </div>
               ))}
             </div>
           )}
@@ -1593,6 +1651,17 @@ export function App(): React.ReactElement {
                 </div>
                 <div>{selected.path}</div>
               </div>
+              {/* 미리보기 중인 파일 삭제 — 결과 카드에서 사라진 파일도 여기서 지울 수 있다. */}
+              <button
+                type="button"
+                id="previewDelete"
+                className="danger block"
+                disabled={busy}
+                onClick={() => void handleDelete(selected)}
+                style={{ marginBottom: "8px" }}
+              >
+                이 파일 삭제
+              </button>
             </>
           ) : (
             <div className="empty">선택된 이미지가 없습니다.</div>
@@ -1882,15 +1951,6 @@ export function App(): React.ReactElement {
                     autoComplete="off"
                   />
                 </div>
-                <button
-                  type="button"
-                  className="primary block"
-                  onClick={() => void handleGenerateAi()}
-                  disabled={busy}
-                  style={{ marginBottom: "8px" }}
-                >
-                  Cloudflare AI로 생성·적용
-                </button>
               </>
             )}
             {scProvider === "openai" && (
@@ -1928,15 +1988,6 @@ export function App(): React.ReactElement {
                     autoComplete="off"
                   />
                 </div>
-                <button
-                  type="button"
-                  className="primary block"
-                  onClick={() => void handleGenerateAi()}
-                  disabled={busy}
-                  style={{ marginBottom: "8px" }}
-                >
-                  OpenAI로 생성·적용
-                </button>
               </>
             )}
             {scProvider === "puter" && (
@@ -2026,15 +2077,6 @@ export function App(): React.ReactElement {
                   style={{ marginBottom: "8px" }}
                 >
                   Puter 로그인 (세션 연결)
-                </button>
-                <button
-                  type="button"
-                  className="primary block"
-                  onClick={() => void handleGenerateAi()}
-                  disabled={busy}
-                  style={{ marginBottom: "8px" }}
-                >
-                  Puter로 생성·적용
                 </button>
               </>
             )}

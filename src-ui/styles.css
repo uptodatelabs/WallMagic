@@ -192,6 +192,18 @@ button.block {
   width: 100%;
 }
 
+/* 위험 액션(파일 삭제 등) — 확인 후 실행되며, 실수로 누르지 않도록 색으로 구분한다. */
+button.danger {
+  background: rgba(255, 107, 107, 0.12);
+  border-color: rgba(255, 107, 107, 0.45);
+  color: var(--danger);
+}
+
+button.danger:hover:not(:disabled) {
+  background: rgba(255, 107, 107, 0.22);
+  border-color: var(--danger);
+}
+
 /* ── 썸네일 그리드 ────────────────────────── */
 .grid {
   display: grid;
@@ -238,6 +250,49 @@ button.block {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 결과 카드 + 파일 삭제 버튼.
+   카드 자체는 <button>(선택)이고 삭제는 별도 <button>이므로 겹쳐 배치하되
+   클릭이 서로 새지 않도록(handleDelete 에서 stopPropagation) 분리한다. */
+.card-wrap {
+  position: relative;
+  display: flex;
+}
+
+.card-wrap > .card {
+  flex: 1 1 auto;
+  width: 100%;
+}
+
+.card-delete {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 3px 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  border-radius: 6px;
+  border: 1px solid var(--danger);
+  background: rgba(18, 21, 28, 0.85);
+  color: var(--danger);
+  opacity: 0;
+  transition: opacity 0.12s ease-in-out;
+}
+
+.card-wrap:hover .card-delete,
+.card-delete:focus-visible {
+  opacity: 1;
+}
+
+.card-delete:hover:not(:disabled) {
+  background: var(--danger);
+  color: #ffffff;
+}
+
+.card-delete:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 .empty {
