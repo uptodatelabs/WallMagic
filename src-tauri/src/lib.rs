@@ -1080,21 +1080,29 @@ fn open_history_window_impl(app: &tauri::AppHandle) -> Result<(), String> {
 
 /// IPC #25: 히스토리 전용 창 열기.
 ///
-/// # `async` 가 필수인 이유 (백색 창 + 닫기 불가의 실제 원인)
+/// # `async` 로 선언한 이유 (백색 창 + 닫기 불가의 **추정** 원인)
 ///
-/// Tauri v2 에서 `async` 가 아닌 `#[tauri::command]` 는 **메인 스레드에서 실행된다**.
+/// ⚠️ 이 절은 **런타임으로 확인되지 않은 가설**이다. `npm run tauri dev` 에서
+/// ㉠ 흰 창이 아니라 리스트가 그려지고 ㉡ 창의 `X` 가 그 창만 닫고 ㉢ 메인 창을 닫으면
+/// 프로세스가 즉시 종료되는 것을 확인하기 전까지는 확정된 원인이 아니다.
+/// 확인되면 이 문단의 "추정" 표기를 확정으로 바꾸고, 확인되지 않으면 원인을 다시 찾는다
+/// (대안: capabilities 권한, 자산 로딩, `main.tsx` 라벨 판독).
+///
+/// 가설: Tauri v2 에서 `async` 가 아닌 `#[tauri::command]` 는 **메인 스레드에서 실행된다**.
 /// 그 상태에서 `WebviewWindowBuilder::build()` 를 호출하면 Windows(wry)의 WebView2
 /// 생성이 완료를 기다리며 메인 스레드의 메시지 펌프를 중첩 재진입시키고, 이 조합이
-/// 교착을 만든다. 관측된 증상이 정확히 이것이다:
+/// 교착을 만들 수 있다. 관측된 증상은 이 기전과 일치한다:
 ///
 /// 1. Win32 창 껍데기만 흰색으로 뜨고 React 가 렌더되지 않는다(웹뷰 미완성).
 /// 2. 메시지 루프가 멈춰 `X`(WM_CLOSE)·메인 창 종료가 처리되지 않고, 콘솔의 Ctrl-C
 ///    로만 프로세스가 죽는다.
 ///
+/// 대조 근거(가설을 뒷받침하지만 증명하지는 않는다): 메인 창은 같은 `index.html`·같은
+/// 빌더를 쓰면서 정상 동작하고, 관측된 유일한 차이는 생성 위치가 `setup()`
+/// (이벤트 루프 시작 전)라는 점이다.
+///
 /// `async fn` 으로 선언하면 명령이 async 런타임 스레드에서 실행되므로, 창 생성은
-/// 메인 스레드로 디스패치되어 정상 완료된다(메인 스레드를 붙잡지 않는다).
-/// 메인 창은 `setup()` 안에서 생성되기 때문에 같은 교착이 발생하지 않았고, 이것이
-/// 두 창의 유일한 차이였다.
+/// 메인 스레드로 디스패치되어 메인 스레드를 붙잡지 않는다.
 #[tauri::command]
 async fn open_history_window(app: tauri::AppHandle) -> Result<(), String> {
     open_history_window_impl(&app)
@@ -1256,6 +1264,12 @@ pub fn run() {
             // 메인 창만 닫혀도 프로세스가 살아남는다. 메인 창의 CloseRequested 에서
             // 나머지 창을 정리하고 exit 를 호출해 이 잔존을 없앤다.
             // (히스토리 창의 `X` 는 그 창만 닫는 기본 동작을 유지한다 — 메인은 계속 산다.)
+            //
+            // 정리는 `close()` 가 아니라 `destroy()` 로 한다(검수 지적 반영):
+            // `close()` 는 WM_CLOSE 를 다시 발생시켜 같은 핸들러·이벤트 루프와 재진입
+            // 경합할 여지가 있고, 그 직후 `exit(0)` 이 실행되면 순서가 보장되지 않는다.
+            // `destroy()` 는 이벤트 루프를 거치지 않고 창을 즉시 파괴하므로, exit 전에
+            // 창 정리가 확정된다. (실기동에서 잔존 프로세스가 관찰되면 이 지점을 다시 본다)
             {
                 use tauri::Manager;
                 let handle = app.handle().clone();
@@ -1264,7 +1278,7 @@ pub fn run() {
                         if let tauri::WindowEvent::CloseRequested { .. } = event {
                             for (label, win) in handle.webview_windows() {
                                 if label != "main" {
-                                    let _ = win.close();
+                                    let _ = win.destroy();
                                 }
                             }
                             handle.exit(0);
