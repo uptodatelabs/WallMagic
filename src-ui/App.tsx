@@ -465,6 +465,16 @@ export function App(): React.ReactElement {
   const [scCfAccount, setScCfAccount] = useState<string>("");
   const [scCfToken, setScCfToken] = useState<string>("");
   const [scCfModel, setScCfModel] = useState<string>("@cf/black-forest-labs/flux-1-schnell");
+  // 백엔드 `cloudflare_accepts_seed`(flux 계열만 허용)와 **같은 규칙**을 UI 에서 재사용한다.
+  // 안내 문구와 seed 카운터 노출을 모델 단위로 분기하기 위한 단일 소스다.
+  const cloudflareAcceptsSeed = (model: string): boolean =>
+    model.toLowerCase().includes("flux");
+  // seed 를 실제 요청에 싣는 공급자인가 — 안내 문구·카운터 노출의 단일 조건.
+  // Puter 는 브라우저 SDK 가 seed 를 받지 않고, OpenAI Images API 는 파라미터가 없으며,
+  // 검색(Search)은 이미지를 생성하지 않는다.
+  const providerUsesSeed = (id: ProviderId): boolean =>
+    id === "pollinations" ||
+    (id === "cloudflare-workers-ai" && cloudflareAcceptsSeed(scCfModel));
   const [scClearToken, setScClearToken] = useState<boolean>(false);
   const [scOpenaiKey, setScOpenaiKey] = useState<string>("");
   const [scOpenaiModel, setScOpenaiModel] = useState<string>("gpt-image-1");
@@ -1876,11 +1886,51 @@ export function App(): React.ReactElement {
                 />
               ) : null}
               <div className="detail">
-                Pollinations 는 같은 프롬프트·같은 seed 면 캐시된 동일 이미지를 돌려줍니다.
-                기본값 <b>랜덤</b>이면 생성마다 seed 가 달라져 결과가 매번 달라집니다.
-                {scSeedMode === "fixed" ? null : <> 현재 카운터: <b>{scSeedNext}</b></>}
-                Cloudflare 는 flux 계열 모델만 seed 를 받고, OpenAI Images API 는 seed 를
-                지원하지 않아 전송하지 않습니다.
+                {scProvider === "pollinations" && (
+                  <>
+                    Pollinations 는 같은 프롬프트·같은 seed 면 캐시된 동일 이미지를
+                    돌려줍니다. 기본값 <b>랜덤</b>이면 생성마다 seed 가 달라져 결과가 매번
+                    달라집니다.
+                  </>
+                )}
+                {scProvider === "cloudflare-workers-ai" && (
+                  <>
+                    {cloudflareAcceptsSeed(scCfModel) ? (
+                      <>
+                        Cloudflare Workers AI 는 <b>flux 계열 모델에서만</b> seed 를
+                        받습니다 — 현재 모델 <code>{scCfModel || "(기본 flux)"}</code> 은
+                        flux 이므로 seed 가 전송됩니다.
+                      </>
+                    ) : (
+                      <>
+                        현재 모델 <code>{scCfModel || "(미지정)"}</code> 은 flux 계열이
+                        아니므로 <b>seed 를 전송하지 않습니다</b> — 비-flux 모델에 seed 를
+                        보내면 400 오류가 납니다.
+                      </>
+                    )}
+                  </>
+                )}
+                {scProvider === "openai" && (
+                  <>
+                    OpenAI Images API 는 seed 파라미터를 지원하지 않아 전송하지 않습니다 —
+                    seed 설정은 이 공급자에 적용되지 않습니다.
+                  </>
+                )}
+                {scProvider === "puter" && (
+                  <>
+                    Puter(WebView 브라우저 SDK)는 seed 를 받지 않습니다 — seed 설정은
+                    Puter 생성에 적용되지 않습니다.
+                  </>
+                )}
+                {scProvider === "search" && (
+                  <>
+                    검색(Search)은 seed 를 쓰지 않습니다 — 이미지를 생성하지 않고 공개
+                    이미지를 찾습니다.
+                  </>
+                )}
+                {providerUsesSeed(scProvider) && scSeedMode !== "fixed" ? (
+                  <> 현재 카운터: <b>{scSeedNext}</b></>
+                ) : null}
               </div>
             </div>
             <div className="field">

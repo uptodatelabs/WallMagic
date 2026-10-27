@@ -183,6 +183,57 @@ check(
   /setScSeedMode\(/.test(app) && /setScSeedFixed\(/.test(app) && /setScSeedNext\(/.test(app),
 );
 
+// ── 9) seed 안내 문구: 선택된 공급자에 해당하는 문구만 표시 ────────────────────
+// 배경(사용자 지적): 안내가 "Pollinations 캐시 / Cloudflare flux 전용 / OpenAI 미지원"
+// 세 줄을 한꺼번에 나열해, 선택한 공급자와 무관한 문구까지 화면에 떠 있었다.
+// 공급자가 선택되면 그 공급자에 유효한 문구 1개만 보여야 한다.
+const seedGuidance = (() => {
+  const start = app.indexOf('htmlFor="scSeedMode"');
+  if (start < 0) return "";
+  const end = app.indexOf('htmlFor="scProvider"', start);
+  return app.slice(start, end < 0 ? app.length : end);
+})();
+
+check("seed 안내 블록을 찾는다", seedGuidance.length > 0);
+
+for (const id of ["pollinations", "cloudflare-workers-ai", "openai", "puter"]) {
+  check(
+    `안내 문구가 공급자(${id}) 조건부로 분기된다`,
+    seedGuidance.includes(`scProvider === "${id}"`),
+    "조건부 렌더링 없음",
+  );
+}
+
+const cfBranch = seedGuidance.indexOf('scProvider === "cloudflare-workers-ai"');
+check(
+  "Cloudflare 안내는 Cloudflare 분기 안에서만 나온다(타 공급자 선택 시 비노출)",
+  cfBranch >= 0 && seedGuidance.indexOf("Cloudflare Workers AI") > cfBranch,
+);
+const oaBranch = seedGuidance.indexOf('scProvider === "openai"');
+check(
+  "OpenAI 안내는 OpenAI 분기 안에서만 나온다(타 공급자 선택 시 비노출)",
+  oaBranch >= 0 && seedGuidance.indexOf("OpenAI Images API") > oaBranch,
+);
+check(
+  "이전의 일괄 나열 문구가 남아 있지 않다",
+  !/Cloudflare 는 flux 계열 모델만 seed 를 받고/.test(seedGuidance),
+  "공급자 무관 나열 문구가 잔존",
+);
+check(
+  "Cloudflare 안내는 현재 모델의 flux 지원 여부로 분기한다",
+  /cloudflareAcceptsSeed\(/.test(app) && /cloudflareAcceptsSeed\(/.test(seedGuidance),
+  "모델 단위 게이팅 안내 없음",
+);
+check(
+  "seed 카운터는 seed 를 쓰는 공급자에서만 표시한다",
+  /providerUsesSeed/.test(seedGuidance) && /providerUsesSeed/.test(app),
+  "카운터 노출 조건 없음",
+);
+check(
+  "검색(Search)은 seed 를 쓰지 않는다는 안내가 있다",
+  /scProvider === "search"/.test(seedGuidance),
+);
+
 // ── 출력 ─────────────────────────────────────────────────────────────────────
 let failed = 0;
 for (const r of results) {

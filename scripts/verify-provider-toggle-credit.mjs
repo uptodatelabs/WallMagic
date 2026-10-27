@@ -171,10 +171,24 @@ check("크레딧 조회 실패는 0 으로 위장하지 않고 명시적 오류�
 });
 
 check("Puter 섹션에 잔여 크레딧 UI(조회 버튼 + 표시)가 있다", () => {
-  const start = app.indexOf('{scProvider === "puter" &&');
-  // 모델별 단가 블록이 Puter 블록에 추가되어 창을 넓혔다(고정 창은 블록이 커지면 오탐 FAIL).
-  const body = app.slice(start, start + 4600);
-  return /puterUsage/.test(body) && /잔여 크레딧|남은 크레딧/.test(body);
+  // 고정 오프셋 창은 블록이 커질 때마다 오탐 FAIL 을 낸다(실측: Puter 블록이 4600자를
+  // 넘어 잔여 크레딧 표시가 창 밖으로 밀렸다). 그래서 앵커 id 로 블록을 특정한다 —
+  // 잔여 크레딧 표시(#puterUsageRemaining)와 조회 버튼(handleRefreshPuterUsage)이
+  // **Puter 공급자 분기 안에서** 렌더되는지만 본다.
+  const anchor = app.indexOf('id="puterUsageRemaining"');
+  if (anchor < 0) return { ok: false, detail: "#puterUsageRemaining 앵커 없음" };
+  const puterBranches = [];
+  let i = -1;
+  while ((i = app.indexOf('{scProvider === "puter" &&', i + 1)) >= 0) puterBranches.push(i);
+  // 앵커를 감싸는 가장 가까운 Puter 분기(앵커 앞쪽에서 시작한 것)를 찾는다.
+  const enclosing = puterBranches.filter((b) => b < anchor).pop();
+  if (enclosing === undefined) return { ok: false, detail: "Puter 분기 밖에서 렌더됨" };
+  const nextBranch = app.indexOf('{scProvider === "', anchor);
+  const body = app.slice(enclosing, nextBranch < 0 ? app.length : nextBranch);
+  return {
+    ok: /puterUsage/.test(body) && /잔여 크레딧|남은 크레딧/.test(body) && /handleRefreshPuterUsage/.test(body),
+    detail: `enclosing=${enclosing} anchor=${anchor} len=${body.length}`,
+  };
 });
 
 let fail = 0;
