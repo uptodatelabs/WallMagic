@@ -172,7 +172,8 @@ check("크레딧 조회 실패는 0 으로 위장하지 않고 명시적 오류�
 
 check("Puter 섹션에 잔여 크레딧 UI(조회 버튼 + 표시)가 있다", () => {
   const start = app.indexOf('{scProvider === "puter" &&');
-  const body = app.slice(start, start + 2600);
+  // 모델별 단가 블록이 Puter 블록에 추가되어 창을 넓혔다(고정 창은 블록이 커지면 오탐 FAIL).
+  const body = app.slice(start, start + 4600);
   return /puterUsage/.test(body) && /잔여 크레딧|남은 크레딧/.test(body);
 });
 

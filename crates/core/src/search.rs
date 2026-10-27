@@ -297,19 +297,21 @@ fn search_online_wallpapers(query: &str) -> Result<SearchResult, WallpaperError>
     })
 }
 
-/// 로컬 검색이 0건일 때 온라인 검색으로 폴백해야 하는지 판정한다.
+/// 온라인 검색을 **실행할 조건**인지 판정한다 (폴백 여부 판정이 아니다).
 ///
 /// - 키워드가 비어 있으면 온라인 검색을 하지 않는다 — 빈 검색어는 "전체 목록" 요청이고,
 ///   온라인에 빈 질의를 보내면 무의미한 결과가 온다.
-/// - 로컬 매칭이 1건이라도 있으면 온라인으로 나가지 않는다(로컬 우선).
+/// - **키워드가 있으면 로컬 매칭 수와 무관하게 실행한다.** 이전 정책(`local_matched == 0`
+///   일 때만 실행)은 로컬에 부분일치가 1건만 있어도 온라인을 건너뛰어, 사용자가 보는
+///   "키워드를 넣었는데 로컬에서만 검색된다"는 증상을 만들었다. 두 출처는 경쟁 관계가
+///   아니라 병합 대상이므로 로컬 매칭 수는 더 이상 실행 조건이 아니다.
 ///
-/// 순수 함수로 분리한 이유: 이 조건이 UI 분기와 얽혀 있으면 "키워드를 입력했는데
-/// 로컬에서만 검색된다"는 회귀를 네트워크 없이 테스트로 고정할 수 없다.
-pub fn should_search_online(query: &str, local_matched: usize) -> bool {
-    !query.trim().is_empty() && local_matched == 0
+/// `local_matched` 인자는 호출부 호환을 위해 남겨 둔다(판정에 사용하지 않는다).
+pub fn should_search_online(query: &str, _local_matched: usize) -> bool {
+    !query.trim().is_empty()
 }
 
-/// 키워드로 로컬 배경화면 후보를 검색한다.
+/// 키워드로 로컬 배경화면 후보를 검색하고, 키워드가 있으면 온라인 결과와 **병합**해 반환한다.
 ///
 /// - `root`가 주어지면 그 폴더만, 없으면 `default_search_roots()`(앱 라이브러리 + Pictures)를 탐색한다.
 /// - `query`가 파일명(대소문자 무시)에 포함된 이미지 중 **디코딩 가능 + 640x480 이상**인 것만 후보가 된다.
@@ -319,8 +321,23 @@ pub fn search_wallpapers(
     query: &str,
     root: Option<&Path>,
 ) -> Result<SearchResult, WallpaperError> {
+    search_wallpapers_with(query, root, &search_online_wallpapers)
+}
+
+/// 온라인 검색 실행기를 주입할 수 있는 `search_wallpapers`.
+///
+/// 네트워크를 실제로 호출하지 않고도 "로컬 매칭이 있어도 온라인 결과가 병합된다"는
+/// 계약을 단위 테스트로 고정하기 위해 실행기를 인자로 받는다.
+pub fn search_wallpapers_with<F>(
+    query: &str,
+    root: Option<&Path>,
+    online: &F,
+) -> Result<SearchResult, WallpaperError>
+where
+    F: Fn(&str) -> Result<SearchResult, WallpaperError>,
+{
     let query_lower = query.trim().to_lowercase();
-    // 명시적 root 여부와 무관하게 로컬 0건이면 온라인 폴백한다.
+    // 명시적 root 여부와 무관하게 키워드가 있으면 로컬을 먼저 훑은 뒤 온라인을 병합한다.
     // 회귀 결함 #2: 명시적 빈 폴더 지정 시 폴백 게이트(`!has_explicit_root`)가
     // 온라인 검색을 차단해 빈 목록을 반환했음 — 사용자가 보는 "검색 결과 없음" 증상.
     let roots: Vec<PathBuf> = match root {
@@ -343,27 +360,66 @@ pub fn search_wallpapers(
         name(a).cmp(&name(b))
     });
 
-    // 로컬 0건 + 키워드 존재일 때만 온라인 검색으로 폴백한다. 키워드가 비어 있으면
-    // "전체 목록" 요청이므로 온라인 검색을 하지 않는다 — 이 조건을 순수 함수로 고정해
-    // "키워드를 넣었는데 로컬에서만 검색된다"는 회귀를 테스트로 잡는다.
-    if should_search_online(&query_lower, matched_paths.len()) {
-        return search_online_wallpapers(&query_lower);
-    }
-
     let total_matched = matched_paths.len();
-    let mut candidates = Vec::new();
+    let mut local_candidates = Vec::new();
     // 조기 중단: 상한 초과 경로는 디코딩 자체를 수행하지 않는다.
     for path in matched_paths.iter().take(MAX_RESULTS) {
         if let Some(candidate) = load_candidate(path) {
-            candidates.push(candidate);
+            local_candidates.push(candidate);
         }
     }
-
-    Ok(SearchResult {
-        candidates,
+    let local = SearchResult {
+        candidates: local_candidates,
         total_matched,
         truncated: total_matched > MAX_RESULTS,
-    })
+    };
+
+    // 로컬 매칭이 있어도 키워드가 있으면 온라인 결과를 **병합**한다(경쟁이 아니라 합집합).
+    // 온라인 실패는 로컬 결과를 버릴 이유가 아니므로, 로컬 결과가 있으면 로컬만 반환하고
+    // 로컬도 0건일 때만 오류를 그대로 전파한다(무음 빈 목록 금지).
+    if should_search_online(&query_lower, local.total_matched) {
+        return match online(&query_lower) {
+            Ok(online_result) => Ok(merge_search_results(local, Some(online_result))),
+            Err(err) if local.candidates.is_empty() && local.total_matched == 0 => Err(err),
+            Err(_) => Ok(local),
+        };
+    }
+    Ok(local)
+}
+
+/// 로컬 결과와 온라인 결과를 하나의 `SearchResult`로 병합한다.
+///
+/// - **로컬 우선**: 로컬 후보를 먼저 두고 온라인 후보를 뒤에 붙인다(사용자 폴더 이미지 우선).
+/// - **중복 제거**: 같은 경로(대소문자 무시)는 한 번만 남긴다.
+/// - `total_matched`는 두 출처 매칭 수의 합, 후보 수는 `MAX_RESULTS`로 제한한다.
+pub fn merge_search_results(local: SearchResult, online: Option<SearchResult>) -> SearchResult {
+    let online_total = online.as_ref().map(|r| r.total_matched).unwrap_or(0);
+    let online_candidates: Vec<WallpaperCandidate> =
+        online.map(|r| r.candidates).unwrap_or_default();
+    let total_matched = local.total_matched + online_total;
+
+    let mut candidates: Vec<WallpaperCandidate> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for candidate in local
+        .candidates
+        .into_iter()
+        .chain(online_candidates.into_iter())
+    {
+        if candidates.len() >= MAX_RESULTS {
+            break;
+        }
+        // Windows 경로는 대소문자를 구분하지 않으므로 소문자 키로 중복을 판정한다.
+        if !seen.insert(candidate.path.to_lowercase()) {
+            continue;
+        }
+        candidates.push(candidate);
+    }
+
+    SearchResult {
+        truncated: total_matched > candidates.len(),
+        total_matched,
+        candidates,
+    }
 }
 
 /// 프롬프트 기반으로 배경화면을 생성(Pollinations 무료 이미지 API, 키 불필요)해

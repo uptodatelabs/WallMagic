@@ -8,6 +8,16 @@ import {
   type PuterUsageResult,
 } from "./puterUsage";
 import { parseAppliedSearchQuery } from "./appliedQuery";
+// 모델별 1회당 크레딧 — 계산·표시는 순수 모듈(./puterModelCredits)이 담당하고
+// App 은 배선(모델 select·단가 표)만 한다. 단가 미확인 모델은 null(→ "정보 없음")로
+// 두어 추정치를 실측처럼 표시하지 않는다.
+import {
+  creditForModel,
+  estimateImagesForCredits,
+  formatCreditsPerImage,
+  PUTER_DEFAULT_MODEL_ID,
+  PUTER_MODEL_CREDITS,
+} from "./puterModelCredits";
 
 /* ── Puter.js 전역 선언 (WebView 전용 SDK) ──
    `index.html`이 `https://js.puter.com/v2/`를 로드하므로 브라우저 전역에 `puter`가 생긴다.
@@ -462,6 +472,15 @@ export function App(): React.ReactElement {
   const [puterUsage, setPuterUsage] = useState<PuterUsageResult | null>(null);
   const [puterUsageErr, setPuterUsageErr] = useState<string>("");
   const [puterUsageBusy, setPuterUsageBusy] = useState<boolean>(false);
+  // 모델 미선택 시 실제로 쓰이는 모델은 Puter 기본값이므로, 단가도 그 기본 모델 기준으로 보여준다.
+  // (빈 값을 "정보 없음"으로 두면 기본 모델로 생성하면서 단가를 모르는 것처럼 보인다.)
+  const selectedPuterModelId = scPuterModel.trim() ? scPuterModel.trim() : PUTER_DEFAULT_MODEL_ID;
+  const selectedPuterCredit = creditForModel(selectedPuterModelId);
+  // 남은 크레딧으로 이 모델을 몇 회 만들 수 있는지 — 잔액 미조회/단가 미확인이면 null(표시 안 함).
+  const puterImagesPossible = estimateImagesForCredits(
+    puterUsage ? puterUsage.summary.remaining : null,
+    selectedPuterCredit ? selectedPuterCredit.creditsPerImage : null,
+  );
   // 프롬프트는 좌측 ②의 단일 #prompt를 모든 AI 공급자에 공통 적용한다(중복 입력 제거).
   const [scInfo, setScInfo] = useState<string>("시나리오 미조회");
   // 자동 틱 연속 실패 횟수 (지적 #4: 에러 은폐 방지용 카운터)
@@ -1431,8 +1450,32 @@ export function App(): React.ReactElement {
       <div className="studio">
         {/* ── 좌: 검색 / 생성 ── */}
         <aside className="panel panel-left">
+          {/* 공급자에 따라 ① 검색 화면과 ② 생성 화면을 **상호 배타**로 보여준다.
+              검색은 검색어(#query / #scSearchQueries)만, 생성은 프롬프트(#prompt)만 쓰므로
+              두 입력을 같은 화면에 두면 "검색어와 프롬프트가 공통"이라는 오해를 만든다. */}
+          <div className="field">
+            <label htmlFor="scProviderQuick">이미지 공급자 (검색/생성 화면 전환)</label>
+            <select
+              id="scProviderQuick"
+              value={scProvider}
+              onChange={(e) => setScProvider(e.target.value as ProviderId)}
+              disabled={busy}
+            >
+              {PROVIDERS.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+            <div className="detail">
+              <b>검색(Search)</b> 을 고르면 ① 검색 화면만, 생성 공급자를 고르면 ② 생성 화면만
+              표시합니다. 검색어와 프롬프트는 서로 다른 입력입니다(자동 대체 없음).
+            </div>
+          </div>
+          {scProvider === "search" ? (
           <section>
             <h2>① 검색</h2>
+            {/* 검색 공급자 선택 시 이 화면만 렌더된다 — 생성 입력(#prompt)은 아래 else 분기에만 있다. */}
             <div className="field">
               <label htmlFor="query">키워드 (파일명 검색 + 온라인 검색 질의)</label>
               <input
@@ -1481,7 +1524,7 @@ export function App(): React.ReactElement {
               검색
             </button>
           </section>
-
+          ) : (
           <section>
             <h2>② 생성</h2>
             <div className="field">
@@ -1493,23 +1536,16 @@ export function App(): React.ReactElement {
                 placeholder="예: aurora over icy mountains"
               />
             </div>
-            {scProvider === "search" ? (
-              <div className="detail">
-                이미지 공급자가 <b>검색(Search)</b> 입니다 — 검색은 <b>① 검색</b> 영역의 [검색]
-                버튼 하나로 실행합니다(로컬 + 온라인). ② 생성은 이미지 생성 전용이므로 이
-                공급자에서는 생성 버튼을 두지 않습니다.
-              </div>
-            ) : (
-              <button
-                type="button"
-                className="primary block"
-                onClick={() => void handleGenerate()}
-                disabled={busy}
-              >
-                생성 ({providerLabel(scProvider)})
-              </button>
-            )}
+            <button
+              type="button"
+              className="primary block"
+              onClick={() => void handleGenerate()}
+              disabled={busy}
+            >
+              생성 ({providerLabel(scProvider)})
+            </button>
           </section>
+          )}
         </aside>
 
         {/* ── 중: 결과 그리드 ── */}
@@ -1934,7 +1970,7 @@ export function App(): React.ReactElement {
                   >
                     {PUTER_IMAGE_MODELS.map((m) => (
                       <option key={m.id} value={m.id}>
-                        {m.label}
+                        {m.label} — {formatCreditsPerImage(creditForModel(m.id))}
                       </option>
                     ))}
                   </select>
@@ -1942,6 +1978,32 @@ export function App(): React.ReactElement {
                     모델을 선택하지 않으면 Puter 기본 모델(OpenAI gpt-image-2)이 사용됩니다.
                     모델마다 결과 화질·속도·사용 크레딧이 다릅니다.
                   </div>
+                </div>
+                <div className="field">
+                  <label htmlFor="puterModelCredits">모델별 1회당 크레딧</label>
+                  <div id="puterModelCredits" className="detail">
+                    <div>
+                      선택 모델(<code>{selectedPuterModelId}</code>):{" "}
+                      <b>{formatCreditsPerImage(selectedPuterCredit)}</b>
+                      {puterImagesPossible !== null ? ` · 남은 크레딧으로 약 ${puterImagesPossible}회 생성 가능` : ""}
+                    </div>
+                    <div>근거: {selectedPuterCredit ? selectedPuterCredit.basis : "정보 없음"}</div>
+                    {!puterUsage && (
+                      <div>
+                        남은 크레딧을 조회하면 생성 가능 횟수도 함께 표시됩니다 — [크레딧 조회].
+                      </div>
+                    )}
+                  </div>
+                  <details style={{ marginBottom: "8px" }}>
+                    <summary className="detail">모델 전체 단가 표 (15개)</summary>
+                    <div className="detail" style={{ marginTop: "6px" }}>
+                      {PUTER_MODEL_CREDITS.map((c) => (
+                        <div key={c.id}>
+                          <code>{c.id}</code> — {formatCreditsPerImage(c)}
+                        </div>
+                      ))}
+                    </div>
+                  </details>
                 </div>
                 <div className="field">
                   <label htmlFor="puterUsageRemaining">Puter 남은 크레딧 (월간 allowance)</label>

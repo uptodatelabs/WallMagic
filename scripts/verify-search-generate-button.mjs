@@ -114,12 +114,34 @@ check("② 생성 영역에 '검색 실행 (Search)' 버튼이 없다(중복 액
 check("② 생성 영역에는 생성 액션(handleGenerate)만 있다", () =>
   /onClick=\{\(\) => void handleGenerate\(\)\}/.test(createSection));
 
-check("검색 공급자일 때 ② 영역은 버튼 대신 ① 검색 안내문을 보여준다", () => {
-  if (!createSection) return false;
-  const i = createSection.indexOf('scProvider === "search"');
-  if (i < 0) return false;
-  const branch = createSection.slice(i, i + 600);
-  return /① 검색/.test(branch) && !/<button/.test(branch.split(") : (")[0] ?? "");
+// ── 공급자 ↔ 영역 상호 배타 ──
+// 요구사항: "공급자가 검색인 경우에는 아예 생성 부분은 안보이게 하고, 공급자가 생성 공급자인
+//   경우 검색 부분을 안보이게" — 이전에는 ② 생성 영역이 항상 렌더되고, 검색 공급자일 때
+//   버튼만 안내문으로 바꿨다. 그래서 검색 공급자인데도 '프롬프트' 입력이 화면에 남아
+//   "검색어와 프롬프트가 공통"처럼 보이는 불일치가 있었다.
+const panelStart = app.indexOf('<aside className="panel panel-left">');
+const panelEnd = panelStart >= 0 ? app.indexOf('<main className="panel">', panelStart) : -1;
+const panel = panelStart >= 0 && panelEnd > panelStart ? app.slice(panelStart, panelEnd) : "";
+const elseMarker = panel.indexOf(") : (");
+const elseRegion = elseMarker >= 0 ? panel.slice(elseMarker) : "";
+
+check("좌측 패널에 공급자 전환 select(#scProviderQuick)가 있다(숨김 전환의 조작 지점)", () =>
+  /id="scProviderQuick"/.test(panel) && /setScProvider\(/.test(panel));
+
+check("검색 공급자일 때 ② 생성 UI(프롬프트·생성 버튼)는 렌더되지 않는다", () => {
+  if (!searchSection) return false;
+  return !/id="prompt"/.test(searchSection) && !/handleGenerate/.test(searchSection);
+});
+
+check("생성 공급자일 때 ① 검색 UI(키워드·[검색]·순환 검색어)는 렌더되지 않는다", () => {
+  if (!elseRegion) return false;
+  return (
+    /id="prompt"/.test(elseRegion) &&
+    /handleGenerate/.test(elseRegion) &&
+    !/id="query"/.test(elseRegion) &&
+    !/handleSearch/.test(elseRegion) &&
+    !/scSearchQueries/.test(elseRegion)
+  );
 });
 
 check("② 생성 버튼의 disabled 는 검색어(searchNeedsInput)에 반응하지 않는다", () => {

@@ -27,9 +27,8 @@ pub use scenario::{
 };
 pub use search::{
     generate_library_wallpaper, generate_search_wallpaper, library_output_path, load_candidate,
-    online_cache_file_name, search_wallpapers, should_search_online, WallpaperCandidate,
-    SearchResult,
-    SUPPORTED_EXTENSIONS,
+    merge_search_results, online_cache_file_name, search_wallpapers, search_wallpapers_with,
+    should_search_online, WallpaperCandidate, SearchResult, SUPPORTED_EXTENSIONS,
 };
 pub use wallpaper::{
     app_data_dir, generate_online_wallpaper, generate_sample_wallpaper, generation_sidecar_path,
@@ -341,6 +340,17 @@ mod tests {
         drop(os_guard);
     }
 
+    /// 온라인 실행기를 무력화한 검색 — 로컬 계약만 검증하는 테스트가 네트워크로 나가지 않게 한다.
+    /// 병합 정책 도입 후 `search_wallpapers` 는 **키워드가 있으면 로컬 매칭 수와 무관하게**
+    /// 온라인을 호출하므로, 로컬 전용 테스트는 반드시 이 헬퍼를 통과해야 한다.
+    fn offline_online_searcher(_q: &str) -> Result<SearchResult, WallpaperError> {
+        Ok(SearchResult {
+            candidates: Vec::new(),
+            total_matched: 0,
+            truncated: false,
+        })
+    }
+
     #[test]
     fn test_search_wallpapers_filters_by_name_and_resolution() {
         let guard = DataDirGuard::new("search_filter");
@@ -357,7 +367,8 @@ mod tests {
         big.save(root.join("sub").join("sunset_c.png"))
             .expect("save sunset_c");
 
-        let results = search_wallpapers("sunset", Some(&root)).expect("search_wallpapers");
+        let results = search_wallpapers_with("sunset", Some(&root), &offline_online_searcher)
+            .expect("search_wallpapers");
         let names: Vec<String> = results
             .candidates
             .iter()
@@ -370,24 +381,113 @@ mod tests {
         );
     }
 
-    /// 회귀 테스트 (지적 1: "키워드에 sunset 을 입력하면 인터넷에서 잘 찾았는데 지금은
-    /// 로컬에서만 검색된다"): 로컬 매칭이 0건이면 **키워드가 있을 때 온라인 검색으로
-    /// 폴백**해야 한다. 이 판정을 순수 함수(`should_search_online`)로 분리해 두어야
-    /// UI 분기와 얽히지 않고 네트워크 없이 기대 동작을 고정할 수 있다.
+    /// 회귀 테스트 (수석 검수자 지적 1: "키워드에 sunset 을 입력하면 인터넷에서 잘
+    /// 찾았는데 지금은 로컬에서만 검색된다"): 온라인 검색 실행 조건은 **키워드 존재 여부**
+    /// 뿐이고, 로컬 매칭 수는 조건이 아니다. 이전 계약(`local_matched == 0` 일 때만 실행)은
+    /// 로컬 부분일치 1건 때문에 온라인을 건너뛰어 사용자 증상을 만들었다.
     #[test]
-    fn test_keyword_only_falls_back_to_online_search() {
-        // ① 키워드만 있고 로컬 0건 → 온라인 검색을 수행한다(사용자 기대 동작).
+    fn test_keyword_alone_triggers_online_search() {
+        // ① 키워드만 있고 로컬 0건 → 온라인 검색을 수행한다.
         assert!(
             should_search_online("sunset", 0),
-            "keyword with no local match must fall back to the online search"
+            "keyword with no local match must run the online search"
         );
-        // ② 로컬에 1건이라도 있으면 로컬 우선 — 온라인으로 나가지 않는다.
-        assert!(!should_search_online("sunset", 1));
+        // ② **로컬 매칭이 1건 이상 있어도 온라인 검색을 실행한다** (병합 정책 — 핵심 회귀).
+        assert!(
+            should_search_online("sunset", 1),
+            "local matches must not suppress the online search (merge, not exclusive)"
+        );
+        assert!(
+            should_search_online("sunset", 200),
+            "even a full page of local matches must not suppress the online search"
+        );
         // ③ 키워드가 비면 "전체 목록" 요청이므로 온라인 검색을 하지 않는다.
         assert!(!should_search_online("", 0));
         assert!(!should_search_online("   ", 0));
         // ④ 대소문자·앞뒤 공백이 있어도 키워드로 인정된다(UI 는 소문자로 정규화해 넘긴다).
         assert!(should_search_online("  Sunset  ".trim().to_lowercase().as_str(), 0));
+    }
+
+    /// 회귀 테스트 (수석 검수자 지적 1 — "키워드에 sunset 을 입력하면 인터넷에서 잘
+    /// 찾았는데 지금은 로컬에서만 검색된다"): 로컬 부분일치가 **1건 있어도** 온라인 검색을
+    /// 실행해 결과를 병합해야 한다. 이전 정책(`local_matched == 0` 일 때만 온라인)이
+    /// 사용자 증상의 직접 원인이었다.
+    ///
+    /// 온라인 실행기는 주입(`search_wallpapers_with`)해 네트워크 없이 계약만 고정한다.
+    #[test]
+    fn test_search_merges_online_results_even_when_local_matches() {
+        let guard = DataDirGuard::new("merge_online");
+        let root = guard.dir().join("pics");
+        fs::create_dir_all(&root).expect("create search root");
+
+        // 로컬 부분일치 1건 — 이전 정책이면 여기서 온라인 검색이 차단된다.
+        let solid: RgbImage = ImageBuffer::from_pixel(800, 600, Rgb([9, 9, 9]));
+        solid
+            .save(root.join("sunset_local.bmp"))
+            .expect("save local sunset");
+
+        let online_candidate = WallpaperCandidate {
+            path: root
+                .join("online_sunset.jpg")
+                .to_string_lossy()
+                .to_string(),
+            file_name: "online_sunset.jpg".to_string(),
+            width: 1280,
+            height: 720,
+            size_bytes: 1234,
+            thumb_base64: String::new(),
+            gen_provider: Some("search".to_string()),
+            gen_source: Some("Wikimedia Commons image search (키워드 검색)".to_string()),
+        };
+        let online_calls = std::sync::atomic::AtomicUsize::new(0);
+        let online = |q: &str| {
+            assert_eq!(q, "sunset", "online searcher must receive the keyword");
+            online_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(SearchResult {
+                candidates: vec![online_candidate.clone()],
+                total_matched: 1,
+                truncated: false,
+            })
+        };
+
+        let results =
+            search_wallpapers_with("sunset", Some(&root), &online).expect("search_wallpapers_with");
+
+        assert_eq!(
+            online_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "로컬 부분일치가 1건이어도 온라인 검색을 실행해야 한다 (이전 정책은 0건일 때만 실행)"
+        );
+        let names: Vec<String> = results
+            .candidates
+            .iter()
+            .map(|c| c.file_name.clone())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["sunset_local.bmp".to_string(), "online_sunset.jpg".to_string()],
+            "로컬 우선 정렬로 로컬 결과와 온라인 결과가 모두 노출되어야 한다"
+        );
+        assert_eq!(
+            results.total_matched, 2,
+            "total_matched 는 두 출처 매칭 수의 합이어야 한다"
+        );
+    }
+
+    /// 키워드가 비어 있으면 온라인 검색을 호출하지 않는다 — 빈 검색어는 "전체 목록" 요청이다.
+    /// (온라인 실행기가 호출되면 panic 하도록 두어 무호출을 강제 검증한다.)
+    #[test]
+    fn test_search_skips_online_when_query_is_empty() {
+        let guard = DataDirGuard::new("merge_empty_query");
+        let root = guard.dir().join("pics");
+        fs::create_dir_all(&root).expect("create search root");
+
+        let online = |_q: &str| -> Result<SearchResult, WallpaperError> {
+            panic!("online search must not run for an empty query");
+        };
+        let results = search_wallpapers_with("   ", Some(&root), &online).expect("search");
+        assert!(results.candidates.is_empty());
+        assert_eq!(results.total_matched, 0);
     }
 
     /// 회귀 테스트 (검수 지적 1): 알파 채널이 있는 PNG는 JPEG 인코더가 Rgba8을 거부하므로
@@ -403,7 +503,10 @@ mod tests {
         rgba.save(root.join("alpha_sunset.png"))
             .expect("save rgba png");
 
-        let results = search_wallpapers("alpha", Some(&root)).expect("search_wallpapers");
+        // 병합 정책: 키워드가 있으면 온라인도 실행되므로, 로컬 필터 계약만 보려면
+        // 오프라인 실행기를 주입해야 한다(실제 네트워크 호출로 테스트가 오염되지 않게).
+        let results = search_wallpapers_with("alpha", Some(&root), &offline_online_searcher)
+            .expect("search_wallpapers_with");
         let names: Vec<String> = results
             .candidates
             .iter()
@@ -431,7 +534,9 @@ mod tests {
                 .expect("save cap png");
         }
 
-        let results = search_wallpapers("cap_", Some(&root)).expect("search_wallpapers");
+        // 오프라인 실행기를 주입해 total_matched 가 로컬 매칭 수만 세는지 고정한다.
+        let results = search_wallpapers_with("cap_", Some(&root), &offline_online_searcher)
+            .expect("search_wallpapers_with");
         assert_eq!(
             results.total_matched, total,
             "total_matched must count every name-matched file before the cap"
