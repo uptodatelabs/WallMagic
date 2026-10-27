@@ -165,10 +165,14 @@ check("generate_ai_with_fallback_with_seed 가 Search 자격을 공급자 단일
   );
 });
 
-check("seed 정책이 실제 네트워크 시도 함수로 전달된다 (_with_query → next_seed_value → _with_seed)", () => {
+check("seed 정책이 실제 네트워크 시도 함수로 전달된다 (_with_query → fresh_seed → _with_seed)", () => {
   const body = fnBody(scenario, "generate_ai_with_fallback_query");
+  // 초 해상도 `next_seed_value(.. now_unix_secs())` 는 같은 초에 같은 seed 를 만들어
+  // "같은 프롬프트 = 같은 이미지"가 재발했다. 이제 `fresh_seed`(나노초 + 프로세스 nonce)
+  // 가 단일 진입점이므로, 래퍼는 그것을 호출해야 한다.
   return (
-    /next_seed_value\s*\(/.test(body) &&
+    /fresh_seed\s*\(\s*settings\s*\)/.test(body) &&
+    !/next_seed_value\s*\(/.test(body) &&
     /generate_ai_with_fallback_with_seed\s*\(/.test(body)
   );
 });

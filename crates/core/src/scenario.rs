@@ -81,12 +81,138 @@ pub fn mix_seed(now_secs: u64, counter: u64) -> u64 {
     z ^ (z >> 31)
 }
 
+/// 이미지 API 가 안정적으로 해석하는 seed 상한 (`i32::MAX`).
+///
+/// 배경(사용자 보고): seed 모드를 `Random`(기본값)으로 두어도 **같은 프롬프트에서 같은
+/// 이미지**가 나온다는 보고가 있었다. URL 직렬화(`&seed=…`)는 확인됐으므로 원인은 값의
+/// **범위**다. `mix_seed` 는 u64 전 범위(0 ~ 1.8e19)를 반환하는데, 이미지 API 가 이를
+/// 32비트 정수로 해석하지 못하면 seed 를 무시하고 기본값으로 되돌려 매번 같은 이미지가
+/// 된다. 그래서 전송 직전에 32비트 양수 범위로 정규화한다.
+pub const SEED_MAX: u64 = 2_147_483_647;
+
+/// seed 를 API 지원 범위(`1..=SEED_MAX`)로 정규화한다 (순수 함수).
+///
+/// `0` 은 "seed 미지정"으로 해석될 수 있어 배제하고 `1` 로 올린다 — `Fixed` 모드의
+/// 기본값이 `0` 이므로, 이 정규화가 없으면 "고정 seed 0" 이 seed 없음과 같아진다.
+pub fn normalize_seed(value: u64) -> u64 {
+    let bounded = value % (SEED_MAX + 1);
+    if bounded == 0 {
+        1
+    } else {
+        bounded
+    }
+}
+
 /// 모드별로 이번 생성에 쓸 seed 값을 결정한다 (순수 함수 — 네트워크·IO 없음).
+///
+/// **정규화는 `Random` 에만 적용한다.** `Fixed`/`Incremental` 은 사용자가 지정한 값
+/// 그대로(항등)여야 약속이 지켜진다.
+///
+/// 배경(실측 결함): 이전 구현은 세 모드 모두 `normalize_seed` 를 통과시켰고, 그 함수가
+/// `0 → 1` 로 올리기 때문에 `Incremental` 의 카운터 `0` 과 `1` 이 **둘 다 1** 이 되어
+/// 생성 1회차와 2회차가 같은 seed(→ 같은 이미지)가 됐다
+/// (`test_advance_after_generation_advances_seed_counter` 가 left:1 / right:1 로 실패).
+/// 카운터는 `0,1,2,…` 가 서로 다른 값이어야 전진의 의미가 있다.
 pub fn next_seed_value(mode: SeedMode, fixed: u64, counter: u64, now_secs: u64) -> u64 {
     match mode {
+        // 사용자가 지정한 고정값은 그대로 — "고정 seed" 라는 약속을 변형하지 않는다.
         SeedMode::Fixed => fixed,
+        // 카운터는 항등 — 0/1/2 가 반드시 서로 달라야 한다.
         SeedMode::Incremental => counter,
-        SeedMode::Random => mix_seed(now_secs, counter),
+        // 무작위값만 API 가 안정적으로 해석하는 범위로 정규화한다.
+        SeedMode::Random => normalize_seed(mix_seed(now_secs, counter)),
+    }
+}
+
+/// 프로세스 전역 단조 증가 nonce (seed 중복 방지용).
+///
+/// 배경(실측): API 는 seed 를 정상 반영한다(프로브: seed=101 → `c4fa6c70…`,
+/// seed=202 → `c3d62687…`, DIFFERENT). 그런데 앱은 `mix_seed(now_unix_secs(), seed_next)`
+/// 로 seed 를 만들었다. 초 단위 시각 + **디스크 카운터**에만 의존하므로
+/// ① 같은 초에 두 번 생성하면 동일 seed, ② 카운터 저장이 실패하거나 UI 가 낡은
+/// `seed_next` 로 덮어쓰면 다시 동일 seed 가 되어 **같은 프롬프트 = 같은 이미지**가 된다.
+/// 그래서 값에 프로세스 고유 nonce 를 함께 섞어, 카운터·시계 해상도와 무관하게
+/// 매 호출이 다른 seed 를 얻도록 한다.
+static SEED_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// 한 번 호출할 때마다 1 씩 증가하는 nonce 를 돌려준다 (프로세스 내 유일).
+pub fn next_seed_nonce() -> u64 {
+    SEED_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// 현재 시각을 나노초로 돌려준다 (초 단위 해상도 보완).
+pub fn now_unix_nanos() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+}
+
+/// 설정의 seed 정책으로 **이번 생성용 seed** 를 만든다 (IO 없음).
+///
+/// `Fixed`/`Incremental` 은 기존 의미를 그대로 유지하고(고정값·카운터),
+/// `Random` 만 나노초 시각 + 프로세스 nonce 를 salt 로 섞어 **절대 반복되지 않게** 한다.
+pub fn fresh_seed(settings: &ScenarioSettings) -> u64 {
+    let salt = mix_seed(now_unix_nanos(), next_seed_nonce());
+    next_seed_value(
+        settings.seed_mode,
+        settings.seed_fixed,
+        settings.seed_next,
+        salt,
+    )
+}
+
+#[cfg(test)]
+mod fresh_seed_tests {
+    use super::*;
+
+    /// 같은 초·같은 카운터에서도 Random seed 는 반복되면 안 된다.
+    /// (수정 전에는 `mix_seed(now_unix_secs(), seed_next)` 라 같은 초에 동일 seed 가 나왔다.)
+    #[test]
+    fn random_seeds_never_repeat_within_same_second() {
+        let settings = ScenarioSettings {
+            seed_mode: SeedMode::Random,
+            seed_next: 0,
+            ..Default::default()
+        };
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..64 {
+            let seed = fresh_seed(&settings);
+            assert!(
+                (1..=SEED_MAX).contains(&seed),
+                "seed 는 1..=SEED_MAX 범위여야 한다: {seed}"
+            );
+            assert!(seen.insert(seed), "같은 seed 가 반복됐다: {seed}");
+        }
+    }
+
+    /// Fixed 는 고정값, Incremental 은 카운터 그대로 (salt 무시).
+    #[test]
+    fn fresh_seed_keeps_fixed_and_incremental_semantics() {
+        let fixed = ScenarioSettings {
+            seed_mode: SeedMode::Fixed,
+            seed_fixed: 12_345,
+            seed_next: 9,
+            ..Default::default()
+        };
+        assert_eq!(fresh_seed(&fixed), 12_345);
+        assert_eq!(fresh_seed(&fixed), 12_345, "Fixed 는 매번 같은 값");
+
+        let inc = ScenarioSettings {
+            seed_mode: SeedMode::Incremental,
+            seed_fixed: 0,
+            seed_next: 7,
+            ..Default::default()
+        };
+        assert_eq!(fresh_seed(&inc), 7);
+    }
+
+    /// nonce 는 단조 증가한다 (프로세스 내 유일).
+    #[test]
+    fn seed_nonce_is_monotonic() {
+        let a = next_seed_nonce();
+        let b = next_seed_nonce();
+        assert!(b > a, "nonce 는 증가해야 한다: {a} → {b}");
     }
 }
 
@@ -126,12 +252,9 @@ pub fn advance_after_generation(settings: &mut ScenarioSettings, used: ImageProv
 /// (생성 자체를 막으면 "설정 저장 실패 때문에 이미지가 안 나오는" 2차 결함이 된다).
 pub fn take_generation_seed() -> u64 {
     let mut settings = load_scenario().unwrap_or_default();
-    let seed = next_seed_value(
-        settings.seed_mode,
-        settings.seed_fixed,
-        settings.seed_next,
-        now_unix_secs(),
-    );
+    // `now_unix_secs()`(초 해상도) 대신 `fresh_seed`(나노초 + 프로세스 nonce)를 쓴다 —
+    // 같은 초에 두 번 생성해도 Random seed 가 반복되지 않는다.
+    let seed = fresh_seed(&settings);
     advance_seed(&mut settings);
     if let Err(e) = save_scenario(&settings) {
         tracing::warn!("seed counter save failed: {e}");
@@ -443,12 +566,9 @@ pub fn generate_ai_with_fallback_with_query<F>(
 where
     F: Fn(ImageProvider, &str, &PathBuf) -> Result<PathBuf, WallpaperError>,
 {
-    let seed = next_seed_value(
-        settings.seed_mode,
-        settings.seed_fixed,
-        settings.seed_next,
-        now_unix_secs(),
-    );
+    // `now_unix_secs()`(초 해상도) 대신 `fresh_seed`(나노초 + 프로세스 nonce)를 쓴다 —
+    // 같은 초에 두 번 생성해도 Random seed 가 절대 반복되지 않아야 한다.
+    let seed = fresh_seed(settings);
     generate_ai_with_fallback_with_seed(settings, prompt, dest, seed, |provider, query, _s, dest| {
         attempt(provider, query, dest)
     })
@@ -482,12 +602,9 @@ pub fn generate_ai_with_fallback_query(
     prompt: &str,
     dest: &PathBuf,
 ) -> Result<(ImageProvider, PathBuf, String), WallpaperError> {
-    let seed = next_seed_value(
-        settings.seed_mode,
-        settings.seed_fixed,
-        settings.seed_next,
-        now_unix_secs(),
-    );
+    // `now_unix_secs()`(초 해상도) 대신 `fresh_seed`(나노초 + 프로세스 nonce)를 쓴다 —
+    // 같은 초에 두 번 생성해도 Random seed 가 절대 반복되지 않아야 한다.
+    let seed = fresh_seed(settings);
     generate_ai_with_fallback_with_seed(
         settings,
         prompt,

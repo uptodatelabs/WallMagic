@@ -31,11 +31,17 @@ check(
   "pollinations URL 은 seed 가 있을 때 &seed={s} 를 붙인다",
   /url\.push_str\(\s*&format!\("&seed=\{s\}"\)\s*\)/.test(wallpaper),
 );
+// 402 재시도 정책 도입으로 URL 조립이 `_with_policy` 로 이동하고 `_with_seed` 는
+// 기본 정책을 넘기는 얇은 래퍼가 되었다. 검사 대상도 "seed 가 URL 조립 지점까지
+// 전달되는가"로 바꾼다 — 위임 함수를 계속 검사하면 본문이 비어 항상 FAIL 하는 오탐이 난다.
 check(
   "generate_online_wallpaper_with_seed 가 seed 를 URL 생성에 넘긴다",
-  /pub fn generate_online_wallpaper_with_seed\s*\([\s\S]{0,600}?pollinations_image_url\(\s*trimmed\s*,\s*seed\s*\)/.test(
+  /pub fn generate_online_wallpaper_with_seed\s*\([\s\S]{0,700}?generate_online_wallpaper_with_policy\s*\(/.test(
     wallpaper,
-  ),
+  ) &&
+    /pub fn generate_online_wallpaper_with_policy\s*\([\s\S]{0,900}?pollinations_image_url\(\s*trimmed\s*,\s*seed\s*\)/.test(
+      wallpaper,
+    ),
 );
 check(
   "기존 generate_online_wallpaper 는 seed=None 위임 래퍼다(하위호환)",
@@ -71,11 +77,15 @@ check(
     scenario,
   ),
 );
+// Random 값은 API 지원 범위(1..=SEED_MAX)로 정규화된다 — `normalize_seed(mix_seed(..))`.
+// Fixed/Incremental 은 사용자가 지정한 값 그대로(항등)여야 "고정 seed"·"카운터 순차" 약속이 지켜진다.
 check(
   "Fixed 는 고정값, Incremental 은 카운터, Random 은 시각+카운터 혼합",
   /SeedMode::Fixed\s*=>\s*fixed/.test(scenario) &&
     /SeedMode::Incremental\s*=>\s*counter/.test(scenario) &&
-    /SeedMode::Random\s*=>\s*mix_seed\(\s*now_secs\s*,\s*counter\s*\)/.test(scenario),
+    /SeedMode::Random\s*=>\s*normalize_seed\(\s*mix_seed\(\s*now_secs\s*,\s*counter\s*\)\s*,?\s*\)/.test(
+      scenario,
+    ),
 );
 check(
   "advance_seed 는 Fixed 가 아닐 때만 카운터를 전진시킨다",

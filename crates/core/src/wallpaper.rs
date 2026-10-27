@@ -72,6 +72,31 @@ pub enum WallpaperError {
 
     #[error("image API HTTP {status}: {body}")]
     HttpStatus { status: u16, body: String },
+
+    /// 이미지 생성 요청 실패를 **원인별로 구분**해 전달한다.
+    ///
+    /// 배경(실측): 이전에는 `ureq` 오류를
+    /// `Network("image generation request failed: {e}")` 한 줄로 뭉개서
+    /// ① HTTP 상태 코드, ② 응답 본문(HTML 챌린지 페이지 등), ③ 요청 URL 이 모두 사라졌다.
+    /// `ureq` 의 `Display` 문자열에 섞여 있던 URL 이 잘려 나가 사용자에게는
+    /// `network error: image generation request failed: https://image.pollinations.ai/prompt/...`
+    /// 처럼 원인 불명의 한 줄만 보였다(동일 프롬프트 2회차 실패의 증상).
+    #[error("image generation failed: kind={kind} status={status:?} url={url} body={body_snippet}")]
+    ImageApiRequest {
+        kind: String,
+        status: Option<u16>,
+        url: String,
+        body_snippet: String,
+    },
+
+    /// Pollinations 무료 한도 초과(402 `FREE_LIMIT`).
+    ///
+    /// 배경(실측 — 프로브 응답 원문): `402 {"error":{"code":"FREE_LIMIT","message":"Free limit
+    /// reached: 1 image every 45 seconds per IP. Retry after 20s ..."}}` + 헤더 `retry-after: 20`.
+    /// 이것은 **영구 실패가 아니라 시간이 지나면 풀리는 레이트리밋**이므로, 원인 불명의
+    /// `http_status` 한 줄이 아니라 "몇 초 후 다시 시도" 를 사용자에게 그대로 알린다.
+    #[error("Pollinations 무료 한도 초과(1 IP당 45초에 1장): 약 {wait_secs}초 후 다시 시도하세요 — {url}")]
+    FreeLimitReached { wait_secs: u64, url: String },
 }
 
 /// Returns the application data directory.
@@ -302,8 +327,8 @@ pub fn pollinations_image_url(prompt: &str, seed: Option<u64>) -> String {
 /// Generate a wallpaper via the free Pollinations image API (no key needed).
 ///
 /// GETs a JPEG from image.pollinations.ai and saves it to `output_path`.
-/// Failures are returned as Network/HttpStatus/CandidateLoad so the UI
-/// can show a clear error instead of a silent offline gradient.
+/// Failures are returned as `ImageApiRequest`/`CandidateLoad` so the UI can show
+/// 상태 코드·응답 본문 스니펫·요청 URL 이 구분된 메시지를 보여줄 수 있다.
 ///
 /// seed 없는 하위호환 래퍼 — seed 정책을 쓰는 호출부는
 /// `generate_online_wallpaper_with_seed` 를 써야 한다.
@@ -314,13 +339,355 @@ pub fn generate_online_wallpaper(
     generate_online_wallpaper_with_seed(prompt, None, output_path)
 }
 
+/// Pollinations 일시 장애(429/5xx/타임아웃)에 대한 **제한적 재시도 정책**.
+///
+/// 배경(실측): 동일 프롬프트 2회차 생성이 실패하던 경로에는 재시도가 전혀 없었다.
+/// Pollinations 는 짧은 간격의 반복 요청에 429(레이트리밋) 또는 5xx 를 돌려주는데,
+/// 요청 1회 실패가 곧바로 "생성 실패"로 확정됐다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetryPolicy {
+    /// 총 시도 횟수(첫 요청 포함). 1 이면 재시도하지 않는다.
+    pub max_attempts: u32,
+    /// 첫 재시도 대기(ms). 이후 2배씩 증가.
+    pub base_delay_ms: u64,
+    /// 재시도 대기 상한(ms). `Retry-After` 도 이 값으로 절삭한다.
+    pub max_delay_ms: u64,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: 3,
+            base_delay_ms: 800,
+            max_delay_ms: 5_000,
+        }
+    }
+}
+
+/// 재시도할 가치가 있는 HTTP 상태 코드인지 판정한다 (순수 함수).
+///
+/// 429(레이트리밋)·408(요청 타임아웃)·425(Too Early)·5xx 만 재시도 대상이다.
+/// 400/401/403/404/422 같은 요청 자체의 결함은 재시도해도 같은 결과이므로 제외한다.
+pub fn is_retryable_status(status: u16) -> bool {
+    matches!(status, 408 | 425 | 429) || (500..=599).contains(&status)
+}
+
+/// Pollinations 무료 한도(402 `FREE_LIMIT`)에 대해 **자동 대기 후 재시도**를 허용하는 최대 시간(ms).
+///
+/// 배경(실측 — 프로브 응답 원문):
+/// `402 {"error":{"code":"FREE_LIMIT","message":"Free limit reached: 1 image every 45 seconds
+/// per IP. Retry after 20s, ..."}}` + 헤더 `retry-after: 20`.
+/// 즉 402 는 **영구 실패가 아니라 시간이 지나면 풀리는 레이트리밋**이다(사용자 보고:
+/// "시간이 지난 후에 생성 가능한데"). 그런데 402 는 `is_retryable_status` 에 없어
+/// **즉시 포기**했고, 사용자에게는 원인 불명의 생성 실패로 보였다.
+///
+/// 무한 대기로 IPC 를 붙잡지 않도록 상한을 둔다. 서버가 알려준 대기 시간이 이 값 이하이면
+/// 기다렸다가 1회 재시도하고, 초과하면 **대기 없이 명확한 안내**를 반환한다.
+pub const FREE_LIMIT_MAX_WAIT_MS: u64 = 25_000;
+
+/// 응답 본문이 Pollinations 무료 한도 초과(`FREE_LIMIT`)를 뜻하는가 (순수 함수).
+pub fn is_free_limit_body(body: &str) -> bool {
+    body.to_ascii_uppercase().contains("FREE_LIMIT")
+}
+
+/// 본문의 안내 문구에서 "Retry after Ns" 의 초를 뽑는다 (순수 함수 — 진단 메시지용).
+///
+/// 헤더(`retry-after`)가 없는 프록시·캐시 응답에서도 대기 시간을 사용자에게 알리기 위해
+/// 본문 문구를 함께 해석한다.
+pub fn parse_free_limit_retry_secs(body: &str) -> Option<u64> {
+    let lower = body.to_ascii_lowercase();
+    let idx = lower.find("retry after ")?;
+    let rest = &lower[idx + "retry after ".len()..];
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        None
+    } else {
+        digits.parse::<u64>().ok()
+    }
+}
+
+/// HTTP 실패를 `(kind, 재시도 가능 여부)` 로 분류한다 (순수 함수).
+///
+/// - 402 + `FREE_LIMIT` → `free_limit`. 서버가 알려준 대기 시간이
+///   `FREE_LIMIT_MAX_WAIT_MS` 이하일 때만 재시도한다(그 이상은 사용자를 기다리게 하지 않는다).
+/// - 그 외 → `http_status`, `is_retryable_status` 규칙을 따른다.
+pub fn classify_http_failure(
+    status: u16,
+    body: &str,
+    retry_after_ms: Option<u64>,
+) -> (&'static str, bool) {
+    if status == 402 && is_free_limit_body(body) {
+        let retryable = retry_after_ms
+            .map(|ms| ms <= FREE_LIMIT_MAX_WAIT_MS)
+            .unwrap_or(false);
+        return ("free_limit", retryable);
+    }
+    ("http_status", is_retryable_status(status))
+}
+
+/// 지수 백오프 지연(ms) — `attempt` 는 1부터 시작하며 `base * 2^(attempt-1)` 을
+/// `max_delay_ms` 로 절삭한다 (순수 함수).
+pub fn retry_delay_ms(policy: &RetryPolicy, attempt: u32) -> u64 {
+    let shift = attempt.saturating_sub(1).min(16);
+    policy
+        .base_delay_ms
+        .saturating_mul(1u64 << shift)
+        .min(policy.max_delay_ms)
+}
+
+/// 실패 종류를 반영한 **실제 대기 시간**(ms)을 계산한다 (순수 함수).
+///
+/// 배경(실측 결함): 이전 구현은 `backoff.max(after.min(policy.max_delay_ms))` 로
+/// 서버의 `retry-after` 를 **백오프 상한(5초)으로 절삭**했다. 그런데 Pollinations 무료
+/// 한도는 `retry-after: 20`(20초)을 요구하므로, 5초만 기다렸다가 다시 402 를 받고
+/// 사용자에게 실패로 확정됐다. 무료 한도(`free_limit`)는 서버가 알려준 시간을
+/// `FREE_LIMIT_MAX_WAIT_MS` 한도까지 **그대로** 기다린다.
+pub fn retry_delay_for(
+    kind: &str,
+    retry_after_ms: Option<u64>,
+    policy: &RetryPolicy,
+    attempt: u32,
+) -> u64 {
+    let backoff = retry_delay_ms(policy, attempt);
+    match retry_after_ms {
+        Some(after) if kind == "free_limit" => after.min(FREE_LIMIT_MAX_WAIT_MS),
+        Some(after) => backoff.max(after.min(policy.max_delay_ms)),
+        None => backoff,
+    }
+}
+
+/// `ureq` transport 오류 문자열을 **원인 kind** 로 분류한다 (순수 함수).
+///
+/// `ureq` 의 `Transport` 는 Display 문자열만 안정적으로 쓸 수 있어, 문자열을 근거로
+/// timeout / dns / connect / tls / transport 로 나눈다. 이 kind 가 에러 메시지에
+/// 그대로 노출되어 "network error" 한 줄로 뭉개지지 않는다.
+pub fn classify_transport_failure(message: &str) -> &'static str {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("timed out") || lower.contains("timeout") {
+        "timeout"
+    } else if lower.contains("dns") || lower.contains("resolve") {
+        "dns"
+    } else if lower.contains("connection refused")
+        || lower.contains("connection failed")
+        || lower.contains("connection reset")
+        || lower.contains("connect")
+    {
+        "connect"
+    } else if lower.contains("tls") || lower.contains("certificate") {
+        "tls"
+    } else {
+        "transport"
+    }
+}
+
+/// 응답 본문 스니펫 — 줄바꿈·연속 공백을 공백 하나로 접고 앞 200자만 남긴다 (순수 함수).
+pub fn body_snippet(body: &str) -> String {
+    body.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(200)
+        .collect()
+}
+
+/// 응답 `content-type` 이 이미지인지 검증한다 (순수 함수).
+///
+/// 200 응답이라도 본문이 HTML(챌린지·에러 페이지)이면 디코드 단계에서 원인 불명으로
+/// 실패한다. 그래서 `image/*` 가 아닌 `content-type` 은 명시적으로 거부한다.
+/// 헤더 부재·빈 값은 통과시킨다(구 응답 호환 — 최종 판정은 이미지 디코드).
+pub fn is_image_content_type(content_type: Option<&str>) -> bool {
+    match content_type {
+        None => true,
+        Some(raw) => {
+            let ct = raw.trim().to_ascii_lowercase();
+            ct.is_empty() || ct.starts_with("image/")
+        }
+    }
+}
+
+/// `Retry-After` 헤더(초 단위 숫자)를 ms 로 변환한다 (순수 함수).
+///
+/// HTTP-date 형식은 지원하지 않는다(`None`).
+pub fn parse_retry_after_ms(header: Option<&str>) -> Option<u64> {
+    let raw = header?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    raw.parse::<u64>().ok().map(|secs| secs.saturating_mul(1_000))
+}
+
+/// 요청 실패를 **원인별 구조화 에러**로 만든다 (URL·상태 코드·본문 스니펫 보존).
+pub fn request_failure(kind: &str, status: Option<u16>, url: &str, body: &str) -> WallpaperError {
+    WallpaperError::ImageApiRequest {
+        kind: kind.to_string(),
+        status,
+        url: url.to_string(),
+        body_snippet: body_snippet(body),
+    }
+}
+
+/// 한 번의 요청 실패를 담는다 (재시도 판단 + 진단 메시지 재료).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FetchFailure {
+    kind: String,
+    status: Option<u16>,
+    body: String,
+    retryable: bool,
+    retry_after_ms: Option<u64>,
+}
+
+/// Pollinations 에 이미지를 1회 요청한다. 실패는 `FetchFailure` 로 구조화한다.
+fn fetch_pollinations_once(url: &str) -> Result<Vec<u8>, FetchFailure> {
+    let response = match ureq::get(url).timeout(Duration::from_secs(90)).call() {
+        Ok(response) => response,
+        Err(ureq::Error::Status(status, response)) => {
+            let header_retry = parse_retry_after_ms(response.header("retry-after"));
+            let body = response.into_string().unwrap_or_default();
+            // 헤더가 없는 프록시·캐시 응답도 있으므로 본문의 "Retry after Ns" 를 함께 해석한다.
+            let body_retry = parse_free_limit_retry_secs(&body).map(|s| s.saturating_mul(1_000));
+            let retry_after_ms = header_retry.or(body_retry);
+            let (kind, retryable) = classify_http_failure(status, &body, retry_after_ms);
+            return Err(FetchFailure {
+                kind: kind.to_string(),
+                status: Some(status),
+                body,
+                retryable,
+                retry_after_ms,
+            });
+        }
+        Err(ureq::Error::Transport(transport)) => {
+            let message = transport.to_string();
+            let kind = classify_transport_failure(&message).to_string();
+            let retryable = !matches!(kind.as_str(), "dns" | "tls");
+            return Err(FetchFailure {
+                kind,
+                status: None,
+                body: message,
+                retryable,
+                retry_after_ms: None,
+            });
+        }
+    };
+
+    let status = response.status();
+    if !(200..300).contains(&status) {
+        let retry_after_ms = parse_retry_after_ms(response.header("retry-after"));
+        let body = response.into_string().unwrap_or_default();
+        return Err(FetchFailure {
+            kind: "http_status".to_string(),
+            status: Some(status),
+            body,
+            retryable: is_retryable_status(status),
+            retry_after_ms,
+        });
+    }
+
+    let content_type = response.header("content-type").map(str::to_string);
+    if !is_image_content_type(content_type.as_deref()) {
+        return Err(FetchFailure {
+            kind: "unexpected_content_type".to_string(),
+            status: Some(status),
+            body: content_type.unwrap_or_else(|| "<missing content-type>".to_string()),
+            retryable: true,
+            retry_after_ms: None,
+        });
+    }
+
+    let mut bytes: Vec<u8> = Vec::new();
+    response.into_reader().read_to_end(&mut bytes).map_err(|e| FetchFailure {
+        kind: "read_body".to_string(),
+        status: Some(status),
+        body: e.to_string(),
+        retryable: true,
+        retry_after_ms: None,
+    })?;
+    if bytes.is_empty() {
+        return Err(FetchFailure {
+            kind: "empty_body".to_string(),
+            status: Some(status),
+            body: String::new(),
+            retryable: true,
+            retry_after_ms: None,
+        });
+    }
+    Ok(bytes)
+}
+
+/// 재시도 루프 — 일시적 실패만 백오프하며 재시도하고, 최종 실패는 구조화 에러로 반환한다.
+///
+/// `fetch` 를 주입 가능하게 분리해 **네트워크 없이** 재시도 계약을 단위 테스트한다.
+fn fetch_with_retry<F>(
+    policy: &RetryPolicy,
+    url: &str,
+    mut fetch: F,
+) -> Result<Vec<u8>, WallpaperError>
+where
+    F: FnMut(&str) -> Result<Vec<u8>, FetchFailure>,
+{
+    let max_attempts = policy.max_attempts.max(1);
+    let mut attempt: u32 = 1;
+    loop {
+        match fetch(url) {
+            Ok(bytes) => return Ok(bytes),
+            Err(failure) => {
+                let can_retry = failure.retryable && attempt < max_attempts;
+                if !can_retry {
+                    // 무료 한도는 "영구 실패"가 아니라 "잠시 후 가능"이므로,
+                    // 원인 불명의 http_status 대신 대기 시간을 알려주는 전용 오류로 돌려준다.
+                    if failure.kind == "free_limit" {
+                        let wait_secs = failure
+                            .retry_after_ms
+                            .map(|ms| ms.div_ceil(1_000))
+                            .unwrap_or(45);
+                        return Err(WallpaperError::FreeLimitReached {
+                            wait_secs,
+                            url: url.to_string(),
+                        });
+                    }
+                    return Err(request_failure(
+                        &failure.kind,
+                        failure.status,
+                        url,
+                        &failure.body,
+                    ));
+                }
+                let delay = retry_delay_for(&failure.kind, failure.retry_after_ms, policy, attempt);
+                tracing::warn!(
+                    attempt,
+                    max_attempts,
+                    delay_ms = delay,
+                    kind = %failure.kind,
+                    status = ?failure.status,
+                    url = %url,
+                    "Pollinations 이미지 요청 실패 — 재시도합니다"
+                );
+                if delay > 0 {
+                    std::thread::sleep(Duration::from_millis(delay));
+                }
+                attempt += 1;
+            }
+        }
+    }
+}
+
 /// seed 를 명시해 Pollinations 이미지를 생성한다.
 ///
 /// `seed = Some(n)` 이면 URL 에 `&seed=n` 이 붙어 같은 프롬프트라도 다른 결과가 나온다.
+/// 일시적 오류는 기본 재시도 정책(`RetryPolicy::default`)으로 최대 3회 시도한다.
 pub fn generate_online_wallpaper_with_seed(
     prompt: &str,
     seed: Option<u64>,
     output_path: &Path,
+) -> Result<PathBuf, WallpaperError> {
+    generate_online_wallpaper_with_policy(prompt, seed, output_path, RetryPolicy::default())
+}
+
+/// 재시도 정책을 주입해 Pollinations 이미지를 생성한다.
+pub fn generate_online_wallpaper_with_policy(
+    prompt: &str,
+    seed: Option<u64>,
+    output_path: &Path,
+    policy: RetryPolicy,
 ) -> Result<PathBuf, WallpaperError> {
     let trimmed = prompt.trim();
     if trimmed.is_empty() {
@@ -332,30 +699,7 @@ pub fn generate_online_wallpaper_with_seed(
         fs::create_dir_all(parent)?;
     }
     let url = pollinations_image_url(trimmed, seed);
-    let response = ureq::get(&url)
-        .timeout(Duration::from_secs(90))
-        .call()
-        .map_err(|e| WallpaperError::Network(format!("image generation request failed: {e}")))?;
-    let status = response.status();
-    if status != 200 {
-        let body = response
-            .into_string()
-            .unwrap_or_default()
-            .chars()
-            .take(300)
-            .collect::<String>();
-        return Err(WallpaperError::HttpStatus { status, body });
-    }
-    let mut bytes: Vec<u8> = Vec::new();
-    response
-        .into_reader()
-        .read_to_end(&mut bytes)
-        .map_err(|e| WallpaperError::Network(format!("reading generated image failed: {e}")))?;
-    if bytes.is_empty() {
-        return Err(WallpaperError::Network(
-            "image generation API returned an empty body".to_string(),
-        ));
-    }
+    let bytes = fetch_with_retry(&policy, &url, fetch_pollinations_once)?;
     let img = image::load_from_memory(&bytes).map_err(|e| {
         WallpaperError::CandidateLoad(format!("generated image decode failed: {e}"))
     })?;
@@ -364,6 +708,188 @@ pub fn generate_online_wallpaper_with_seed(
     let img_hd = normalize_to_hd(img)?;
     img_hd.save(output_path)?;
     Ok(output_path.to_path_buf())
+}
+
+#[cfg(test)]
+mod pollinations_retry_tests {
+    use super::*;
+
+    fn no_sleep_policy(max_attempts: u32) -> RetryPolicy {
+        RetryPolicy {
+            max_attempts,
+            base_delay_ms: 0,
+            max_delay_ms: 0,
+        }
+    }
+
+    fn failure(
+        kind: &str,
+        status: Option<u16>,
+        body: &str,
+        retryable: bool,
+    ) -> FetchFailure {
+        FetchFailure {
+            kind: kind.to_string(),
+            status,
+            body: body.to_string(),
+            retryable,
+            retry_after_ms: None,
+        }
+    }
+
+    #[test]
+    fn test_is_retryable_status_matrix() {
+        for code in [408u16, 425, 429, 500, 502, 503, 504, 599] {
+            assert!(is_retryable_status(code), "{code} 는 재시도 대상이어야 한다");
+        }
+        for code in [200u16, 201, 204, 400, 401, 403, 404, 422] {
+            assert!(!is_retryable_status(code), "{code} 는 재시도 대상이 아니다");
+        }
+    }
+
+    #[test]
+    fn test_retry_delay_backoff_and_cap() {
+        let policy = RetryPolicy {
+            max_attempts: 4,
+            base_delay_ms: 800,
+            max_delay_ms: 5_000,
+        };
+        assert_eq!(retry_delay_ms(&policy, 1), 800);
+        assert_eq!(retry_delay_ms(&policy, 2), 1_600);
+        assert_eq!(retry_delay_ms(&policy, 3), 3_200);
+        // 6_400 → 상한 5_000
+        assert_eq!(retry_delay_ms(&policy, 4), 5_000);
+        assert_eq!(retry_delay_ms(&policy, 40), 5_000);
+    }
+
+    #[test]
+    fn test_classify_transport_failure_kinds() {
+        assert_eq!(
+            classify_transport_failure("timed out waiting for response"),
+            "timeout"
+        );
+        assert_eq!(
+            classify_transport_failure("Dns Failed: no address for host"),
+            "dns"
+        );
+        assert_eq!(classify_transport_failure("Connection refused"), "connect");
+        assert_eq!(classify_transport_failure("TLS handshake failed"), "tls");
+        assert_eq!(classify_transport_failure("something else"), "transport");
+    }
+
+    #[test]
+    fn test_body_snippet_collapses_and_truncates() {
+        assert_eq!(
+            body_snippet("  <html>\n\n <body>x</body>  "),
+            "<html> <body>x</body>"
+        );
+        let long = "a".repeat(500);
+        assert_eq!(body_snippet(&long).chars().count(), 200);
+    }
+
+    #[test]
+    fn test_is_image_content_type_validation() {
+        assert!(is_image_content_type(Some("image/jpeg")));
+        assert!(is_image_content_type(Some("IMAGE/PNG; charset=binary")));
+        assert!(is_image_content_type(None));
+        assert!(is_image_content_type(Some("   ")));
+        assert!(!is_image_content_type(Some("text/html; charset=utf-8")));
+        assert!(!is_image_content_type(Some("application/json")));
+    }
+
+    #[test]
+    fn test_parse_retry_after_header() {
+        assert_eq!(parse_retry_after_ms(Some("2")), Some(2_000));
+        assert_eq!(parse_retry_after_ms(Some("0")), Some(0));
+        assert_eq!(
+            parse_retry_after_ms(Some("Wed, 21 Oct 2015 07:28:00 GMT")),
+            None
+        );
+        assert_eq!(parse_retry_after_ms(None), None);
+    }
+
+    #[test]
+    fn test_fetch_with_retry_recovers_from_transient_rate_limit() {
+        // 동일 요청 1회차 429 → 2회차 성공. 재시도가 없으면 "생성 실패"로 확정됐다.
+        let policy = no_sleep_policy(3);
+        let mut calls = 0u32;
+        let bytes = fetch_with_retry(
+            &policy,
+            "https://image.pollinations.ai/prompt/x?seed=1",
+            |_url| {
+                calls += 1;
+                if calls == 1 {
+                    Err(failure("rate_limited", Some(429), "Too Many Requests", true))
+                } else {
+                    Ok(b"jpeg-bytes".to_vec())
+                }
+            },
+        )
+        .expect("일시적 429 는 재시도로 극복해야 한다");
+        assert_eq!(bytes, b"jpeg-bytes".to_vec());
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn test_fetch_with_retry_gives_up_after_max_attempts_with_diagnostics() {
+        let policy = no_sleep_policy(3);
+        let mut calls = 0u32;
+        let err = fetch_with_retry(
+            &policy,
+            "https://image.pollinations.ai/prompt/repeat?seed=7",
+            |_url| {
+                calls += 1;
+                Err(failure(
+                    "http_status",
+                    Some(503),
+                    "Service Unavailable",
+                    true,
+                ))
+            },
+        )
+        .unwrap_err();
+        assert_eq!(calls, 3, "max_attempts 만큼만 시도한다");
+        let msg = err.to_string();
+        assert!(msg.contains("status=Some(503)"), "상태 코드 노출: {msg}");
+        assert!(
+            msg.contains("https://image.pollinations.ai/prompt/repeat?seed=7"),
+            "요청 URL 노출: {msg}"
+        );
+        assert!(
+            msg.contains("Service Unavailable"),
+            "응답 본문 스니펫 노출: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_fetch_with_retry_does_not_retry_permanent_error() {
+        let policy = no_sleep_policy(3);
+        let mut calls = 0u32;
+        let err = fetch_with_retry(
+            &policy,
+            "https://image.pollinations.ai/prompt/x",
+            |_url| {
+                calls += 1;
+                Err(failure("http_status", Some(404), "not found", false))
+            },
+        )
+        .unwrap_err();
+        assert_eq!(calls, 1, "영구 오류(404)는 재시도하지 않는다");
+        assert!(err.to_string().contains("status=Some(404)"));
+    }
+
+    #[test]
+    fn test_empty_prompt_fails_before_network_and_names_the_reason() {
+        let dir = std::env::temp_dir().join("wallmagic-pollinations-retry-test");
+        let err = generate_online_wallpaper_with_policy(
+            "   ",
+            None,
+            &dir.join("out.jpg"),
+            no_sleep_policy(1),
+        )
+        .unwrap_err();
+        assert!(matches!(err, WallpaperError::CandidateLoad(_)));
+    }
 }
 
 /// Queries the currently active desktop wallpaper path (1st: IDesktopWallpaper COM, 2nd: SPI_GETDESKWALLPAPER).

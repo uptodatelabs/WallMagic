@@ -913,6 +913,16 @@ fn save_scenario(settings: ScenarioSettings) -> Result<ScenarioSettings, String>
 }
 
 pub fn save_scenario_impl(mut settings: ScenarioSettings) -> Result<ScenarioSettings, String> {
+    // seed 카운터(`seed_next`)는 **백엔드 소유**다 — 생성이 성공할 때마다 코어가 전진시켜
+    // 디스크에 저장한다(`advance_seed`/`take_generation_seed`). UI 는 화면 표시용으로 값을
+    // 들고 있을 뿐인데, 저장 요청에 그 **낡은 값**을 실어 보내면 그 사이 진행된 전진이
+    // 되돌아간다. 그러면 `Incremental` 모드가 같은 seed 를 재사용해 "같은 프롬프트 =
+    // 같은 이미지" 결함이 재발한다(사용자 보고: seed 가 random 인데도 같은 이미지).
+    // 그래서 IPC 로 들어온 `seed_next` 는 무시하고 디스크 값을 유지한다.
+    // (`seed_mode`/`seed_fixed` 는 사용자 의도이므로 그대로 저장한다.)
+    if let Ok(existing) = wallmagic_core::load_scenario() {
+        settings.seed_next = existing.seed_next;
+    }
     // 검수 지적 [medium](2): 명시적 삭제 플래그 — clear_api_token=true일 때만 빈 토큰으로
     // 덮어쓰고, 그 외 빈 토큰은 "기존 저장값 유지"로 해석한다. 플래그는 저장 전 false로
     // 리셋하므로 scenario.json에 잔류하지 않는다.
