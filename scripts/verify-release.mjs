@@ -125,8 +125,11 @@ else bad("bundle.icon 이 비어 있다");
 const roots = ["target/release/bundle", "src-tauri/target/release/bundle"];
 
 // 파일명에서 버전을 읽는다 (예: WallMagic_1.0.0_x64-setup.exe → "1.0.0").
+// 접미 구분자를 **요구하지 않는다** — `_(x.y.z)` 뒤에 구분자가 오거나 문자열이 끝나면 매칭이다.
+// 구분자를 필수로 두면 `WallMagic_1.0.0.exe` 처럼 버전으로 끝나는 파일명을 읽지 못해
+// 현재 버전 산출물을 stale 로 오판하고, 계약 모드에서 "산출물 없음"으로 잘못 보고한다.
 const versionInName = (file) => {
-  const m = file.match(/_(\d+\.\d+\.\d+)[_.-]/);
+  const m = file.match(/_(\d+\.\d+\.\d+)(?:[_.-]|$)/);
   return m ? m[1] : undefined;
 };
 
@@ -172,12 +175,17 @@ if (currentArtifacts.length === 0) {
     else ok(`산출물 파일명 버전 일치 — ${a.path}`);
   }
 
+  // 현재 버전 산출물이 일부만 있을 때(예: MSI 만) 누락된 종류가 어디에도 출력되지 않으면
+  // "통과했는데 인스톨러가 하나뿐" 인 상태를 알 수 없다. 계약 모드(비-require)에서도
+  // info 로 드러내 릴리스 전에 정리 대상을 볼 수 있게 한다.
   const hasNsis = currentArtifacts.some((a) => a.kind === "nsis");
   const hasMsi = currentArtifacts.some((a) => a.kind === "msi");
   if (hasNsis) ok("NSIS 인스톨러가 있다");
   else if (requireArtifacts) bad("NSIS 인스톨러가 없다");
+  else console.log(`info NSIS 인스톨러가 없다 — 현재 버전(${version}) 은 MSI 만 존재한다`);
   if (hasMsi) ok("MSI 인스톨러가 있다");
   else if (requireArtifacts) bad("MSI 인스톨러가 없다");
+  else console.log(`info MSI 인스톨러가 없다 — 현재 버전(${version}) 은 NSIS 만 존재한다`);
 }
 
 if (staleArtifacts.length > 0) {
