@@ -120,19 +120,28 @@ check("2-튜플 generate_ai_with_fallback 은 3-튜플 _query 판에 위임한�
   return /generate_ai_with_fallback_query\s*\(/.test(body);
 });
 
-check("search_query_for 가 저장 키워드를 공용 프롬프트보다 우선한다", () => {
+check("search_query_for 는 검색어 단독 소스이고 프롬프트 인자를 받지 않는다", () => {
   const body = fnBody(scenario, "search_query_for");
   if (!body) return false;
-  const keywordIdx = body.indexOf("valid_search_queries");
-  const promptIdx = body.indexOf("prompt.trim()");
-  // 키워드 목록 검사를 먼저 하고, 프롬프트는 폴백으로만 쓰여야 한다.
-  return keywordIdx >= 0 && promptIdx > keywordIdx;
+  // 시그니처: (settings, seed) — 프롬프트 파라미터가 없어야 한다.
+  const sig = /pub fn search_query_for\(([^)]*)\)/.exec(scenario);
+  if (!sig) return false;
+  const hasPromptParam = /\bprompt\b/.test(sig[1]);
+  // 본문은 검색어 목록만 보고, 프롬프트 폴백 분기가 없어야 한다.
+  return (
+    !hasPromptParam &&
+    /valid_search_queries/.test(body) &&
+    !/prompt/.test(body.replace(/\/\/[^\n]*/g, ""))
+  );
 });
 
-check("provider_is_configured 의 Search 가 프롬프트만으로도 자격을 인정한다", () => {
+check("provider_is_configured 의 Search 는 프롬프트를 보지 않고 검색어만 검사한다", () => {
   const body = fnBody(scenario, "provider_is_configured");
-  const arm = /ImageProvider::Search => \{[\s\S]*?\n        \}/.exec(body);
-  return Boolean(arm) && /search_queries/.test(arm[0]) && /settings\.prompt/.test(arm[0]);
+  // Search arm 은 블록이 아니라 식(expression) 형태다.
+  const arm = /ImageProvider::Search =>([\s\S]*?)\n\s*(\/\/|ImageProvider::Puter)/.exec(body);
+  if (!arm) return false;
+  const code = arm[1].replace(/\/\/[^\n]*/g, "");
+  return /search_queries/.test(code) && !/settings\.prompt/.test(code);
 });
 
 check("generate_ai_with_fallback_with_query 가 Search 에 키워드 기반 질의를 전달하고 실제 사용 질의문을 반환한다", () => {
@@ -144,12 +153,12 @@ check("generate_ai_with_fallback_with_query 가 Search 에 키워드 기반 질�
   );
 });
 
-check("generate_ai_with_fallback_with_query 가 Search 자격 판정 시 호출 인자 prompt(!trimmed.is_empty())도 인정한다", () => {
+check("generate_ai_with_fallback_with_query 가 Search 자격을 공급자 단일 판정 헬퍼로만 결정한다", () => {
   const body = fnBody(scenario, "generate_ai_with_fallback_with_query");
+  // Search 전용 자격 분기(|| !trimmed.is_empty())가 남아 있으면 프롬프트가 자격에 관여한다.
   return (
-    /provider\s*==\s*ImageProvider::Search/.test(body) &&
-    /!settings\.disabled_providers\.contains\(&ImageProvider::Search\)/.test(body) &&
-    /!trimmed\.is_empty\(\)/.test(body)
+    /provider_is_configured\(settings,\s*provider\)/.test(body) &&
+    !/\|\|\s*!trimmed\.is_empty\(\)/.test(body)
   );
 });
 
@@ -173,12 +182,12 @@ check("generate_wallpaper_priority_impl 이 Search 채택 시 실제 검색어(u
   );
 });
 
-check("ScenarioSettings::default() 상태(s.prompt·search_queries 빈 값)에서 수동 prompt 인자만으로 통과하는 테스트가 있다", () => {
-  const body = fnBody(scenario, "test_search_uses_prompt_when_keywords_are_empty");
+check("검색어가 비면 프롬프트가 있어도 Search 를 시도하지 않는 회귀 테스트가 있다(프롬프트 폴백 금지)", () => {
+  const body = fnBody(scenario, "test_search_never_falls_back_to_prompt");
   return (
-    /assert!\(s\.prompt\.is_empty\(\)\)/.test(body) &&
     /assert!\(s\.source\.search_queries\.is_empty\(\)\)/.test(body) &&
-    /generate_ai_with_fallback_with\(&s,\s*"manual keyword"/.test(body)
+    /generate_ai_with_fallback_with\(&s,\s*"manual keyword"/.test(body) &&
+    /expect_err/.test(body)
   );
 });
 

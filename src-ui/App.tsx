@@ -766,28 +766,27 @@ export function App(): React.ReactElement {
     }
   };
 
-  // 검색(Search) 공급자의 ② 버튼 입력 판정 — ⑤ 키워드 또는 ② 프롬프트 중 하나라도 있으면 실행 가능.
-  // 검색은 생성 API 가 아니라 키워드 검색이므로 "프롬프트 필수" 규칙을 그대로 적용하면
-  // 키워드만 저장한 시나리오에서 버튼이 영구 비활성화된다.
-  const searchNeedsInput =
-    scProvider === "search" &&
-    !prompt.trim() &&
-    !scSearchQueries.trim();
-  // ⑤ 검색 키워드 목록(줄바꿈 구분). 저장 payload 와 ② 버튼이 같은 규칙을 쓰도록 한 곳에서 파생한다.
+  // ① 검색 영역의 '이미지 검색어'(줄바꿈 구분) — 검색 공급자(Search)의 **유일한** 검색어 소스다.
+  // ② 생성 영역의 프롬프트와는 무관하다(프롬프트→검색어 폴백 없음).
+  // 저장 payload(scenario.json `source.search_queries`)와 ② 버튼이 같은 값을 쓰도록 한 곳에서 파생한다.
   const searchKeywords = scSearchQueries
     .split("\n")
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
+  // 검색(Search) 공급자의 ② 버튼 입력 판정 — 검색어가 없으면 실행할 수 없다(프롬프트로 대체 금지).
+  const searchNeedsInput = scProvider === "search" && searchKeywords.length === 0;
 
   const handleGenerate = async () => {
     const aiPrompt = prompt.trim();
-    // 검색은 프롬프트가 아니라 ⑤ 키워드로도 실행된다 — 프롬프트 공백만으로 막지 않는다.
-    if (!aiPrompt && !(scProvider === "search" && searchKeywords.length > 0)) {
-      reportError(
-        scProvider === "search"
-          ? "검색 키워드(⑤) 또는 프롬프트(②) 중 하나를 입력하세요."
-          : "프롬프트를 입력하세요.",
-      );
+    // 검색어와 프롬프트는 서로 무관한 별개 입력이다 — 검색은 ① 검색 영역의 검색어만,
+    // 생성은 ② 생성 영역의 프롬프트만 쓴다(프롬프트→검색어 폴백 제거).
+    if (scProvider === "search") {
+      if (searchKeywords.length === 0) {
+        reportError("검색어를 입력하세요 (① 검색의 '이미지 검색어').");
+        return;
+      }
+    } else if (!aiPrompt) {
+      reportError("프롬프트를 입력하세요.");
       return;
     }
     // 개별 On/Off: Off 로 둔 공급자는 ② 생성에서도 시도하지 않는다.
@@ -799,11 +798,11 @@ export function App(): React.ReactElement {
       return;
     }
     // 검색(Search) 공급자: 생성 API 가 아니라 **키워드 검색**이다.
-    // ⑤ 시나리오에 저장한 키워드(첫 항목)를 우선 쓰고, 없으면 ② 프롬프트를 검색어로 쓴다.
+    // 검색어는 ① 검색 영역의 검색어만 쓴다 — ② 프롬프트로 대체하지 않는다.
     // 생성과 달리 배경을 바로 적용하지 않는다 — 결과는 후보로만 추가하고 적용은 ④ 에서 한다.
     if (scProvider === "search") {
-      const keyword = searchKeywords.length > 0 ? searchKeywords[0] : aiPrompt;
-      const keywordSource = searchKeywords.length > 0 ? "⑤ 시나리오 키워드" : "② 프롬프트";
+      const keyword = searchKeywords[0];
+      const keywordSource = "① 검색 영역 검색어";
       setBusy(true);
       try {
         const candidate = await invoke<WallpaperCandidate>(
@@ -935,7 +934,7 @@ export function App(): React.ReactElement {
     // 코어의 동일한 폴백·기록 경로(state.json provider=search)를 그대로 사용한다.
     // (이 분기가 없으면 검색 선택 시 Cloudflare 분기로 흘러 Account ID 오류가 났다)
     if (scProvider === "search") {
-      const keyword = prompt.trim();
+      const keyword = searchKeywords[0] ?? "";
       if (!keyword) {
         reportError("검색 키워드를 입력하세요.");
         return;
@@ -1481,6 +1480,19 @@ export function App(): React.ReactElement {
                 placeholder="C:\Users\me\Pictures (기본: 라이브러리+Pictures)"
               />
             </div>
+            <div className="field">
+              <label htmlFor="scSearchQueries">이미지 검색어 (줄바꿈 구분 · 검색 공급자 전용)</label>
+              <textarea
+                id="scSearchQueries"
+                value={scSearchQueries}
+                onChange={(e) => setScSearchQueries(e.target.value)}
+                placeholder={"aurora borealis\nneon city night"}
+              />
+              <div className="detail">
+                이미지 공급자가 <b>검색(Search)</b> 일 때 이 검색어로 공개 이미지를 찾습니다
+                (순차/랜덤 순환). ② 생성의 프롬프트와는 무관합니다.
+              </div>
+            </div>
             <button
               type="button"
               className="primary block"
@@ -1494,7 +1506,7 @@ export function App(): React.ReactElement {
           <section>
             <h2>② 생성</h2>
             <div className="field">
-              <label htmlFor="prompt">프롬프트 (테마 — 모든 AI 이미지 생성에 공통 적용)</label>
+              <label htmlFor="prompt">프롬프트 (생성 전용 — AI 이미지 공급자 공통)</label>
               <textarea
                 id="prompt"
                 value={prompt}
@@ -1724,18 +1736,9 @@ export function App(): React.ReactElement {
                 placeholder="C:\Users\me\Pictures\auto (비우면 사용 안 함)"
               />
             </div>
-            <div className="field">
-              <label htmlFor="scSearchQueries">검색 키워드 (줄바꿈 구분 — 검색 공급자용)</label>
-              <textarea
-                id="scSearchQueries"
-                value={scSearchQueries}
-                onChange={(e) => setScSearchQueries(e.target.value)}
-                placeholder={"aurora borealis\nneon city night"}
-              />
-              <div className="detail">
-                검색(Search) 공급자를 On 으로 두면 이 키워드로 공개 이미지를 검색해 배경으로 사용합니다
-                (순서 항목의 순차/랜덤에 따라 순환). 프롬프트가 비어 있어도 키워드만으로 자동 실행됩니다.
-              </div>
+            <div className="detail">
+              이미지 검색어는 ① 검색 영역에서 입력합니다(검색 공급자 전용). 저장 시
+              <code> source.search_queries</code> 로 함께 저장됩니다.
             </div>
             <div className="field">
               <label htmlFor="scOrder">순서</label>

@@ -170,19 +170,14 @@ pub fn provider_is_configured(settings: &ScenarioSettings, provider: ImageProvid
                 && !settings.cloudflare.api_token.trim().is_empty()
         }
         ImageProvider::Openai => !settings.openai.api_key.trim().is_empty(),
-        // 검색(Search)은 키가 필요 없다. 검색어는 ① 시나리오 키워드 목록
-        // (`source.search_queries`) ② 공용 프롬프트(`settings.prompt`) 순으로 쓰이므로
-        // 둘 중 하나에 유효한 검색어가 있으면 시도 자격이 있다.
-        // (검수 지적 [high]: 키워드 목록만 검사하면 디스크의 scenario.json 에 키워드가 없을 때
-        //  수동 생성이 "Search skipped: missing credentials" 로 무조건 실패했다)
-        ImageProvider::Search => {
-            settings
-                .source
-                .search_queries
-                .iter()
-                .any(|q| !q.trim().is_empty())
-                || !settings.prompt.trim().is_empty()
-        }
+        // 검색(Search)은 키가 필요 없다. 검색어의 단일 소스는 ① 검색 영역의 키워드 목록
+        // (`source.search_queries`)이다. 프롬프트(`settings.prompt`)는 ② 생성 창 전용
+        // 입력이라 검색 자격 판정에 **관여하지 않는다**(프롬프트→검색어 폴백 제거).
+        ImageProvider::Search => settings
+            .source
+            .search_queries
+            .iter()
+            .any(|q| !q.trim().is_empty()),
         // Puter는 WebView 전용 SDK라 Rust 백엔드에서 직접 생성할 수 없어 항상 스킵한다.
         ImageProvider::Puter => false,
     }
@@ -213,28 +208,22 @@ pub fn valid_search_queries(settings: &ScenarioSettings) -> Vec<String> {
 
 /// 검색(Search) 공급자가 이번 시도에 쓸 검색어를 고른다.
 ///
-/// 우선순위 (검수 지적 [medium] 반영):
-/// 1. 사용자가 시나리오에 작성한 키워드 목록(`source.search_queries`) — `order` 와
-///    `next_index`(순차) / `seed`(랜덤) 로 순환한다.
-/// 2. 키워드 목록이 비어 있을 때만 공용 프롬프트를 검색어로 쓴다
-///    (수동 생성 경로에서 prompt = 사용자가 입력한 키워드).
+/// 검색어의 **단일 소스**는 검색 영역에서 입력한 키워드 목록
+/// (`source.search_queries`)이다. 프롬프트(`settings.prompt`)는 ② 생성 창 전용
+/// 입력이라 검색어로 쓰지 않는다(프롬프트→검색어 폴백 제거).
 ///
-/// 둘 다 비어 있으면 `None` — 호출자는 네트워크 호출 없이 스킵해야 한다.
-pub fn search_query_for(settings: &ScenarioSettings, prompt: &str, seed: u64) -> Option<String> {
+/// `order` 와 `next_index`(순차) / `seed`(랜덤) 로 순환한다.
+/// 키워드가 하나도 없으면 `None` — 호출자는 네트워크 호출 없이 스킵해야 한다.
+pub fn search_query_for(settings: &ScenarioSettings, seed: u64) -> Option<String> {
     let queries = valid_search_queries(settings);
-    if !queries.is_empty() {
-        let idx = match settings.order {
-            ScenarioOrder::Sequential => settings.next_index % queries.len(),
-            ScenarioOrder::Random => (seed as usize) % queries.len(),
-        };
-        return Some(queries[idx].clone());
+    if queries.is_empty() {
+        return None;
     }
-    let trimmed = prompt.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
+    let idx = match settings.order {
+        ScenarioOrder::Sequential => settings.next_index % queries.len(),
+        ScenarioOrder::Random => (seed as usize) % queries.len(),
+    };
+    Some(queries[idx].clone())
 }
 
 /// 결정적 테스트를 위해 실제 시도 함수는 `attempt` 클로저로 주입받는다.
@@ -270,12 +259,10 @@ where
     let mut skipped = 0usize;
     let seed = now_unix_secs();
     for provider in order {
-        let qualified = if provider == ImageProvider::Search {
-            !settings.disabled_providers.contains(&ImageProvider::Search)
-                && (provider_is_configured(settings, provider) || !trimmed.is_empty())
-        } else {
-            provider_is_configured(settings, provider)
-        };
+        // Search 자격은 **검색어(`source.search_queries`) 단독**으로 판정한다 (공급자 단일 판정 헬퍼).
+        // 프롬프트(`settings.prompt`)도, 호출 인자 `prompt` 도 검색 자격에 관여하지 않는다 —
+        // 검색어와 프롬프트는 서로 무관한 별개 입력이다(프롬프트→검색어 폴백 제거).
+        let qualified = provider_is_configured(settings, provider);
         if !qualified {
             skipped += 1;
             last_err = Some(WallpaperError::CandidateLoad(format!(
@@ -283,14 +270,15 @@ where
             )));
             continue;
         }
-        // 공급자별 실제 질의문 — Search 만 키워드 목록을 우선한다.
+        // 공급자별 실제 질의문 — Search 는 검색어 목록(`source.search_queries`)만 쓴다.
+        // 프롬프트로 대체하지 않는다(사용자가 입력한 검색어가 없으면 명시적으로 스킵).
         let query: String = if provider == ImageProvider::Search {
-            match search_query_for(settings, trimmed, seed) {
+            match search_query_for(settings, seed) {
                 Some(q) => q,
                 None => {
                     skipped += 1;
                     last_err = Some(WallpaperError::CandidateLoad(
-                        "Search skipped: no search keyword (search_queries/prompt both empty)"
+                        "Search skipped: no search keyword (검색 창의 검색어가 비어 있습니다)"
                             .to_string(),
                     ));
                     continue;
@@ -1009,7 +997,7 @@ pub fn tick_scenario(now_secs: u64) -> Result<Option<WallpaperState>, WallpaperE
         && provider_is_configured(&settings, ImageProvider::Search)
     {
         let query_count = valid_search_queries(&settings).len();
-        if let Some(query) = search_query_for(&settings, &settings.prompt, now_secs) {
+        if let Some(query) = search_query_for(&settings, now_secs) {
             let tmp = app_data_dir()
                 .join("online_cache")
                 .join("scenario_search.jpg");
@@ -1482,19 +1470,27 @@ mod tests {
         assert!(!provider_is_configured(&s, ImageProvider::Search));
     }
 
-    /// 검수 지적 [high]: 디스크 scenario.json 에 키워드가 없어도, 수동 생성이 넘긴
-    /// prompt 가 있으면 Search 는 "missing credentials" 로 무조건 실패하지 않는다.
+    /// 검색어와 프롬프트는 서로 무관한 별개 입력이다 — Search 자격은
+    /// 검색 영역의 키워드(`source.search_queries`) **단독**으로만 판정한다.
+    /// 프롬프트(`settings.prompt`)가 채워져 있어도 검색 자격을 만들지 않는다
+    /// (프롬프트→검색어 폴백 제거).
     #[test]
-    fn test_provider_is_configured_search_accepts_prompt_only() {
+    fn test_provider_is_configured_search_ignores_prompt() {
         let mut s = ScenarioSettings::default();
         assert!(valid_search_queries(&s).is_empty());
+        // 프롬프트만 채워도 Search 는 자격 없음.
         s.prompt = "neon harbor".to_string();
         assert!(
-            provider_is_configured(&s, ImageProvider::Search),
-            "prompt 만 있는 수동 생성도 Search 자격을 인정해야 한다"
+            !provider_is_configured(&s, ImageProvider::Search),
+            "프롬프트는 검색 자격에 관여하지 않아야 한다"
         );
-        // 공백 프롬프트는 자격 없음 (네트워크 호출 금지).
+        // 검색어를 넣으면 자격 있음 — 프롬프트 유무와 무관.
+        s.source.search_queries = vec!["aurora".to_string()];
+        assert!(provider_is_configured(&s, ImageProvider::Search));
         s.prompt = "   ".to_string();
+        assert!(provider_is_configured(&s, ImageProvider::Search));
+        // 공백 검색어는 자격 없음 (네트워크 호출 금지).
+        s.source.search_queries = vec!["   ".to_string()];
         assert!(!provider_is_configured(&s, ImageProvider::Search));
     }
 
@@ -1507,39 +1503,37 @@ mod tests {
         s.source.search_queries = vec!["aurora".to_string(), "neon city".to_string()];
         s.order = ScenarioOrder::Sequential;
         s.next_index = 0;
-        assert_eq!(search_query_for(&s, &s.prompt, 7).as_deref(), Some("aurora"));
+        assert_eq!(search_query_for(&s, 7).as_deref(), Some("aurora"));
         s.next_index = 1;
         assert_eq!(
-            search_query_for(&s, &s.prompt, 7).as_deref(),
+            search_query_for(&s, 7).as_deref(),
             Some("neon city"),
             "순차 모드는 next_index 로 순환해야 한다"
         );
         // 랜덤 모드: seed 로 인덱스가 결정된다(같은 seed = 같은 키워드).
         s.order = ScenarioOrder::Random;
-        let a = search_query_for(&s, &s.prompt, 2);
-        let b = search_query_for(&s, &s.prompt, 2);
+        let a = search_query_for(&s, 2);
+        let b = search_query_for(&s, 2);
         assert_eq!(a, b);
         assert_eq!(a.as_deref(), Some("aurora"));
     }
 
     #[test]
-    fn test_search_query_for_falls_back_to_prompt_and_none_when_empty() {
+    fn test_search_query_for_uses_keywords_only_and_none_when_empty() {
         let mut s = ScenarioSettings::default();
-        // 키워드 목록이 비면 프롬프트를 검색어로 쓴다 (수동 생성 경로).
+        // 프롬프트만 있어도 검색어가 없다 → None (프롬프트 폴백 없음).
         s.prompt = "mountain lake".to_string();
         assert_eq!(
-            search_query_for(&s, &s.prompt, 0).as_deref(),
-            Some("mountain lake")
+            search_query_for(&s, 0),
+            None,
+            "프롬프트는 검색어로 쓰이지 않는다"
         );
-        // 공백 키워드만 있는 경우도 프롬프트 폴백.
+        // 공백 키워드만 있는 경우도 None.
         s.source.search_queries = vec!["   ".to_string()];
-        assert_eq!(
-            search_query_for(&s, &s.prompt, 0).as_deref(),
-            Some("mountain lake")
-        );
-        // 둘 다 비면 None — 호출자는 네트워크 호출 없이 스킵해야 한다.
-        s.source.search_queries.clear();
-        assert_eq!(search_query_for(&s, "", 0), None);
+        assert_eq!(search_query_for(&s, 0), None);
+        // 유효 키워드가 있으면 그 값이 검색어다 (프롬프트는 무시).
+        s.source.search_queries = vec!["aurora".to_string()];
+        assert_eq!(search_query_for(&s, 0).as_deref(), Some("aurora"));
     }
 
     /// 폴백 루프가 Search 에 **키워드**를 넘기는지 (이전 구현은 항상 prompt 를 넘겨
@@ -1638,29 +1632,43 @@ mod tests {
         assert_eq!(used, ImageProvider::Search);
     }
 
+    /// 검색어와 프롬프트는 **서로 무관한 별개 입력**이다.
+    ///
+    /// 이전 구현은 검색어가 비어 있으면 프롬프트를 검색 키워드로 승격(폴백)했으나,
+    /// 사용자는 "검색은 검색 창에서, 생성은 생성 창에서" 라고 명확히 분리해 요구했다.
+    /// 따라서 검색어가 없으면 프롬프트가 있어도 Search 는 시도되지 않아야 한다.
     #[test]
-    fn test_search_uses_prompt_when_keywords_are_empty() {
-        // 디스크에 저장된 시나리오의 `s.prompt`와 `s.source.search_queries`가 모두 비어 있는
-        // `ScenarioSettings::default()` 상태에서도, 호출 인자 `prompt`("manual keyword")만으로
-        // Search 자격이 인정되어 성공해야 한다.
+    fn test_search_never_falls_back_to_prompt() {
         let mut s = ScenarioSettings::default();
         s.provider_order = vec![ImageProvider::Search];
-        assert!(s.prompt.is_empty());
         assert!(s.source.search_queries.is_empty());
         let dest = PathBuf::from("dummy.jpg");
-        let (used, _) =
-            generate_ai_with_fallback_with(&s, "manual keyword", &dest, |p, query, d| {
+
+        // (1) 프롬프트만 있고 검색어가 없으면 시도조차 하지 않는다 (attempt 미호출).
+        let err = generate_ai_with_fallback_with(&s, "manual keyword", &dest, |_, _, d| {
+            panic!("검색어가 비었으면 Search 는 시도되지 않아야 한다 (프롬프트 폴백 금지)");
+            #[allow(unreachable_code)]
+            Ok(d.clone())
+        })
+        .expect_err("검색어 없는 Search 는 명시적 오류여야 한다");
+        assert!(matches!(err, WallpaperError::CandidateLoad(_)));
+
+        // (2) 검색어가 있으면 프롬프트가 아니라 검색어가 질의문이 된다.
+        s.source.search_queries = vec!["window keyword".to_string()];
+        let (used, _, used_query) =
+            generate_ai_with_fallback_with_query(&s, "manual keyword", &dest, |p, q, d| {
                 assert_eq!(p, ImageProvider::Search);
-                assert_eq!(query, "manual keyword");
+                assert_eq!(q, "window keyword", "검색어가 프롬프트를 대체해야 한다");
                 Ok(d.clone())
             })
-            .expect("search must run with manual prompt arg even when s.prompt and search_queries are empty");
+            .expect("검색어가 있으면 실행된다");
         assert_eq!(used, ImageProvider::Search);
+        assert_eq!(used_query, "window keyword");
 
-        // disabled_providers 에 Search 가 있으면 수동 prompt 가 있어도 스킵되어야 한다.
+        // (3) disabled_providers 에 Search 가 있으면 검색어가 있어도 스킵된다.
         s.disabled_providers = vec![ImageProvider::Search];
         let err = generate_ai_with_fallback_with(&s, "manual keyword", &dest, |_, _, d| Ok(d.clone()))
-            .expect_err("disabled Search must be skipped even when manual prompt is given");
+            .expect_err("disabled Search must be skipped");
         assert!(matches!(err, WallpaperError::CandidateLoad(_)));
     }
 
@@ -1693,17 +1701,19 @@ mod tests {
         s.order = ScenarioOrder::Sequential;
         s.next_index = 0;
         // 공백 키워드는 후보에서 제외되고 저장 순서대로 순환한다.
-        assert_eq!(search_query_for(&s, "ignored", 0).as_deref(), Some("first"));
+        assert_eq!(search_query_for(&s, 0).as_deref(), Some("first"));
         s.next_index = 1;
-        assert_eq!(search_query_for(&s, "ignored", 0).as_deref(), Some("second"));
+        assert_eq!(search_query_for(&s, 0).as_deref(), Some("second"));
         // 키워드가 모두 공백이면 프롬프트로 폴백(공백은 trim).
         s.source.search_queries = vec!["   ".to_string()];
         assert_eq!(
-            search_query_for(&s, " fallback ", 0).as_deref(),
-            Some("fallback")
+            search_query_for(&s, 0).as_deref(),
+            None,
+            "검색어가 없으면 프롬프트로 대체하지 않고 None 이어야 한다"
         );
         // 둘 다 비면 None — 호출자는 네트워크 호출 없이 스킵해야 한다.
-        assert_eq!(search_query_for(&s, "   ", 0), None);
+        s.source.search_queries.clear();
+        assert_eq!(search_query_for(&s, 0), None);
     }
 
     #[test]
@@ -1805,7 +1815,7 @@ mod tests {
         let query_count = valid_search_queries(&s).len();
         s.next_index = s.next_index.wrapping_add(1) % query_count;
         assert_eq!(
-            search_query_for(&s, &s.prompt, 0).as_deref(),
+            search_query_for(&s, 0).as_deref(),
             Some("second_kw"),
             "재계산 값이 실제 사용 값과 달라지는 조건임을 고정한다"
         );

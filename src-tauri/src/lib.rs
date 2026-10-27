@@ -1299,10 +1299,14 @@ mod tests {
         );
     }
 
+    /// 검색(Search) 자격은 **검색 창에서 입력한 검색어(`source.search_queries`) 단독**으로 판정한다.
+    ///
+    /// 프롬프트(`settings.prompt`)와 호출 인자 `prompt` 는 검색 자격·검색어 어디에도 관여하지
+    /// 않는다 — 검색어와 프롬프트는 서로 무관한 별개 입력이다(프롬프트→검색어 폴백 제거).
     #[test]
-    fn test_priority_search_qualifies_with_manual_prompt_on_default_scenario() {
+    fn test_priority_search_requires_search_queries_not_prompt() {
         let _guard = DataDirGuard::new("priority_search_default");
-        // 디스크에 저장된 시나리오의 prompt와 search_queries가 모두 비어 있는 기본 상태
+        // 디스크 scenario.json 의 prompt·search_queries 가 모두 빈 기본 상태.
         let default_sc = wallmagic_core::ScenarioSettings::default();
         assert!(default_sc.prompt.is_empty());
         assert!(default_sc.source.search_queries.is_empty());
@@ -1312,25 +1316,37 @@ mod tests {
         // 기본 provider_order 는 [Pollinations, Cloudflare, OpenAI] 라 Search 가 후보에 없다.
         // 실제 검색 경로도 `providerOrder: ["search"]` 로 후보를 명시 전달하므로
         // (handleGenerate·handleGenerateAi 의 search 분기) 테스트도 같은 계약을 따른다.
-        // 이 줄이 없으면 Search 는 시도조차 되지 않고 마지막 스킵 오류(Openai skipped)가 돌아온다.
         assert!(!wallmagic_core::default_provider_order()
             .contains(&wallmagic_core::ImageProvider::Search));
         loaded.provider_order = vec![wallmagic_core::ImageProvider::Search];
         let dest = wallmagic_core::app_data_dir().join("online_cache").join("test.jpg");
+
+        // ① 검색어가 없으면 프롬프트가 있어도 Search 는 시도되지 않는다.
+        let err = wallmagic_core::scenario::generate_ai_with_fallback_with(
+            &loaded,
+            "manual keyword",
+            &dest,
+            |_, _, d| Ok(d.clone()),
+        )
+        .expect_err("프롬프트만으로는 검색 자격이 생기지 않아야 한다");
+        assert!(matches!(err, wallmagic_core::WallpaperError::CandidateLoad(_)));
+
+        // ② 검색 창에 검색어를 넣으면 프롬프트와 무관하게 그 검색어로 시도된다.
+        loaded.source.search_queries = vec!["aurora".to_string()];
         let (used, _) = wallmagic_core::scenario::generate_ai_with_fallback_with(
             &loaded,
             "manual keyword",
             &dest,
             |provider, query, d| {
-                if provider == wallmagic_core::ImageProvider::Search {
-                    assert_eq!(query, "manual keyword");
-                    Ok(d.clone())
-                } else {
-                    Err(wallmagic_core::WallpaperError::Network("skip others".to_string()))
-                }
+                assert_eq!(provider, wallmagic_core::ImageProvider::Search);
+                assert_eq!(
+                    query, "aurora",
+                    "검색어는 프롬프트가 아니라 source.search_queries 에서 와야 한다"
+                );
+                Ok(d.clone())
             },
         )
-        .expect("Search must qualify and succeed with manual prompt even when disk scenario is default");
+        .expect("검색어가 있으면 Search 가 시도되어야 한다");
         assert_eq!(used, wallmagic_core::ImageProvider::Search);
     }
 }

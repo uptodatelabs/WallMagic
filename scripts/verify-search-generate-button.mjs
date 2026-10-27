@@ -63,11 +63,12 @@ check("검색 공급자는 ② 생성 핸들러에서 전용 분기로 처리한
 check('검색 분기는 백엔드 검색 커맨드를 provider "search" 로 호출한다', () =>
   /"generate_library_wallpaper_with_provider"[\s\S]{0,320}?provider:\s*"search"/.test(gen));
 
-check("검색어는 ⑤ 키워드를 프롬프트보다 우선 해석한다", () =>
-  /searchKeywords\.length > 0 \? searchKeywords\[0\] : aiPrompt/.test(gen));
+check("검색어는 ① 검색 영역의 검색어만 쓴다(프롬프트 대체 없음)", () =>
+  /const keyword = searchKeywords\[0\];/.test(gen) &&
+  !/searchKeywords\[0\] : aiPrompt/.test(gen));
 
-check("프롬프트가 비어도 키워드가 있으면 검색 실행을 막지 않는다", () =>
-  /!aiPrompt && !\(scProvider === "search" && searchKeywords\.length > 0\)/.test(gen));
+check("검색 공급자는 프롬프트가 아니라 검색어 유무로 입력을 판정한다", () =>
+  /if \(scProvider === "search"\) \{\s*if \(searchKeywords\.length === 0\)/.test(gen));
 
 check("검색 분기는 배경을 적용하지 않고 후보만 추가한다", () => {
   const i = gen.indexOf('if (scProvider === "search")');
@@ -96,14 +97,14 @@ check("② 버튼은 검색 입력(키워드·프롬프트)이 모두 없으면 
   return Boolean(m) && /disabled=\{[^}]*searchNeedsInput[^}]*\}/.test(m[0]);
 });
 
-check("searchNeedsInput 은 검색 공급자 + 키워드/프롬프트 공백 조건으로 정의된다", () => {
+check("searchNeedsInput 은 검색 공급자 + 검색어 공백 조건으로 정의된다(프롬프트 미관여)", () => {
   const i = app.indexOf("const searchNeedsInput");
   if (i === -1) return false;
-  const decl = app.slice(i, i + 260);
+  const decl = app.slice(i, i + 200).split(";")[0];
   return (
     /scProvider === "search"/.test(decl) &&
-    /prompt\.trim\(\)/.test(decl) &&
-    /scSearchQueries\.trim\(\)/.test(decl)
+    /searchKeywords\.length === 0/.test(decl) &&
+    !/prompt\.trim\(\)/.test(decl)
   );
 });
 
