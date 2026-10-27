@@ -412,7 +412,7 @@ in_handler_not_attr=
 | **P0-4** | LICENSE·공개 문서 부재 | `LICENSE`(MIT 전문) · `README.md` · `CONTRIBUTING.md` · `SECURITY.md` · `CHANGELOG.md` 실재. `node scripts/verify-app-meta.mjs` → `LICENSE 가 MIT 전문이다` / `LICENSE 저작자 == Cargo authors[0] — "uptodatelabs"` / `LICENSE 연도 — 2026` / 공개 필수 문서 5종 존재 전건 ok |
 | **P1-10** | 버전 단일 소스 검증기가 주석에만 존재 | `scripts/verify-app-meta.mjs` 신규 작성(138줄). Cargo `[workspace.package]` ↔ `package.json` ↔ `tauri.conf.json` ↔ `LICENSE` ↔ 멤버 크레이트 상속을 검증. `run-all-verify` 편입 → `scripts=27 failed=0` |
 | (부수) | 저장소 메타데이터 부재 | `package.json` 에 `license`·`description`·`repository`·`homepage`·`keywords` 추가. `Cargo.toml [workspace.package]` 에 `description`·`repository`·`homepage`·`readme`·`keywords` 추가, 두 멤버가 상속. `tauri.conf.json bundle` 에 `publisher`·`copyright`·`category`·`shortDescription`·`longDescription` 추가 |
-| (부수) | 문서 내 개인정보·로컬 경로 | `docs/VERIFY_M1.md` 의 `C:\Users\anonymous` → `C:\Users\<user>`, `D:\Github\WallMagic` → `<repo>`. 추적 파일 전체 재검사 결과 `HITS=0` |
+| (부수) | 문서 내 개인정보·로컬 경로 | `docs/VERIFY_M1.md` 의 Windows 사용자 홈 경로(계정명 포함) → `C:\Users\<user>`, 개발 PC 절대경로 → `<repo>`. 추적 파일 전체 재검사 결과 `HITS=0` |
 
 ### 9.2 여전히 미해소 (공개 저장소에는 그대로 남는다)
 
