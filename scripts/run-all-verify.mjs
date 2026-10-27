@@ -1,4 +1,11 @@
-// 검증 스크립트 일괄 실행 러너 (임시 — 실행 후 삭제).
+// 검증 스크립트 일괄 실행 러너.
+//
+// `scripts/verify-*.mjs` 를 **디렉터리에서 자동 발견**해 전부 실행한다.
+// 따라서 새 검증 스크립트를 추가하면 이 파일을 고치지 않아도 자동 포함되며,
+// 목록이 stale 해질 수 없다(과거 "임시 — 실행 후 삭제" 주석은 공개 준비 시점에 정정).
+//
+// 실행: node scripts/run-all-verify.mjs
+// 종료: 실패 0건이면 exit 0, 하나라도 실패하면 exit 1.
 import { readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 

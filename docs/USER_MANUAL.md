@@ -1,6 +1,6 @@
-# WallMagic 사용 매뉴얼 (v0.2.0 — Windows 전용 GUI)
+# WallMagic 사용 매뉴얼 (v1.0 — Windows 전용 GUI)
 
-> **대상 버전**: `wallmagic-core` / `wallmagic-app` v0.1.0 (제품 표기 v0.2.0 — GUI 전환 릴리스)
+> **대상 버전**: `wallmagic-core` / `wallmagic-app` v1.0.0 (제품 표기 v1.0 — 첫 공개 릴리스)
 > **플랫폼**: Windows 10 (1809+) / Windows 11 (64-bit)
 > **인터페이스**: **Windows GUI 프로그램 (Tauri v2 + React)** — CLI 인터페이스는 폐기되었습니다.
 > **관련 문서**: `docs/ARCHITECTURE.md` (GUI 아키텍처 결정), `docs/development-plan.md` (개발 계획서)
@@ -44,10 +44,13 @@ WallMagic은 Windows PC의 바탕화면을 **검색 · 생성 · 적용 · 복�
 
 **방법 A — 인스톨러 (권장, 배포용)**
 ```
-target/release/bundle/nsis/WallMagic_0.1.0_x64-setup.exe   ← NSIS 설치 프로그램 (2.13 MiB)
-target/release/bundle/msi/WallMagic_0.1.0_x64_en-US.msi    ← MSI 설치 패키지 (3.17 MiB)
+target/release/bundle/nsis/WallMagic_<version>_x64-setup.exe   ← NSIS 설치 프로그램
+target/release/bundle/msi/WallMagic_<version>_x64_en-US.msi    ← MSI 설치 패키지
 ```
-> **검증 상태**: 위 인스톨러 2종은 `build-installer.cmd`(`npm run tauri build`)로 2026-10-24 실제 생성 확인 (`=== BUILD OK ===` 로그). 다만 **인스톨러 설치 실행 자체는 미검증**입니다 — 실제 설치를 시험하려면 방법 B/C의 개발 빌드(`run-app.cmd`)를 먼저 권장합니다.
+
+`<version>` 은 `Cargo.toml` 의 `[workspace.package] version` 을 따릅니다(현재 `1.0.0`).
+
+> **검증 상태**: 인스톨러 2종은 `build-installer.cmd`(`npm run tauri build`)로 실제 생성 확인(`=== BUILD OK ===` 로그)된 이력이 있습니다. 다만 **인스톨러 설치 실행 자체는 미검증**입니다 — 실제 설치를 시험하려면 방법 B/C의 개발 빌드(`run-app.cmd`)를 먼저 권장합니다.
 
 실행 후 시작 메뉴의 **WallMagic** 바로가기로 시작합니다.
 
@@ -72,8 +75,10 @@ npm run tauri build
 ```
 산출물 (실측 경로, 2026-10-24):
 - 실행 파일: `target/release/wallmagic-app.exe`
-- NSIS 인스톨러: `target/release/bundle/nsis/WallMagic_0.1.0_x64-setup.exe`
-- MSI 인스톨러: `target/release/bundle/msi/WallMagic_0.1.0_x64_en-US.msi`
+- NSIS 인스톨러: `target/release/bundle/nsis/WallMagic_<version>_x64-setup.exe`
+- MSI 인스톨러: `target/release/bundle/msi/WallMagic_<version>_x64_en-US.msi`
+
+`<version>` = `Cargo.toml` 의 `[workspace.package] version`(현재 `1.0.0`).
 
 > 워크스페이스 루트의 `target/`이 번들 산출 루트입니다 (`src-tauri/target/`이 아님).
 
@@ -272,7 +277,7 @@ node scripts/verify-ipc-contract.mjs
 npm run build
 ```
 
-### 7.3 테스트 기준선 (v0.2.0)
+### 7.3 테스트 기준선 (v1.0)
 
 ```
 wallmagic-app  : 3 passed / 0 failed   (IPC 스모크: 검색→생성→적용→복원)
@@ -305,7 +310,7 @@ WallMagic/
 
 ---
 
-## 8. 알려진 제약 (v0.2.0)
+## 8. 알려진 제약 (v1.0)
 
 1. **CLI 인터페이스 없음** — 의도된 설계입니다. 모든 기능은 GUI로 제공됩니다.
 2. **트레이 상주 미지원** — 창을 닫으면 종료됩니다.

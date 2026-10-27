@@ -398,3 +398,45 @@ in_handler_not_attr=
 6. **가격·수익화 정책은 다루지 않았다.** 요청 범위가 "기능·품질 격차"이며, 가격은 시장·경쟁 조사가 별도로 필요하다. P2-2를 비용 가시성 항목으로만 남겼다.
 7. **의존성 취약점 스캔(`cargo audit`, `npm audit`) 미실행.** P0에 포함할지 판단하려면 실제 CVE 조회가 필요하다.
 8. **설치 관리자 실물 미검증.** `targets: "all"` 이 실제로 어떤 산출물(nsis/msi/appimage/dmg)을 만드는지 빌드 산출물을 열람하지 않았다.
+
+---
+
+## §9 공개 저장소 준비 결과 (2026-10-27 추가)
+
+이 절은 §2~§4 의 항목 중 **이번 공개 준비 작업에서 실제로 해소된 것**과 **여전히 남은 것**을 구분한다. 해소 판정은 실행 출력에 근거한다.
+
+### 9.1 해소됨
+
+| ID | 항목 | 해소 근거 |
+|---|---|---|
+| **P0-4** | LICENSE·공개 문서 부재 | `LICENSE`(MIT 전문) · `README.md` · `CONTRIBUTING.md` · `SECURITY.md` · `CHANGELOG.md` 실재. `node scripts/verify-app-meta.mjs` → `LICENSE 가 MIT 전문이다` / `LICENSE 저작자 == Cargo authors[0] — "uptodatelabs"` / `LICENSE 연도 — 2026` / 공개 필수 문서 5종 존재 전건 ok |
+| **P1-10** | 버전 단일 소스 검증기가 주석에만 존재 | `scripts/verify-app-meta.mjs` 신규 작성(138줄). Cargo `[workspace.package]` ↔ `package.json` ↔ `tauri.conf.json` ↔ `LICENSE` ↔ 멤버 크레이트 상속을 검증. `run-all-verify` 편입 → `scripts=27 failed=0` |
+| (부수) | 저장소 메타데이터 부재 | `package.json` 에 `license`·`description`·`repository`·`homepage`·`keywords` 추가. `Cargo.toml [workspace.package]` 에 `description`·`repository`·`homepage`·`readme`·`keywords` 추가, 두 멤버가 상속. `tauri.conf.json bundle` 에 `publisher`·`copyright`·`category`·`shortDescription`·`longDescription` 추가 |
+| (부수) | 문서 내 개인정보·로컬 경로 | `docs/VERIFY_M1.md` 의 `C:\Users\anonymous` → `C:\Users\<user>`, `D:\Github\WallMagic` → `<repo>`. 추적 파일 전체 재검사 결과 `HITS=0` |
+
+### 9.2 여전히 미해소 (공개 저장소에는 그대로 남는다)
+
+| ID | 항목 | 현재 상태 |
+|---|---|---|
+| **P0-1** | 코드 서명·공증 | `bundle.windows.certificateThumbprint`·`signCommand` 없음 — 인증서 발급 선행 필요 |
+| **P0-2** | 자동 업데이트 | `tauri-plugin-updater` 미도입, `plugins.updater` 없음, IPC `check_update` 계열 0건 |
+| **P0-3** | CSP `null` | `src-tauri/tauri.conf.json` 의 `security.csp` 는 여전히 `null` — 권장 CSP 문자열은 §2 P0-3 참조 |
+| **P0-5** | API 키 평문 저장 | `scenario.json` 평문 유지. `keyring`/DPAPI 미도입 |
+| P1-1~P1-8 | 로그·CI·Vitest·취소·단일 인스턴스·트레이·에러 코드화·모니터 테스트 | 전부 미착수 |
+
+> **공개 판단**: 코드·문서·메타데이터는 공개 가능 수준이지만, **P0-1/P0-2/P0-3/P0-5 는 "상용 배포" 기준의 미해소 항목**이며 배포물을 만들기 전에 처리해야 한다. 공개 저장소 자체는 이 사실을 `README.md §7 보안·알려진 제한` 과 이 보고서에 명시한 상태로 공개한다.
+
+### 9.3 이번 작업에서 실행한 검증
+
+```
+cargo check --workspace                  → exit=0 / Finished dev profile
+npm run build                            → exit=0 / 39 modules, index-k0zICrHf.js 317.84 kB
+node scripts/verify-app-meta.mjs         → exit=0 / 34항목 전부 ok
+node scripts/run-all-verify.mjs          → exit=0 / scripts=27 failed=0
+cargo test -p wallmagic-core --lib       → exit=0 / 85 passed; 0 failed; 4 ignored
+cargo test -p wallmagic-app  --lib       → exit=0 / 21 passed; 0 failed; 1 ignored
+```
+
+### 9.4 정정 — 이 절이 §8 과 모순되지 않도록
+
+§8-4 는 "이번 감사에서 실행 검증은 2개 명령만 수행"이라고 적었다. 이는 **§2~§4 를 작성한 감사 시점**의 사실이며, **§9 의 작업 시점**에는 위 6개 명령을 실제로 실행했다. 두 시점이 다르므로 §8-4 는 그대로 둔다.

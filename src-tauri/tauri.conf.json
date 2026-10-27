@@ -18,6 +18,11 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "uptodatelabs",
+    "copyright": "Copyright (c) 2026 uptodatelabs",
+    "category": "Utility",
+    "shortDescription": "Windows 바탕화면 검색·AI 생성·적용·복원",
+    "longDescription": "WallMagic은 Windows 데스크톱의 바탕화면을 검색·AI 생성·적용·복원하는 앱입니다. IDesktopWallpaper COM 1차 + SystemParametersInfoW 폴백으로 안전하게 적용하고, 스냅샷 기반으로 이전 배경을 복원합니다.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

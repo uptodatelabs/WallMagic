@@ -68,7 +68,7 @@ exit=0
 
 > 참고: 최초 시도에서 `cargo check --workspace` 는 **exit=101** 로 실패했다.
 > ```
-> error: failed to load manifest for workspace member `D:\Github\WallMagic\src-tauri`
+> error: failed to load manifest for workspace member `<repo>\src-tauri`
 > Caused by:
 >   error inheriting `tauri-plugin-opener` from workspace root manifest's `workspace.dependencies.tauri-plugin-opener`
 > Caused by:
@@ -103,9 +103,9 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 running 0 tests
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-   Compiling wallmagic-core v0.1.0 (D:\Github\WallMagic\crates\core)
-   Compiling wallmagic-app v0.1.0 (D:\Github\WallMagic\src-tauri)
-   Compiling wallmagic-cli v0.1.0 (D:\Github\WallMagic\crates\cli)
+   Compiling wallmagic-core v0.1.0 (<repo>\crates\core)
+   Compiling wallmagic-app v0.1.0 (<repo>\src-tauri)
+   Compiling wallmagic-cli v0.1.0 (<repo>\crates\cli)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 1.63s
      Running unittests src\lib.rs (target\debug\deps\wallmagic_app-471a3330a578d84a.exe)
      Running unittests src\main.rs (target\debug\deps\wallmagic_cli-5663127f9ae205be.exe)
@@ -157,9 +157,9 @@ dist/assets/index-DLP3gKMl.js  227.84 kB │ gzip: 71.08 kB
 $ cargo clippy --workspace --all-targets
 exit=0
 
-    Checking wallmagic-core v0.1.0 (D:\Github\WallMagic\crates\core)
-    Checking wallmagic-app v0.1.0 (D:\Github\WallMagic\src-tauri)
-    Checking wallmagic-cli v0.1.0 (D:\Github\WallMagic\crates\cli)
+    Checking wallmagic-core v0.1.0 (<repo>\crates\core)
+    Checking wallmagic-app v0.1.0 (<repo>\src-tauri)
+    Checking wallmagic-cli v0.1.0 (<repo>\crates\cli)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.51s
 ```
 
@@ -221,25 +221,25 @@ M1 완료 기준의 핵심인 "배경화면 변경·복원이 실제로 동작�
 ### 4.1 생성 → 적용 → 확인 → 원복
 
 ```
-$ cargo run -q -p wallmagic-cli -- generate "M1 verify aurora gradient" --out D:\Github\WallMagic\target\verify_m1.bmp
+$ cargo run -q -p wallmagic-cli -- generate "M1 verify aurora gradient" --out <repo>\target\verify_m1.bmp
 exit=0
-OK: generated 'D:\Github\WallMagic\target\verify_m1.bmp'
+OK: generated '<repo>\target\verify_m1.bmp'
 
-$ cargo run -q -p wallmagic-cli -- set D:\Github\WallMagic\target\verify_m1.bmp --pos fill
+$ cargo run -q -p wallmagic-cli -- set <repo>\target\verify_m1.bmp --pos fill
 exit=0
-OK: applied wallpaper 'C:\Users\anonymous\AppData\Local\WallMagic\active\active_verify_m1_primary.bmp' via IDesktopWallpaper (COM)
+OK: applied wallpaper 'C:\Users\<user>\AppData\Local\WallMagic\active\active_verify_m1_primary.bmp' via IDesktopWallpaper (COM)
 
 $ cargo run -q -p wallmagic-cli -- get
 exit=0
-C:\Users\anonymous\AppData\Local\WallMagic\active\active_verify_m1_primary.bmp
+C:\Users\<user>\AppData\Local\WallMagic\active\active_verify_m1_primary.bmp
 
 $ cargo run -q -p wallmagic-cli -- restore
 exit=0
-OK: restored wallpaper 'D:\Github\WallMagic\target\user_init.bmp' via IDesktopWallpaper (COM Restore)
+OK: restored wallpaper '<repo>\target\user_init.bmp' via IDesktopWallpaper (COM Restore)
 
 $ cargo run -q -p wallmagic-cli -- get
 exit=0
-D:\Github\WallMagic\target\user_init.bmp
+<repo>\target\user_init.bmp
 ```
 
 **관측 사항**
@@ -254,8 +254,8 @@ D:\Github\WallMagic\target\user_init.bmp
 $ type "%LOCALAPPDATA%\WallMagic\state.json"
 exit=0
 {
-  "previous_wallpaper": "D:\\Github\\WallMagic\\target\\user_init.bmp",
-  "current_wallpaper": "D:\\Github\\WallMagic\\target\\user_init.bmp",
+  "previous_wallpaper": "<repo>\\target\\user_init.bmp",
+  "current_wallpaper": "<repo>\\target\\user_init.bmp",
   "backend_used": "IDesktopWallpaper (COM Restore)"
 }
 ```
@@ -265,7 +265,7 @@ exit=0
 ### 4.3 잘못된 인자 처리 (CLI 계약 준수)
 
 ```
-$ cargo run -q -p wallmagic-cli -- set D:\Github\WallMagic\target\verify_m1.bmp --pos bogus
+$ cargo run -q -p wallmagic-cli -- set <repo>\target\verify_m1.bmp --pos bogus
 exit=1
 
 error: unknown position style 'bogus' (expected: center|tile|stretch|fit|fill|span)
@@ -387,8 +387,8 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; fini
 $ type "%LOCALAPPDATA%\WallMagic\state.json"
 exit=0
 {
-  "previous_wallpaper": "D:\\Github\\WallMagic\\target\\user_init.bmp",
-  "current_wallpaper": "D:\\Github\\WallMagic\\target\\user_init.bmp",
+  "previous_wallpaper": "<repo>\\target\\user_init.bmp",
+  "current_wallpaper": "<repo>\\target\\user_init.bmp",
   "backend_used": "IDesktopWallpaper (COM Restore)"
 }
 ```
@@ -401,9 +401,9 @@ exit=0
 $ cargo clippy --workspace --all-targets
 exit=0
 
-    Checking wallmagic-core v0.1.0 (D:\Github\WallMagic\crates\core)
-    Checking wallmagic-app v0.1.0 (D:\Github\WallMagic\src-tauri)
-    Checking wallmagic-cli v0.1.0 (D:\Github\WallMagic\crates\cli)
+    Checking wallmagic-core v0.1.0 (<repo>\crates\core)
+    Checking wallmagic-app v0.1.0 (<repo>\src-tauri)
+    Checking wallmagic-cli v0.1.0 (<repo>\crates\cli)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.59s
 ```
 

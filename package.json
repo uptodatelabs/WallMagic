@@ -3,6 +3,20 @@
   "private": true,
   "version": "1.0.0",
   "author": "uptodatelabs",
+  "license": "MIT",
+  "description": "WallMagic — Windows 데스크톱 바탕화면 검색·AI 생성·적용·복원 앱 (Tauri v2 + React)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/uptodatelabs/WallMagic"
+  },
+  "homepage": "https://github.com/uptodatelabs/WallMagic",
+  "keywords": [
+    "wallpaper",
+    "desktop",
+    "tauri",
+    "ai-image-generation",
+    "windows"
+  ],
   "type": "module",
   "scripts": {
     "dev": "node scripts/free-port.mjs && vite",
