@@ -976,7 +976,160 @@ fn tick_scenario_now() -> Result<Option<WallpaperState>, String> {
     wallmagic_core::tick_scenario(now).map_err(err_to_string)
 }
 
-/// Tauri v2 애플리케이션 진입 — 메인 창을 띄우고 IPC 커맨드 11종을 배선한다.
+/// IPC #18: 앱 메타데이터(버전·제작자).
+///
+/// 버전/제작자를 코드에 하드코딩하면 `Cargo.toml`(`workspace.package`)·
+/// `src-tauri/tauri.conf.json`·`package.json` 세 곳과 어긋날 수 있다.
+/// `store::app_meta()` 는 `env!("CARGO_PKG_VERSION")`/`env!("CARGO_PKG_AUTHORS")` 에서
+/// 읽으므로 메타데이터의 **단일 소스**는 Cargo 이고 화면 표시는 그 값을 그대로 쓴다.
+#[tauri::command]
+fn get_app_meta() -> wallmagic_core::store::AppMeta {
+    wallmagic_core::store::app_meta()
+}
+
+/// IPC #19: 프롬프트·검색 히스토리 조회(재시동 후 복원).
+#[tauri::command]
+fn get_history() -> Result<Vec<wallmagic_core::store::HistoryEntry>, String> {
+    wallmagic_core::store::load_history()
+        .map(|s| s.entries)
+        .map_err(err_to_string)
+}
+
+/// IPC #20: 히스토리 1건 기록 — 갱신된 전체 목록을 돌려줘 UI 가 즉시 다시 그린다.
+///
+/// `kind` 는 `prompt`(생성 프롬프트) | `search`(검색 키워드) 만 허용한다.
+/// 알 수 없는 값은 조용히 프롬프트로 둔갑시키지 않고 명시적 오류로 실패한다.
+#[tauri::command]
+fn record_history_entry(
+    kind: String,
+    text: String,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<Vec<wallmagic_core::store::HistoryEntry>, String> {
+    let kind = match kind.trim().to_ascii_lowercase().as_str() {
+        "prompt" => wallmagic_core::store::HistoryKind::Prompt,
+        "search" => wallmagic_core::store::HistoryKind::Search,
+        other => {
+            return Err(format!(
+                "record_history_entry: unknown kind '{other}' (expected: prompt|search)"
+            ))
+        }
+    };
+    let entry = wallmagic_core::store::HistoryEntry {
+        kind,
+        text,
+        provider: provider.filter(|s| !s.trim().is_empty()),
+        model: model.filter(|s| !s.trim().is_empty()),
+        at: wallmagic_core::now_unix_secs(),
+    };
+    wallmagic_core::store::record_history(entry).map_err(err_to_string)
+}
+
+/// IPC #21: 히스토리 전체 삭제 — 빈 목록을 돌려준다.
+#[tauri::command]
+fn clear_history() -> Result<Vec<wallmagic_core::store::HistoryEntry>, String> {
+    wallmagic_core::store::clear_history().map_err(err_to_string)
+}
+
+/// IPC #22: 생성 이미지 인덱스 기록(경로·공급자·상세).
+#[tauri::command]
+fn record_library_entry(
+    path: String,
+    provider: Option<String>,
+    source: Option<String>,
+) -> Result<Vec<wallmagic_core::store::LibraryEntry>, String> {
+    record_library_entry_impl(&path, provider.as_deref(), source.as_deref())
+}
+
+fn record_library_entry_impl(
+    path: &str,
+    provider: Option<&str>,
+    source: Option<&str>,
+) -> Result<Vec<wallmagic_core::store::LibraryEntry>, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("record_library_entry: path 가 필요합니다".to_string());
+    }
+    let file_name = std::path::Path::new(trimmed)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    wallmagic_core::store::record_library(wallmagic_core::store::LibraryEntry {
+        path: trimmed.to_string(),
+        file_name,
+        provider: provider.map(str::to_string),
+        source: source.map(str::to_string),
+        created_at: wallmagic_core::now_unix_secs(),
+    })
+    .map_err(err_to_string)
+}
+
+/// 복원 상한 — 재시동 시 한 번에 되살릴 후보 수(썸네일 IPC 페이로드 보호).
+const RESTORE_LIMIT: usize = 60;
+
+/// 시작 시 생성 이미지 목록 복원(결함 ② 해소).
+///
+/// 두 출처를 합친다:
+/// 1. `library_index.json` — 경로·공급자·상세가 기록된 항목(정확한 귀속).
+/// 2. `app_data_dir()/library` 디렉터리 스캔 — 인덱스에 없는 파일도 되살린다
+///    (과거 버전이 만든 파일, 인덱스 쓰기 실패 등).
+///
+/// 디코딩 실패·640x480 미만 파일은 `load_candidate` 가 걸러낸다(적용 불가 후보를
+/// 목록에 올리지 않는다). 반환 순서는 최신 파일명 우선(타임스탬프 접미사 기준).
+fn restore_library_candidates_impl() -> Result<Vec<WallpaperCandidate>, String> {
+    let mut paths: Vec<PathBuf> = Vec::new();
+    let restored = wallmagic_core::store::restore_library().map_err(err_to_string)?;
+    for entry in &restored {
+        if !entry.path.trim().is_empty() {
+            paths.push(PathBuf::from(&entry.path));
+        }
+    }
+    let library = wallmagic_core::app_data_dir().join("library");
+    if let Ok(read_dir) = std::fs::read_dir(&library) {
+        let mut found: Vec<PathBuf> = read_dir
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_file())
+            .filter(|p| {
+                let name = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_ascii_lowercase())
+                    .unwrap_or_default();
+                [".jpg", ".jpeg", ".png", ".bmp"]
+                    .iter()
+                    .any(|ext| name.ends_with(ext))
+            })
+            .collect();
+        // 파일명에 생성 타임스탬프가 들어 있으므로 내림차순이 곧 최신순이다.
+        found.sort();
+        found.reverse();
+        paths.extend(found);
+    }
+
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out: Vec<WallpaperCandidate> = Vec::new();
+    for path in paths {
+        if out.len() >= RESTORE_LIMIT {
+            break;
+        }
+        // Windows 경로는 대소문자를 구분하지 않는다 — 소문자 키로 중복을 판정한다.
+        if !seen.insert(path.to_string_lossy().to_ascii_lowercase()) {
+            continue;
+        }
+        if let Some(candidate) = wallmagic_core::load_candidate(&path) {
+            out.push(candidate);
+        }
+    }
+    Ok(out)
+}
+
+/// IPC #23: 시작 시 생성 이미지 후보 목록 복원.
+#[tauri::command]
+fn restore_library_candidates() -> Result<Vec<WallpaperCandidate>, String> {
+    restore_library_candidates_impl()
+}
+
+/// Tauri v2 애플리케이션 진입 — 메인 창을 띄우고 IPC 커맨드를 배선한다.
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -997,6 +1150,12 @@ pub fn run() {
             apply_generated_image,
             delete_image_file,
             open_external_url,
+            get_app_meta,
+            get_history,
+            record_history_entry,
+            clear_history,
+            record_library_entry,
+            restore_library_candidates,
         ])
         .setup(|app| {
             // 팝업 차단의 구조적 원인 해소: `tauri.conf.json` 의 `app.windows` 로 자동 생성된

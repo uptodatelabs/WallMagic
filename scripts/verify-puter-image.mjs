@@ -146,8 +146,19 @@ check("Puter 생성 호출부 2곳이 모델을 전달 (단일 생성 + 우선�
   return `모델 없이 호출되는 지점 ${calls.length}건 (생성 실패 시 모델 선택 무효)`;
 });
 
+// 안내 문구는 다국어 사전(`src-ui/i18n.ts`)으로 이동했다 — 화면에 리터럴을 두지 않고
+// `t(lang, "scenario.puterModelHint")` 로 렌더한다. 따라서 검사 대상도 두 곳이다:
+//   ① UI 가 그 키를 실제로 렌더하는가  ② 사전의 ko/en 양쪽에 문구가 있는가.
+// (이전 검사식은 App.tsx 의 리터럴만 봐서, i18n 전환 후 정상 동작인데도 FAIL 했다.)
 check("Puter 블록에 모델 미지정 시 기본 모델 안내 문구 존재", () => {
-  if (!/모델을 선택하지 않으면 Puter 기본 모델/.test(src)) return "안내 문구 없음";
+  const hint = /t\(lang, "scenario\.puterModelHint"\)/.test(src);
+  if (!hint) return "UI 가 scenario.puterModelHint 를 렌더하지 않음";
+  const dict = readFileSync("src-ui/i18n.ts", "utf8");
+  const entry = /"scenario\.puterModelHint":\s*\{([\s\S]{0,400}?)\}/.exec(dict);
+  if (!entry) return "사전에 scenario.puterModelHint 키 없음";
+  const body = entry[1];
+  if (!/ko:\s*"[^"]*기본 모델/.test(body)) return "ko 문구에 '기본 모델' 없음";
+  if (!/en:\s*"[^"]*default model/.test(body)) return "en 문구에 'default model' 없음";
   return true;
 });
 

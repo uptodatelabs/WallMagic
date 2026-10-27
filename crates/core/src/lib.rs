@@ -9,6 +9,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod scenario;
 pub mod search;
+pub mod store;
 pub mod wallpaper;
 
 // Public facade: the canonical implementation lives in the `wallpaper` / `search` modules.

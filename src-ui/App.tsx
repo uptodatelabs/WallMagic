@@ -8,6 +8,7 @@ import {
   type PuterUsageResult,
 } from "./puterUsage";
 import { parseAppliedSearchQuery } from "./appliedQuery";
+import { LANGS, loadLang, saveLang, t, type Lang } from "./i18n";
 
 /* ── Puter.js 전역 선언 (WebView 전용 SDK) ──
    `index.html`이 `https://js.puter.com/v2/`를 로드하므로 브라우저 전역에 `puter`가 생긴다.
@@ -328,6 +329,22 @@ export interface WallpaperState {
   source: string | null;
 }
 
+/** `get_app_meta` 응답 — 버전/제작자는 Cargo 메타데이터가 단일 소스다. */
+export interface AppMeta {
+  product: string;
+  version: string;
+  author: string;
+}
+
+/** `get_history` 응답 1건 — 프롬프트/검색어 이력(재시동 후 복원). */
+export interface HistoryEntry {
+  kind: "prompt" | "search";
+  text: string;
+  provider?: string | null;
+  model?: string | null;
+  at: number;
+}
+
 export interface MonitorInfo {
   id: string;
   name: string;
@@ -398,6 +415,25 @@ const POSITION_LABELS: Record<WallpaperPosition, string> = {
   center: "가운데 (Center)",
   span: "스팬 (Span)",
 };
+
+/**
+ * 미리보기 보기 방식 → CSS.
+ * - `fit`(창맞춤): 컨테이너 안에 **전체가 보이도록** 축소/확대 (`object-fit: contain`)
+ * - `actual`(원본 크기 100%): 축소 없이 원본 픽셀 그대로, 넘치는 부분은 스크롤
+ * - `fill`(채우기): 비율 유지하며 컨테이너를 가득 채움(잘림 허용) (`object-fit: cover`)
+ */
+export function previewFitStyle(mode: "fit" | "actual" | "fill"): React.CSSProperties {
+  if (mode === "actual") {
+    return {
+      objectFit: "none",
+      objectPosition: "top left",
+      maxWidth: "none",
+      maxHeight: "none",
+    };
+  }
+  if (mode === "fill") return { objectFit: "cover" };
+  return { objectFit: "contain" };
+}
 
 function formatBytes(bytes: number): string {
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
@@ -504,6 +540,23 @@ export function App(): React.ReactElement {
   // ③ 미리보기 전체화면 뷰어 열림 상태
   const [viewerOpen, setViewerOpen] = useState<boolean>(false);
 
+  /* ── 다국어(한국어/영어) ──
+     문자열은 `./i18n` 사전 한 곳에만 존재하고, 언어 설정은 localStorage 에 저장해
+     재시동 후에도 유지한다. 저장 실패(사생활 보호 모드 등)는 조용히 넘기지 않고
+     상태바에 알린다. */
+  const [lang, setLang] = useState<Lang>(() => loadLang());
+
+  /* ── ③ 미리보기 보기 방식 ──
+     창맞춤(fit) / 원본 크기(100%) / 채우기(fill). 이전에는 썸네일을 그대로 늘려
+     보여줘 "창맞춤" 선택지가 없었다(사용자 요청). */
+  const [previewFit, setPreviewFit] = useState<"fit" | "actual" | "fill">("fit");
+
+  /* ── 히스토리(프롬프트/검색어) — 디스크 영속(history.json) ── */
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+
+  /* ── 앱 메타데이터(버전/제작자) — Cargo 메타데이터 단일 소스 ── */
+  const [appMeta, setAppMeta] = useState<AppMeta | null>(null);
+
   // 생성 정보 귀속 판별: "생성 정보"는 현재 배경(state.json) 기준이고,
   // 미리보기 이미지는 검색 후보(selected)이므로 둘은 서로 다른 파일일 수 있다.
   // 비교 결과를 gen-info 에 표시해, 무료 공급자로 만든 이미지를 보면서
@@ -589,6 +642,59 @@ export function App(): React.ReactElement {
   const reportError = (msg: string) => {
     setStatusMsg(msg);
     setStatusKind("error");
+  };
+
+  /** 언어 전환 — localStorage 에 저장하고, 저장 실패는 숨기지 않고 상태바로 알린다. */
+  const handleLangChange = (next: Lang) => {
+    setLang(next);
+    if (!saveLang(next)) {
+      // 사전 키를 거친다 — 여기만 한글이 하드코딩되면 영어 사용자에게 한국어 오류가 뜬다.
+      reportError(t(lang, "lang.saveFailed"));
+    }
+  };
+
+  /** 프롬프트/검색어 히스토리 기록 — 실패해도 생성 흐름은 계속하되 콘솔에 남긴다. */
+  const noteHistory = async (
+    kind: "prompt" | "search",
+    text: string,
+    provider?: string,
+  ) => {
+    if (!text.trim()) return;
+    try {
+      const list = await invoke<HistoryEntry[]>("record_history_entry", {
+        kind,
+        text: text.trim(),
+        provider: provider ?? null,
+        model: null,
+      });
+      setHistory(list);
+    } catch (err) {
+      console.warn(`히스토리 기록 실패: ${formatErr(err)}`);
+    }
+  };
+
+  /** 생성 이미지 인덱스 기록 — 재시동 복원(결함 ②)의 근거가 된다. */
+  const noteLibrary = async (candidate: WallpaperCandidate) => {
+    try {
+      await invoke("record_library_entry", {
+        path: candidate.path,
+        provider: candidate.gen_provider ?? null,
+        source: candidate.gen_source ?? null,
+      });
+    } catch (err) {
+      console.warn(`생성 이미지 인덱스 기록 실패: ${formatErr(err)}`);
+    }
+  };
+
+  /** 히스토리 전체 삭제 — 성공 시 목록을 비운다. */
+  const handleClearHistory = async () => {
+    try {
+      const list = await invoke<HistoryEntry[]>("clear_history");
+      setHistory(list);
+      reportOk(t(lang, "history.cleared"));
+    } catch (err) {
+      reportError(t(lang, "history.clearFailed", { err: formatErr(err) }));
+    }
   };
 
   // 팝업 차단 안내 모달 등록 — 모듈 스코프 openPuterLoginFallback()은 React 상태에 접근할 수
@@ -734,6 +840,40 @@ export function App(): React.ReactElement {
     void refreshScenario();
   }, [refreshStatus, refreshMonitors, refreshScenario]);
 
+  // 시작 시 복원 — 재시동 후에도 ① 프롬프트/검색 히스토리 ② 앱 메타데이터(버전·제작자)
+  // ③ 이전에 생성한 이미지 목록이 보여야 한다. 이전 구현은 셋 다 메모리에만 있어
+  // 프로그램을 껐다 켜면 사라졌다(사용자 지적 결함 2).
+  useEffect(() => {
+    void (async () => {
+      try {
+        const meta = await invoke<AppMeta>("get_app_meta");
+        setAppMeta(meta);
+      } catch (err) {
+        console.warn(`앱 정보 조회 실패: ${formatErr(err)}`);
+      }
+      try {
+        const list = await invoke<HistoryEntry[]>("get_history");
+        setHistory(list);
+      } catch (err) {
+        console.warn(`히스토리 조회 실패: ${formatErr(err)}`);
+      }
+      try {
+        const restored = await invoke<WallpaperCandidate[]>("restore_library_candidates");
+        if (restored.length > 0) {
+          setCandidates((prev) => {
+            const seen = new Set(prev.map((c) => c.path.toLowerCase()));
+            const merged = [...prev, ...restored.filter((c) => !seen.has(c.path.toLowerCase()))];
+            return merged;
+          });
+          setSelected((prev) => prev ?? restored[0]);
+          reportOk(t(lang, "results.restored", { count: restored.length }));
+        }
+      } catch (err) {
+        console.warn(`생성 이미지 복원 실패: ${formatErr(err)}`);
+      }
+    })();
+  }, []);
+
   // 지적 #1: 자동 실행 타이머 — 앱이 켜져 있는 동안 60초마다 주기 도래를 확인한다.
   // tick은 코어 should_run 게이트를 그대로 타므로 OFF/미도래 시 Ok(None)으로 skip된다.
   // 지적 #4: 자동 틱 실패를 삼키지 않고 console.error + 카운터 + 상태 메시지로 노출한다.
@@ -785,6 +925,9 @@ export function App(): React.ReactElement {
       });
       setCandidates(result.candidates);
       setSelected(result.candidates.length > 0 ? result.candidates[0] : null);
+      // 검색어를 히스토리에 남긴다(요구 ①) — 재시동 후 [이 검색어 사용]으로 재적용한다.
+      // 기록 실패는 생성 흐름을 막지 않지만 조용히 삼키지도 않는다(noteHistory 내부 warn).
+      if (query.trim()) void noteHistory("search", query, scProvider);
       reportOk(
         result.truncated
           ? `검색 완료: ${result.total_matched}건 중 ${result.candidates.length}건 표시`
@@ -818,7 +961,7 @@ export function App(): React.ReactElement {
       return;
     }
     if (!aiPrompt) {
-      reportError("프롬프트를 입력하세요.");
+      reportError(t(lang, "gen.promptRequired"));
       return;
     }
     // 개별 On/Off: Off 로 둔 공급자는 ② 생성에서도 시도하지 않는다.
@@ -847,6 +990,9 @@ export function App(): React.ReactElement {
         });
         setCandidates((prev) => [candidate, ...prev.filter((c) => c.path !== candidate.path)]);
         setSelected(candidate);
+        // 프롬프트·생성 이미지 인덱스를 디스크에 남긴다(요구 ①② — 재시동 후 복원 근거).
+        void noteHistory("prompt", aiPrompt, scProvider);
+        void noteLibrary(candidate);
         reportOk(`생성 완료 (${providerLabel(scProvider)}): ${candidate.file_name}`);
         return;
       }
@@ -883,6 +1029,9 @@ export function App(): React.ReactElement {
       );
       setCandidates((prev) => [candidate, ...prev.filter((c) => c.path !== candidate.path)]);
       setSelected(candidate);
+      // 프롬프트·생성 이미지 인덱스를 디스크에 남긴다(요구 ①② — 재시동 후 복원 근거).
+      void noteHistory("prompt", aiPrompt, scProvider);
+      void noteLibrary(candidate);
       reportOk(`생성 완료 (${providerLabel(scProvider)}): ${candidate.file_name}`);
     } catch (err) {
       reportError(`생성 실패 (${providerLabel(scProvider)}): ${formatErr(err)}`);
@@ -1472,22 +1621,40 @@ export function App(): React.ReactElement {
   return (
     <div className="app">
       <header className="app-header">
-        <h1 className="app-title">WallMagic Studio</h1>
-        <span className="app-subtitle">Windows Wallpaper Studio</span>
+        <h1 className="app-title">{t(lang, "app.title")}</h1>
+        <span className="app-subtitle">{t(lang, "app.subtitle")}</span>
         <div className="header-spacer" />
         {status?.backend_used && (
           <span className="badge ok">{status.backend_used}</span>
         )}
+        {/* 언어 전환 — 선택값은 localStorage 에 저장되어 재시동 후에도 유지된다. */}
+        <label className="lang-label" htmlFor="langSelect">
+          {t(lang, "lang.label")}
+        </label>
+        <select
+          id="langSelect"
+          value={lang}
+          onChange={(e) => handleLangChange(e.target.value as Lang)}
+          style={{ width: "120px" }}
+          aria-label={t(lang, "lang.label")}
+        >
+          {LANGS.map((l) => (
+            <option key={l.id} value={l.id}>
+              {l.label}
+            </option>
+          ))}
+        </select>
         <select
           value={monitorId}
           onChange={(e) => setMonitorId(e.target.value)}
           style={{ width: "220px" }}
-          aria-label="대상 모니터"
+          aria-label={t(lang, "header.monitor")}
         >
-          <option value="">모든 모니터</option>
+          <option value="">{t(lang, "header.allMonitors")}</option>
           {monitors.map((m) => (
             <option key={m.id} value={m.id}>
-              {m.name} ({m.width}x{m.height}){m.is_primary ? " · 기본" : ""}
+              {m.name} ({m.width}x{m.height})
+              {m.is_primary ? ` · ${t(lang, "header.primary")}` : ""}
             </option>
           ))}
         </select>
@@ -1500,7 +1667,7 @@ export function App(): React.ReactElement {
               검색은 검색어(#query / #scSearchQueries)만, 생성은 프롬프트(#prompt)만 쓰므로
               두 입력을 같은 화면에 두면 "검색어와 프롬프트가 공통"이라는 오해를 만든다. */}
           <div className="field">
-            <label htmlFor="scProviderQuick">이미지 공급자 (검색/생성 화면 전환)</label>
+            <label htmlFor="scProviderQuick">{t(lang, "gen.providerQuick")}</label>
             <select
               id="scProviderQuick"
               value={scProvider}
@@ -1513,17 +1680,14 @@ export function App(): React.ReactElement {
                 </option>
               ))}
             </select>
-            <div className="detail">
-              <b>검색(Search)</b> 을 고르면 검색 화면만, 생성 공급자를 고르면 생성 화면만
-              표시합니다. 검색어와 프롬프트는 서로 다른 입력입니다(자동 대체 없음).
-            </div>
+            <div className="detail">{t(lang, "gen.providerQuickHint")}</div>
           </div>
           {scProvider === "search" ? (
           <section>
-            <h2>검색</h2>
+            <h2>{t(lang, "search.heading")}</h2>
             {/* 검색 공급자 선택 시 이 화면만 렌더된다 — 생성 입력(#prompt)은 아래 else 분기에만 있다. */}
             <div className="field">
-              <label htmlFor="query">키워드 (파일명 검색 + 온라인 검색 질의)</label>
+              <label htmlFor="query">{t(lang, "search.keyword")}</label>
               <input
                 id="query"
                 type="text"
@@ -1532,34 +1696,28 @@ export function App(): React.ReactElement {
                 onKeyDown={(e) => {
                   if (e.key === "Enter") void handleSearch();
                 }}
-                placeholder="예: sunset (비우면 전체)"
+                placeholder={t(lang, "search.keywordPlaceholder")}
               />
             </div>
             <div className="field">
-              <label htmlFor="searchDir">검색 폴더 (선택)</label>
+              <label htmlFor="searchDir">{t(lang, "search.dir")}</label>
               <input
                 id="searchDir"
                 type="text"
                 value={searchDir}
                 onChange={(e) => setSearchDir(e.target.value)}
-                placeholder="C:\Users\me\Pictures (기본: 라이브러리+Pictures)"
+                placeholder={t(lang, "search.dirPlaceholder")}
               />
             </div>
             <div className="field">
-              <label htmlFor="scSearchQueries">
-                시나리오 순환 검색어 (선택 — 비우면 위 키워드 사용)
-              </label>
+              <label htmlFor="scSearchQueries">{t(lang, "search.queries")}</label>
               <textarea
                 id="scSearchQueries"
                 value={scSearchQueries}
                 onChange={(e) => setScSearchQueries(e.target.value)}
                 placeholder={"aurora borealis\nneon city night"}
               />
-              <div className="detail">
-                비어 있으면 위 <b>키워드</b>가 그대로 검색 질의로 쓰입니다(키워드 = 검색 질의의
-                단일 소스). 여러 개를 넣으면 시나리오 자동 실행에서 순차/랜덤으로 순환합니다.
-                생성의 프롬프트와는 무관합니다.
-              </div>
+              <div className="detail">{t(lang, "search.queriesHint")}</div>
             </div>
             <button
               type="button"
@@ -1567,19 +1725,19 @@ export function App(): React.ReactElement {
               onClick={() => void handleSearch()}
               disabled={busy}
             >
-              검색
+              {t(lang, "search.action")}
             </button>
           </section>
           ) : (
           <section>
-            <h2>생성</h2>
+            <h2>{t(lang, "gen.heading")}</h2>
             <div className="field">
-              <label htmlFor="prompt">프롬프트 (생성 전용 — AI 이미지 공급자 공통)</label>
+              <label htmlFor="prompt">{t(lang, "gen.prompt")}</label>
               <textarea
                 id="prompt"
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
-                placeholder="예: aurora over icy mountains"
+                placeholder={t(lang, "gen.promptPlaceholder")}
               />
             </div>
             <button
@@ -1588,7 +1746,7 @@ export function App(): React.ReactElement {
               onClick={() => void handleGenerate()}
               disabled={busy}
             >
-              생성 ({providerLabel(scProvider)})
+              {t(lang, "gen.action", { provider: providerLabel(scProvider) })}
             </button>
             {/* 생성 액션은 좌측 이 영역 하나뿐이다 — 우측 시나리오 섹션의 공급자별
                 '생성·적용' 버튼은 제거했다(같은 동작이 두 곳에 있으면 일관성이 깨진다). */}
@@ -1599,7 +1757,7 @@ export function App(): React.ReactElement {
               disabled={busy}
               style={{ marginTop: "8px" }}
             >
-              생성 후 적용
+              {t(lang, "gen.actionApply")}
             </button>
           </section>
           )}
@@ -1607,11 +1765,9 @@ export function App(): React.ReactElement {
 
         {/* ── 중: 결과 그리드 ── */}
         <main className="panel">
-          <h2>결과 ({candidates.length})</h2>
+          <h2>{t(lang, "results.heading", { count: candidates.length })}</h2>
           {candidates.length === 0 ? (
-            <div className="empty">
-              왼쪽에서 <b>검색</b> 또는 <b>생성</b>하면 이곳에 후보가 표시됩니다.
-            </div>
+            <div className="empty">{t(lang, "results.empty")}</div>
           ) : (
             <div className="grid">
               {candidates.map((c) => (
@@ -1638,15 +1794,15 @@ export function App(): React.ReactElement {
                   <button
                     type="button"
                     className="card-delete danger"
-                    title={`${c.file_name} 파일 삭제`}
-                    aria-label={`${c.file_name} 파일 삭제`}
+                    title={`${c.file_name} ${t(lang, "common.delete")}`}
+                    aria-label={`${c.file_name} ${t(lang, "common.delete")}`}
                     disabled={busy}
                     onClick={(e) => {
                       e.stopPropagation();
                       void handleDelete(c.path);
                     }}
                   >
-                    삭제
+                    {t(lang, "common.delete")}
                   </button>
                 </div>
               ))}
@@ -1656,15 +1812,20 @@ export function App(): React.ReactElement {
 
         {/* ── 우: 미리보기 / 적용 ── */}
         <aside className="panel panel-right">
-          <h2>미리보기</h2>
+          <h2>{t(lang, "preview.heading")}</h2>
           {selected ? (
             <>
               <div className="preview">
+                {/* 보기 방식(창맞춤/원본/채우기)을 썸네일에도 즉시 반영한다.
+                    style 을 주지 않으면 CSS 고정값만 적용되어 선택이 화면에 드러나지 않는다. */}
                 <img
+                  id="previewImage"
                   src={`data:image/jpeg;base64,${selected.thumb_base64}`}
                   alt={selected.file_name}
+                  style={previewFitStyle(previewFit)}
+                  data-fit={previewFit}
                   onClick={() => setViewerOpen(true)}
-                  title="클릭하면 전체화면으로 봅니다"
+                  title={t(lang, "preview.clickFullscreen")}
                 />
                 <button
                   type="button"
@@ -1672,7 +1833,7 @@ export function App(): React.ReactElement {
                   className="preview-fullscreen"
                   onClick={() => setViewerOpen(true)}
                 >
-                  전체화면
+                  {t(lang, "common.fullscreen")}
                 </button>
               </div>
               <div className="detail">
@@ -1684,6 +1845,22 @@ export function App(): React.ReactElement {
                 </div>
                 <div>{selected.path}</div>
               </div>
+              {/* 미리보기 창맞춤(fit) 모드 — 요구 ③. 썸네일은 320px 라 원본 비율을
+                  유지한 채 컨테이너에 맞추는 `contain` 이 기본값이다. */}
+              <div className="field">
+                <label htmlFor="previewFit">{t(lang, "preview.fitLabel")}</label>
+                <select
+                  id="previewFit"
+                  value={previewFit}
+                  onChange={(e) =>
+                    setPreviewFit(e.target.value as "fit" | "actual" | "fill")
+                  }
+                >
+                  <option value="fit">{t(lang, "preview.fitFit")}</option>
+                  <option value="actual">{t(lang, "preview.fitActual")}</option>
+                  <option value="fill">{t(lang, "preview.fitFill")}</option>
+                </select>
+              </div>
               {/* 미리보기 중인 파일 삭제 — 결과 카드에서 사라진 파일도 여기서 지울 수 있다. */}
               <button
                 type="button"
@@ -1693,11 +1870,11 @@ export function App(): React.ReactElement {
                 onClick={() => void handleDelete(selected)}
                 style={{ marginBottom: "8px" }}
               >
-                이 파일 삭제
+                {t(lang, "common.deleteThis")}
               </button>
             </>
           ) : (
-            <div className="empty">선택된 이미지가 없습니다.</div>
+            <div className="empty">{t(lang, "preview.empty")}</div>
           )}
 
           {/* gen-info:start — ③ 미리보기 안에서도 생성 경로를 항상 보여준다
@@ -1710,32 +1887,32 @@ export function App(): React.ReactElement {
                 파일 옆 사이드카(.geninfo.json)에서 읽은 값 (load_candidate → gen_provider/gen_source).
               - "생성 정보 (현재 배경)": OS 배경(state.json) 기록 — 이 파일과 무관할 수 있다. */}
           <div className="gen-info" id="genInfoPreview" title={selected?.gen_source ?? undefined}>
-            <div className="gen-info-label">생성 정보 (미리보기 파일)</div>
+            <div className="gen-info-label">{t(lang, "preview.genFile")}</div>
             <div className="gen-info-value">
               {selected?.gen_provider
                 ? `${providerLabel(selected.gen_provider as ProviderId)}${
                     selected.gen_source ? ` · ${selected.gen_source}` : ""
                   }`
-                : "(이 파일의 생성 정보 미기록 — 사이드카 없음)"}
+                : t(lang, "preview.genUnknownFile")}
             </div>
           </div>
           <div className="gen-info" id="genInfo" title={status?.source ?? undefined}>
-            <div className="gen-info-label">생성 정보 (현재 배경)</div>
+            <div className="gen-info-label">{t(lang, "preview.genCurrent")}</div>
             <div className="gen-info-value">
               {status?.provider
                 ? `${providerLabel(status.provider as ProviderId)}${
                     status?.source ? ` · ${status?.source}` : ""
                   }`
-                : "(이 앱에서 생성한 배경 아님 / 미기록)"}
+                : t(lang, "preview.genUnknownCurrent")}
             </div>
             {genPath ? (
               <div className="gen-info-path" title={genPath}>
-                현재 배경: {genPath}
+                {t(lang, "preview.currentWallpaperPath", { path: genPath })}
               </div>
             ) : null}
             {genPath && selPath && !genMatchesSelected && selected ? (
               <div className="gen-info-warn" id="genInfoMismatch">
-                현재 배경과 다른 파일 — "생성 정보 (현재 배경)"은 위 미리보기({selected.file_name})의 정보가 아닙니다. 이 이미지의 정보는 위 "생성 정보 (미리보기 파일)"을 보세요.
+                {t(lang, "preview.mismatch", { name: selected.file_name })}
               </div>
             ) : null}
           </div>
@@ -1763,13 +1940,13 @@ export function App(): React.ReactElement {
                 className="viewer-close"
                 onClick={() => setViewerOpen(false)}
               >
-                닫기 (Esc)
+                {t(lang, "common.closeEsc")}
               </button>
             </div>
           ) : null}
 
           <div className="field">
-            <label htmlFor="position">배치 방식</label>
+            <label htmlFor="position">{t(lang, "position.label")}</label>
             <select
               id="position"
               value={position}
@@ -1777,7 +1954,7 @@ export function App(): React.ReactElement {
             >
               {(Object.keys(POSITION_LABELS) as WallpaperPosition[]).map((p) => (
                 <option key={p} value={p}>
-                  {POSITION_LABELS[p]}
+                  {t(lang, `position.${p}`)}
                 </option>
               ))}
             </select>
@@ -1790,7 +1967,7 @@ export function App(): React.ReactElement {
             disabled={busy || !selected}
             style={{ marginBottom: "8px" }}
           >
-            바탕화면에 적용
+            {t(lang, "common.apply")}
           </button>
           <button
             type="button"
@@ -1799,13 +1976,13 @@ export function App(): React.ReactElement {
             disabled={busy}
             style={{ marginBottom: "12px" }}
           >
-            이전 배경으로 복원
+            {t(lang, "common.restore")}
           </button>
 
           <section id="scenario-section">
-            <h2>시나리오 · Cloudflare (자동 업데이트)</h2>
+            <h2>{t(lang, "scenario.heading")}</h2>
             <div className="field">
-              <label htmlFor="scEnabled">자동 업데이트</label>
+              <label htmlFor="scEnabled">{t(lang, "scenario.autoUpdate")}</label>
               <select
                 id="scEnabled"
                 value={scEnabled ? "on" : "off"}
@@ -1816,7 +1993,7 @@ export function App(): React.ReactElement {
               </select>
             </div>
             <div className="field">
-              <label htmlFor="scInterval">주기 (분, 최소 5)</label>
+              <label htmlFor="scInterval">{t(lang, "scenario.interval")}</label>
               <input
                 id="scInterval"
                 type="number"
@@ -1826,7 +2003,7 @@ export function App(): React.ReactElement {
               />
             </div>
             <div className="field">
-              <label htmlFor="scUrls">이미지 URL 목록 (줄바꿈 구분, R2 권장)</label>
+              <label htmlFor="scUrls">{t(lang, "scenario.urls")}</label>
               <textarea
                 id="scUrls"
                 value={scUrls}
@@ -1835,21 +2012,20 @@ export function App(): React.ReactElement {
               />
             </div>
             <div className="field">
-              <label htmlFor="scLocalDir">로컬 폴더 (선택 — URL이 비었을 때 순환)</label>
+              <label htmlFor="scLocalDir">{t(lang, "scenario.localDir")}</label>
               <input
                 id="scLocalDir"
                 type="text"
                 value={scLocalDir}
                 onChange={(e) => setScLocalDir(e.target.value)}
-                placeholder="C:\Users\me\Pictures\auto (비우면 사용 안 함)"
+                placeholder={t(lang, "scenario.localDirPlaceholder")}
               />
             </div>
             <div className="detail">
-              이미지 검색어는 검색 영역에서 입력합니다(검색 공급자 전용). 저장 시
-              <code> source.search_queries</code> 로 함께 저장됩니다.
+              {t(lang, "scenario.searchQueriesNote")}
             </div>
             <div className="field">
-              <label htmlFor="scOrder">순서</label>
+              <label htmlFor="scOrder">{t(lang, "scenario.order")}</label>
               <select
                 id="scOrder"
                 value={scOrder}
@@ -1857,12 +2033,12 @@ export function App(): React.ReactElement {
                   setScOrder(e.target.value as "sequential" | "random")
                 }
               >
-                <option value="sequential">순차 (sequential)</option>
-                <option value="random">랜덤 (random)</option>
+                <option value="sequential">{t(lang, "scenario.orderSeq")}</option>
+                <option value="random">{t(lang, "scenario.orderRandom")}</option>
               </select>
             </div>
             <div className="field">
-              <label htmlFor="scSeedMode">이미지 seed (같은 이미지 반복 방지)</label>
+              <label htmlFor="scSeedMode">{t(lang, "scenario.seed")}</label>
               <select
                 id="scSeedMode"
                 value={scSeedMode}
@@ -1870,9 +2046,9 @@ export function App(): React.ReactElement {
                   setScSeedMode(e.target.value as "fixed" | "incremental" | "random")
                 }
               >
-                <option value="fixed">고정 (fixed — 같은 seed = 같은 이미지)</option>
-                <option value="incremental">순차 (incremental — 생성마다 +1)</option>
-                <option value="random">랜덤 (random — 기본, 매번 다른 이미지)</option>
+                <option value="fixed">{t(lang, "scenario.seedFixed")}</option>
+                <option value="incremental">{t(lang, "scenario.seedIncremental")}</option>
+                <option value="random">{t(lang, "scenario.seedRandom")}</option>
               </select>
               {scSeedMode === "fixed" ? (
                 <input
@@ -1881,60 +2057,51 @@ export function App(): React.ReactElement {
                   min={0}
                   value={scSeedFixed}
                   onChange={(e) => setScSeedFixed(Number(e.target.value))}
-                  placeholder="고정 seed 값 (예: 12345)"
+                  placeholder={t(lang, "scenario.seedFixedPlaceholder")}
                   style={{ marginTop: "6px" }}
                 />
               ) : null}
               <div className="detail">
                 {scProvider === "pollinations" && (
                   <>
-                    Pollinations 는 같은 프롬프트·같은 seed 면 캐시된 동일 이미지를
-                    돌려줍니다. 기본값 <b>랜덤</b>이면 생성마다 seed 가 달라져 결과가 매번
-                    달라집니다.
+                    {t(lang, "scenario.seedPollinationsHint")}
                   </>
                 )}
                 {scProvider === "cloudflare-workers-ai" && (
                   <>
                     {cloudflareAcceptsSeed(scCfModel) ? (
                       <>
-                        Cloudflare Workers AI 는 <b>flux 계열 모델에서만</b> seed 를
-                        받습니다 — 현재 모델 <code>{scCfModel || "(기본 flux)"}</code> 은
-                        flux 이므로 seed 가 전송됩니다.
+                        {t(lang, "scenario.seedCfFluxYes")}
                       </>
                     ) : (
                       <>
-                        현재 모델 <code>{scCfModel || "(미지정)"}</code> 은 flux 계열이
-                        아니므로 <b>seed 를 전송하지 않습니다</b> — 비-flux 모델에 seed 를
-                        보내면 400 오류가 납니다.
+                        {t(lang, "scenario.seedCfFluxNo")}
                       </>
                     )}
                   </>
                 )}
                 {scProvider === "openai" && (
                   <>
-                    OpenAI Images API 는 seed 파라미터를 지원하지 않아 전송하지 않습니다 —
-                    seed 설정은 이 공급자에 적용되지 않습니다.
+                    {t(lang, "scenario.seedOpenaiHint")}
                   </>
                 )}
                 {scProvider === "puter" && (
                   <>
-                    Puter(WebView 브라우저 SDK)는 seed 를 받지 않습니다 — seed 설정은
-                    Puter 생성에 적용되지 않습니다.
+                    {t(lang, "scenario.seedPuterHint")}
                   </>
                 )}
                 {scProvider === "search" && (
                   <>
-                    검색(Search)은 seed 를 쓰지 않습니다 — 이미지를 생성하지 않고 공개
-                    이미지를 찾습니다.
+                    {t(lang, "scenario.seedSearchHint")}
                   </>
                 )}
                 {providerUsesSeed(scProvider) && scSeedMode !== "fixed" ? (
-                  <> 현재 카운터: <b>{scSeedNext}</b></>
+                  <>{t(lang, "scenario.seedCounter", { count: scSeedNext })}</>
                 ) : null}
               </div>
             </div>
             <div className="field">
-              <label htmlFor="scProvider">이미지 공급자</label>
+              <label htmlFor="scProvider">{t(lang, "scenario.provider")}</label>
               <select
                 id="scProvider"
                 value={scProvider}
@@ -1951,9 +2118,7 @@ export function App(): React.ReactElement {
                 ))}
               </select>
               <div className="detail">
-                좌측 <b>이미지 공급자 (검색/생성 화면 전환)</b> 과 <b>같은 값</b>을 공유합니다 —
-                한쪽을 바꾸면 다른 쪽도 함께 바뀌고, 저장되는 값도 이 공급자 하나입니다
-                (별도 설정이 아닙니다).
+                {t(lang, "scenario.providerShared")}
               </div>
             </div>
             <div className="field">
@@ -1964,16 +2129,16 @@ export function App(): React.ReactElement {
                   onChange={(e) => setScAllowFallback(e.target.checked)}
                   disabled={busy}
                 />{" "}
-                자동 폴백 허용 (선택 공급자 실패 시 다음 공급자로 넘어감 — 기본은 끔: 선택한 공급자만 사용)
+                {t(lang, "scenario.allowFallback")}
               </label>
             </div>
             <div className="field">
-              <label>이미지 생성 우선순위 (폴백 순서 — 위부터 시도, 실패 시 다음 공급자)</label>
+              <label>{t(lang, "scenario.priorityLabel")}</label>
               {scProviderOrder.map((p, i) => (
                 <div key={p} style={{ display: "flex", gap: "6px", alignItems: "center", marginBottom: "4px" }}>
                   <label
                     style={{ display: "flex", gap: "4px", alignItems: "center", minWidth: "220px" }}
-                    title="Off 로 두면 이 공급자는 생성·폴백·시나리오 자동 실행에서 모두 제외됩니다."
+                    title={t(lang, "scenario.offHint")}
                   >
                     <input
                       type="checkbox"
@@ -1985,8 +2150,8 @@ export function App(): React.ReactElement {
                     />
                     <span>
                       {i + 1}. {providerLabel(p)}
-                      {scProviderEnabled[p] ? " — On" : " — Off (제외)"}
-                      {p === "puter" ? " · 백엔드 폴백 제외(WebView 전용)" : ""}
+                      {scProviderEnabled[p] ? ` — ${t(lang, "scenario.on")}` : ` — ${t(lang, "scenario.off")}`}
+                      {p === "puter" ? ` · ${t(lang, "scenario.puterBackendExcluded")}` : ""}
                     </span>
                   </label>
                   <button type="button" onClick={() => moveProviderOrder(i, -1)} disabled={busy || i === 0}>▲</button>
@@ -1994,11 +2159,10 @@ export function App(): React.ReactElement {
                 </div>
               ))}
               <div style={{ display: "flex", gap: "6px", marginTop: "4px" }}>
-                <button type="button" onClick={() => setScProviderOrder([...FREE_FIRST_ORDER])} disabled={busy}>무료 우선으로 초기화</button>
+                <button type="button" onClick={() => setScProviderOrder([...FREE_FIRST_ORDER])} disabled={busy}>{t(lang, "scenario.priorityReset")}</button>
               </div>
               <div className="detail">
-                기본값: 무료 우선 = Pollinations → Puter → Cloudflare → OpenAI.
-                키 없는 공급자는 자동 건너뛰고, Puter는 브라우저 전용이라 백엔드 폴백(시나리오 자동 실행)에서 제외됩니다.
+                {t(lang, "scenario.priorityDefaultHint")}
               </div>
             </div>
             <button
@@ -2008,29 +2172,29 @@ export function App(): React.ReactElement {
               disabled={busy}
               style={{ marginBottom: "8px" }}
             >
-              우선순위로 생성·적용
+              {t(lang, "scenario.priorityGenerate")}
             </button>
             {scProvider === "cloudflare-workers-ai" && (
               <>
                 <div className="field">
-                  <label htmlFor="scCfAccount">Cloudflare Account ID</label>
+                  <label htmlFor="scCfAccount">{t(lang, "scenario.cfAccount")}</label>
                   <input
                     id="scCfAccount"
                     type="text"
                     value={scCfAccount}
                     onChange={(e) => setScCfAccount(e.target.value)}
-                    placeholder="예: a1b2c3d4..."
+                    placeholder={t(lang, "scenario.cfAccountPlaceholder")}
                     autoComplete="off"
                   />
                 </div>
                 <div className="field">
-                  <label htmlFor="scCfToken">Cloudflare API Token (Workers AI 권한)</label>
+                  <label htmlFor="scCfToken">{t(lang, "scenario.cfToken")}</label>
                   <input
                     id="scCfToken"
                     type="password"
                     value={scCfToken}
                     onChange={(e) => setScCfToken(e.target.value)}
-                    placeholder="Workers AI 권한 토큰"
+                    placeholder={t(lang, "scenario.cfTokenPlaceholder")}
                     autoComplete="off"
                   />
                 </div>
@@ -2042,11 +2206,11 @@ export function App(): React.ReactElement {
                       checked={scClearToken}
                       onChange={(e) => setScClearToken(e.target.checked)}
                     />{" "}
-                    저장된 API 토큰 삭제 (체크 후 저장 시 삭제)
+                    {t(lang, "scenario.clearToken")}
                   </label>
                 </div>
                 <div className="field">
-                  <label htmlFor="scCfModel">모델</label>
+                  <label htmlFor="scCfModel">{t(lang, "scenario.model")}</label>
                   <input
                     id="scCfModel"
                     type="text"
@@ -2061,7 +2225,7 @@ export function App(): React.ReactElement {
             {scProvider === "openai" && (
               <>
                 <div className="field">
-                  <label htmlFor="scOpenaiKey">OpenAI API Key</label>
+                  <label htmlFor="scOpenaiKey">{t(lang, "scenario.openaiKey")}</label>
                   <input
                     id="scOpenaiKey"
                     type="password"
@@ -2079,11 +2243,11 @@ export function App(): React.ReactElement {
                       checked={scClearKey}
                       onChange={(e) => setScClearKey(e.target.checked)}
                     />{" "}
-                    저장된 API 키 삭제 (체크 후 저장 시 삭제)
+                    {t(lang, "scenario.clearKey")}
                   </label>
                 </div>
                 <div className="field">
-                  <label htmlFor="scOpenaiModel">모델</label>
+                  <label htmlFor="scOpenaiModel">{t(lang, "scenario.model")}</label>
                   <input
                     id="scOpenaiModel"
                     type="text"
@@ -2098,15 +2262,13 @@ export function App(): React.ReactElement {
             {scProvider === "puter" && (
               <>
                 <div className="field">
-                  <label>Puter (무료 · 브라우저 SDK)</label>
+                  <label>{t(lang, "scenario.puterLabel")}</label>
                   <div className="detail">
-                    생성은 WebView의 <b>Puter.js</b>(<code>puter.ai.txt2img</code>)가 수행하고,
-                    결과 이미지는 Rust 커맨드 <code>apply_generated_image</code>가 해상도 검증·스테이징·적용합니다.
-                    API 키 입력은 필요 없습니다 (Puter 세션 사용). SDK 로드 실패 시 명시적 오류가 표시됩니다.
+                    {t(lang, "scenario.puterDesc")}
                   </div>
                 </div>
                 <div className="field">
-                  <label htmlFor="scPuterModel">이미지 모델</label>
+                  <label htmlFor="scPuterModel">{t(lang, "scenario.puterModel")}</label>
                   <select
                     id="scPuterModel"
                     value={scPuterModel}
@@ -2119,15 +2281,14 @@ export function App(): React.ReactElement {
                     ))}
                   </select>
                   <div className="detail">
-                    모델을 선택하지 않으면 Puter 기본 모델(OpenAI gpt-image-2)이 사용됩니다.
-                    모델마다 결과 화질·속도·사용 크레딧이 다릅니다.
+                    {t(lang, "scenario.puterModelHint")}
                   </div>
                 </div>
                 <div className="field">
-                  <label htmlFor="puterUsageRemaining">Puter 남은 크레딧 (월간 allowance)</label>
+                  <label htmlFor="puterUsageRemaining">{t(lang, "scenario.creditHeading")}</label>
                   <div id="puterUsageRemaining" className="detail">
                     {puterUsageBusy
-                      ? "조회 중..."
+                      ? t(lang, "scenario.creditBusy")
                       : puterUsage
                         ? `남은 크레딧: ${formatUsage(puterUsage.summary.remaining, puterUsage.summary.unit)}${usageUnitLabel(puterUsage.summary.unit)}${
                             puterUsage.summary.allowance !== null
@@ -2138,12 +2299,12 @@ export function App(): React.ReactElement {
                               ? ` · 사용 ${formatUsage(puterUsage.summary.spent, puterUsage.summary.unit)}`
                               : ""
                           } · 단위: ${puterUsage.summary.unit ?? "미표기"}(${puterUsage.summary.unitPath ?? "?"}) · 경로: 남음 ${puterUsage.summary.remainingPath ?? "없음"} / 한도 ${puterUsage.summary.allowancePath ?? "없음"} / 사용 ${puterUsage.summary.spentPath ?? "없음"}`
-                        : "(아직 조회하지 않았습니다 — [크레딧 조회]를 누르세요)"}
+                        : t(lang, "scenario.creditIdle")}
                   </div>
                   {puterUsage && (
                     <details style={{ marginBottom: "8px" }}>
                       <summary className="detail">
-                        원본 응답 보기 (진단 — 실제 스키마 확인용)
+                        {t(lang, "scenario.creditRaw")}
                       </summary>
                       <pre
                         className="detail"
@@ -2161,7 +2322,7 @@ export function App(): React.ReactElement {
                   )}
                   {puterUsageErr && (
                     <div className="detail" style={{ color: "#c0392b" }}>
-                      크레딧 조회 실패: {puterUsageErr}
+                      {t(lang, "scenario.creditFailed", { err: puterUsageErr })}
                     </div>
                   )}
                   <button
@@ -2171,7 +2332,7 @@ export function App(): React.ReactElement {
                     disabled={busy || puterUsageBusy}
                     style={{ marginBottom: "8px" }}
                   >
-                    크레딧 조회
+                    {t(lang, "scenario.creditFetch")}
                   </button>
                 </div>
                 <button
@@ -2181,13 +2342,13 @@ export function App(): React.ReactElement {
                   disabled={busy}
                   style={{ marginBottom: "8px" }}
                 >
-                  Puter 로그인 (세션 연결)
+                  {t(lang, "scenario.puterSignIn")}
                 </button>
               </>
             )}
             <div className="detail" style={{ marginBottom: "8px" }}>
               {scInfo}
-              {scAutoFail > 0 ? ` · 자동 실패 ${scAutoFail}회 연속` : ""}
+              {scAutoFail > 0 ? ` · ${t(lang, "scenario.autoFail", { n: scAutoFail })}` : ""}
             </div>
             <button
               type="button"
@@ -2196,7 +2357,7 @@ export function App(): React.ReactElement {
               disabled={busy}
               style={{ marginBottom: "8px" }}
             >
-              시나리오 저장
+              {t(lang, "scenario.save")}
             </button>
             <button
               type="button"
@@ -2204,8 +2365,77 @@ export function App(): React.ReactElement {
               onClick={() => void handleTickScenario()}
               disabled={busy}
             >
-              지금 실행
+              {t(lang, "scenario.runNow")}
             </button>
+          </section>
+
+          {/* ── 히스토리 (프롬프트 / 검색어) ──
+              재시동 후에도 남아야 하므로 디스크(`history.json`)에서 읽어온 목록을
+              그대로 그린다. 항목을 누르면 해당 입력란에 값이 되살아나 재사용할 수 있다
+              (요구 ①: "전에 사용했던 배경화면을 다시 쓰기 위해 프롬프트·검색 히스토리를
+              남기고 선택할 수 있게"). */}
+          <section id="history-section">
+            <h2>{t(lang, "history.heading")}</h2>
+            {history.length === 0 ? (
+              <div className="empty">{t(lang, "history.empty")}</div>
+            ) : (
+              <ul className="history-list">
+                {history.map((h, i) => (
+                  <li key={`${h.kind}-${h.text}-${i}`} className="history-item">
+                    <span className={`history-kind ${h.kind}`}>
+                      {h.kind === "search"
+                        ? t(lang, "history.search")
+                        : t(lang, "history.prompt")}
+                    </span>
+                    <span className="history-text" title={h.text}>
+                      {h.text}
+                    </span>
+                    <button
+                      type="button"
+                      className="history-reuse"
+                      disabled={busy}
+                      onClick={() => {
+                        if (h.kind === "search") {
+                          setQuery(h.text);
+                          setScProvider("search");
+                          reportOk(t(lang, "history.reusedSearch", { text: h.text }));
+                        } else {
+                          setPrompt(h.text);
+                          if (scProvider === "search") setScProvider("pollinations");
+                          reportOk(t(lang, "history.reusedPrompt", { text: h.text }));
+                        }
+                      }}
+                    >
+                      {h.kind === "search"
+                        ? t(lang, "history.reuseSearch")
+                        : t(lang, "history.reusePrompt")}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <button
+              type="button"
+              className="block"
+              disabled={busy || history.length === 0}
+              onClick={() => void handleClearHistory()}
+            >
+              {t(lang, "history.clear")}
+            </button>
+          </section>
+
+          {/* ── 정보(About) — 버전/제작자는 Cargo 메타데이터가 단일 소스다.
+              값을 화면에 하드코딩하지 않고 `get_app_meta` 응답을 그대로 표시한다. ── */}
+          <section id="about-section">
+            <h2>{t(lang, "about.heading")}</h2>
+            <div className="detail" id="appMeta">
+              <div>
+                {t(lang, "about.version")}: <b>{appMeta?.version ?? "(미조회)"}</b>
+              </div>
+              <div>
+                {t(lang, "about.author")}: <b>{appMeta?.author ?? "(미조회)"}</b>
+              </div>
+            </div>
           </section>
         </aside>
       </div>
@@ -2213,19 +2443,19 @@ export function App(): React.ReactElement {
       {/* ── 상태 바 ── */}
       <footer className="statusbar">
         <span className="path">
-          현재 배경: {status?.current_wallpaper || "(조회 안 됨)"}
+          {t(lang, "footer.current")}: {status?.current_wallpaper || t(lang, "footer.none")}
         </span>
         <span className="path">
-          이전 배경: {status?.previous_wallpaper || "(스냅샷 없음)"}
+          {t(lang, "footer.previous")}: {status?.previous_wallpaper || t(lang, "footer.noSnapshot")}
         </span>
         <span className="path" title={status?.source ?? undefined}>
-          생성 정보:{" "}
+          {t(lang, "footer.genInfo")}:{" "}
           {status?.provider
             ? `${status.provider}${status?.source ? ` · ${status?.source}` : ""}`
-            : "(이 앱에서 생성한 배경 아님 / 미기록)"}
+            : t(lang, "footer.noneGenerated")}
         </span>
         <span className={`msg ${statusKind === "error" ? "error" : statusKind === "ok" ? "ok" : ""}`}>
-          {busy ? "처리 중..." : statusMsg}
+          {busy ? t(lang, "common.busy") : statusMsg}
         </span>
       </footer>
 
@@ -2243,25 +2473,21 @@ export function App(): React.ReactElement {
             aria-labelledby="puter-modal-title"
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 id="puter-modal-title">Puter 로그인 — 팝업이 차단되었습니다</h3>
-            <p className="modal-desc">
-              아래 주소를 복사해 브라우저에서 열거나, [바로가기]를 눌러 기본 브라우저로
-              이동하세요. 외부 브라우저 로그인은 앱 세션과 별개이므로, 앱에서 생성하려면
-              이 사이트의 팝업을 허용한 뒤 다시 시도해야 합니다.
-            </p>
+            <h3 id="puter-modal-title">{t(lang, "modal.title")}</h3>
+            <p className="modal-desc">{t(lang, "modal.desc")}</p>
             <div className="modal-url">
               <code>{puterPromptUrl}</code>
             </div>
             <div className="modal-actions">
               <button type="button" className="block" onClick={() => void handleCopyPuterUrl()}>
-                URL 복사
+                {t(lang, "modal.copyUrl")}
               </button>
               <button
                 type="button"
                 className="primary block"
                 onClick={() => void handleOpenPuterUrl()}
               >
-                바로가기 (브라우저 열기)
+                {t(lang, "modal.openBrowser")}
               </button>
             </div>
             <p className="modal-note" role="status">

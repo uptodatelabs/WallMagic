@@ -214,15 +214,33 @@ for (const id of ["pollinations", "cloudflare-workers-ai", "openai", "puter"]) {
   );
 }
 
+// 안내 문구는 다국어 사전(`src-ui/i18n.ts`)으로 이동했다. UI 는 리터럴 대신
+// `t(lang, "scenario.seedCfFlux…")` / `t(lang, "scenario.seedOpenaiHint")` 를 렌더하므로,
+// "해당 공급자 분기 안에서만 그 키가 나온다"를 검사하고 문구 본문은 사전에서 확인한다.
+// (이전 검사식은 App.tsx 리터럴을 봐서 i18n 전환 후 정상 동작인데도 FAIL 했다.)
+const dict = read("src-ui/i18n.ts");
+const dictHas = (key, pattern) => {
+  const entry = new RegExp(`"${key.replace(/\./g, "\\.")}":\\s*\\{([\\s\\S]{0,500}?)\\}`).exec(dict);
+  return Boolean(entry) && pattern.test(entry[1]);
+};
+
 const cfBranch = seedGuidance.indexOf('scProvider === "cloudflare-workers-ai"');
+const oaBranch = seedGuidance.indexOf('scProvider === "openai"');
+const searchBranch = seedGuidance.indexOf('scProvider === "search"');
 check(
   "Cloudflare 안내는 Cloudflare 분기 안에서만 나온다(타 공급자 선택 시 비노출)",
-  cfBranch >= 0 && seedGuidance.indexOf("Cloudflare Workers AI") > cfBranch,
+  cfBranch >= 0 &&
+    /scenario\.seedCfFlux/.test(seedGuidance.slice(cfBranch, oaBranch > cfBranch ? oaBranch : undefined)) &&
+    dictHas("scenario.seedCfFluxYes", /Cloudflare Workers AI\s*는|flux/) &&
+    dictHas("scenario.seedCfFluxNo", /flux/),
 );
-const oaBranch = seedGuidance.indexOf('scProvider === "openai"');
 check(
   "OpenAI 안내는 OpenAI 분기 안에서만 나온다(타 공급자 선택 시 비노출)",
-  oaBranch >= 0 && seedGuidance.indexOf("OpenAI Images API") > oaBranch,
+  oaBranch >= 0 &&
+    /scenario\.seedOpenaiHint/.test(
+      seedGuidance.slice(oaBranch, searchBranch > oaBranch ? searchBranch : undefined),
+    ) &&
+    dictHas("scenario.seedOpenaiHint", /OpenAI Images API/),
 );
 check(
   "이전의 일괄 나열 문구가 남아 있지 않다",

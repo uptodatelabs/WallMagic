@@ -237,7 +237,8 @@ ok(
 );
 ok(
   "상태바에 생성 정보(공급자 + 경로 상세) 표시",
-  /생성 정보:/.test(ui) && /\{providerLabel|status\?\.source/.test(ui),
+  // 라벨 문자열은 i18n 사전으로 이동했다(다국어 요구) — 리터럴 대신 키를 검사한다.
+  /t\(lang, "footer\.genInfo"\)/.test(ui) && /\{providerLabel|status\?\.source/.test(ui),
 );
 ok(
   "Puter 생성 호출이 선택 모델을 백엔드로 전달(생성 정보에 모델 기록)",
@@ -250,7 +251,10 @@ ok(
 // 공급자 라벨 + 경로 상세를 항상 볼 수 있어야 한다.
 // 좌측 패널 제목에서 ①~⑤ 번호를 제거했다(사용자 요청) — 앵커도 번호 없는 실제 UI와 맞춘다.
 // 번호가 남아 있으면 indexOf 가 -1 을 돌려 미리보기 블록 검사가 통째로 무력화된다.
-const previewStart = ui.indexOf("<h2>미리보기</h2>");
+// 다국어(i18n) 적용 후 제목은 리터럴 `<h2>미리보기</h2>` 가 아니라
+// `t(lang, "preview.heading")} </h2>` 로 렌더된다. 리터럴 앵커를 그대로 두면
+// indexOf 가 -1 을 돌려 미리보기 블록 검사가 통째로 무력화된다(오탐 FAIL).
+const previewStart = ui.indexOf('t(lang, "preview.heading")');
 const previewEnd = previewStart >= 0 ? ui.indexOf("</aside>", previewStart) : -1;
 const previewBlock =
   previewStart >= 0 && previewEnd > previewStart

@@ -6,11 +6,15 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+# 애플리케이션 버전·제작자의 **단일 소스**.
+#   crates/core·src-tauri(CARGO_PKG_VERSION/AUTHORS) → store::app_meta()
+#   → IPC `get_app_meta` → UI About/설정 표시
+# tauri.conf.json / package.json 도 같은 값을 유지해야 한다(scripts/verify-app-meta.mjs 가 검증).
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.82"
 license = "MIT"
-authors = ["WallMagic Team"]
+authors = ["uptodatelabs"]
 
 [workspace.dependencies]
 base64 = "0.22"

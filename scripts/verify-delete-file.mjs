@@ -124,7 +124,10 @@ check("handleGenerateAi 호출부는 좌측 1곳뿐이다(우측 공급자별 �
 });
 
 check("좌측 생성 영역에 '생성 후 적용' 버튼이 있다", () =>
-  /onClick=\{\(\) => void handleGenerateAi\(\)\}[\s\S]{0,200}생성 후 적용/.test(app));
+  // 라벨은 i18n 사전(`{t(lang, "gen.actionApply")}`)을 거친다 — 리터럴/사전 표기 둘 다 인정.
+  /onClick=\{\(\) => void handleGenerateAi\(\)\}[\s\S]{0,200}(생성 후 적용|\{t\(lang, "gen\.actionApply"\)\})/.test(
+    app,
+  ));
 
 check("우측 시나리오 섹션에 공급자별 '생성·적용' 버튼 라벨이 남아 있지 않다", () =>
   !/Cloudflare AI로 생성·적용/.test(app) &&

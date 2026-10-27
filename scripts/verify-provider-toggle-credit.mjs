@@ -92,14 +92,16 @@ check("복원 시 Puter Off 상태도 되살린다 (puter: !offList.includes)", 
 });
 
 // ── 5. On/Off UI ────────────────────────────────────────────────────
+// 다국어(i18n) 적용 후 라벨은 리터럴 "이미지 생성 우선순위" 가 아니라
+// `t(lang, "scenario.priorityLabel")` 로 렌더된다 — 앵커를 키 기준으로 잡는다.
 check("우선순위 목록 각 항목에 On/Off 토글이 있다", () => {
-  const start = app.indexOf("이미지 생성 우선순위");
+  const start = app.indexOf('t(lang, "scenario.priorityLabel")');
   const body = app.slice(start, start + 1600);
   return /scProviderEnabled\[p\]/.test(body) && /type="checkbox"/.test(body);
 });
 
 check("On/Off 토글은 상태를 갱신한다 (읽기 전용 아님)", () => {
-  const start = app.indexOf("이미지 생성 우선순위");
+  const start = app.indexOf('t(lang, "scenario.priorityLabel")');
   const body = app.slice(start, start + 1600);
   return /setScProviderEnabled/.test(body);
 });

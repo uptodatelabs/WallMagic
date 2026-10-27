@@ -207,12 +207,18 @@ ok(
   /<div className="modal-url">\s*<code>\{puterPromptUrl\}<\/code>/.test(app),
   "모달에 URL이 그대로 표시된다 (<code>{puterPromptUrl}</code>)",
 );
+// 다국어(i18n) 적용 후 버튼 라벨은 리터럴이 아니라 `t(lang, "modal.copyUrl")` 등으로
+// 렌더된다. 계약의 본질은 "핸들러 연결"이므로 라벨은 리터럴 또는 t() 키 둘 다 인정한다.
 ok(
-  /onClick=\{\(\) => void handleCopyPuterUrl\(\)\}[\s\S]{0,80}URL 복사/.test(app),
+  /onClick=\{\(\) => void handleCopyPuterUrl\(\)\}[\s\S]{0,120}?(URL 복사|t\(lang, "modal\.copyUrl"\))/.test(
+    app,
+  ),
   "[URL 복사] 버튼 → handleCopyPuterUrl 연결",
 );
 ok(
-  /onClick=\{\(\) => void handleOpenPuterUrl\(\)\}[\s\S]{0,120}바로가기 \(브라우저 열기\)/.test(app),
+  /onClick=\{\(\) => void handleOpenPuterUrl\(\)\}[\s\S]{0,160}?(바로가기 \(브라우저 열기\)|t\(lang, "modal\.openBrowser"\))/.test(
+    app,
+  ),
   "[바로가기(브라우저 열기)] 버튼 → handleOpenPuterUrl 연결",
 );
 ok(

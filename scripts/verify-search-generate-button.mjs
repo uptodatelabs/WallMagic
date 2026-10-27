@@ -79,8 +79,16 @@ function check(name, fn) {
 
 // ── 영역별 섹션 분리 (① 검색 / ② 생성) ──
 // 제목 앞 번호(①②③⑤)는 UI 정리 요청으로 제거되었다 — 단언도 번호 없는 제목을 검사한다.
-const searchStart = app.indexOf("<h2>검색</h2>");
-const createStart = app.indexOf("<h2>생성</h2>");
+// 제목은 i18n 사전을 거친다(`<h2>{t(lang, "search.heading")}</h2>`). 리터럴 제목을 쓰던
+// 이전 소스와도 호환되도록 두 형태를 모두 인정한다 — 계약의 본질은 "섹션 분리"이지
+// 제목 문자열의 표기 방식이 아니다.
+const headingAt = (label, key) => {
+  const literal = app.indexOf(`<h2>${label}</h2>`);
+  if (literal >= 0) return literal;
+  return app.indexOf(`t(lang, "${key}")`);
+};
+const searchStart = headingAt("검색", "search.heading");
+const createStart = headingAt("생성", "gen.heading");
 const createEnd = createStart >= 0 ? app.indexOf("</section>", createStart) : -1;
 const searchSection =
   searchStart >= 0 && createStart > searchStart ? app.slice(searchStart, createStart) : "";
@@ -97,7 +105,11 @@ check("① 검색 영역에 [검색] 버튼이 하나 있다(handleSearch 호출
 
 check("① 검색 영역 [검색] 버튼 라벨은 '검색' 이다", () => {
   const m = searchSection.match(/onClick=\{\(\) => void handleSearch\(\)\}[\s\S]{0,200}?<\/button>/);
-  return Boolean(m) && />\s*검색\s*</.test(m[0]);
+  // 라벨도 사전을 거친다(`{t(lang, "search.action")}`) — 리터럴/사전 표기 둘 다 인정한다.
+  return (
+    Boolean(m) &&
+    (/>\s*검색\s*</.test(m[0]) || /\{t\(lang, "search\.action"\)\}/.test(m[0]))
+  );
 });
 
 check("① 검색의 키워드 입력(#query)이 검색 섹션 안에 있다", () =>

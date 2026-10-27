@@ -3797,7 +3797,7 @@ dependencies = [
 
 [[package]]
 name = "wallmagic-app"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
  "serde",
@@ -3808,7 +3808,7 @@ dependencies = [
 
 [[package]]
 name = "wallmagic-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
  "image",
