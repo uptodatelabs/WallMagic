@@ -672,6 +672,18 @@ pub fn candidate_for_path_impl(path: &str) -> Result<WallpaperCandidate, String>
     })
 }
 
+/// 적용(IPC #3) 직전 **후보 파일의 사이드카에서 생성 정보를 복원**하는 배선 지점.
+///
+/// `set_wallpaper` 는 `set_wallpaper_with(.., None, None)` 로 위임하므로, 이 복원을 거치지
+/// 않고 적용하면 `record_generation(None, None)` 이 `state.json` 의 provider/source 를
+/// **지운다**. 그러면 생성한 이미지를 적용할 때마다 "미기록"으로 보여 사용자가 "또 다른
+/// 이미지가 생성된 것 같다"고 느낀다(검수 지적: 정의만 있고 호출부가 없던 미완성 계약).
+///
+/// 사이드카가 없는 사용자 로컬 이미지는 `(None, None)` — 임의 라벨을 붙이지 않는다.
+fn generation_info_for_apply_arg(path: &str) -> (Option<String>, Option<String>) {
+    wallmagic_core::generation_info_for_apply(&PathBuf::from(path))
+}
+
 /// IPC #3 (액션 ③ 적용): 선택한 이미지를 검증·스테이징 후 바탕화면에 적용한다.
 #[tauri::command]
 fn apply_wallpaper(
@@ -680,8 +692,17 @@ fn apply_wallpaper(
     position: Option<String>,
 ) -> Result<WallpaperState, String> {
     let pos = parse_position_arg(position.as_deref())?;
-    wallmagic_core::set_wallpaper(&PathBuf::from(path), monitor_id.as_deref(), pos)
-        .map_err(err_to_string)
+    let candidate = PathBuf::from(&path);
+    // 후보 파일이 스스로 가진 생성 정보(사이드카)를 적용까지 이어받는다.
+    let (provider, source) = generation_info_for_apply_arg(&path);
+    wallmagic_core::set_wallpaper_with(
+        &candidate,
+        monitor_id.as_deref(),
+        pos,
+        provider.as_deref(),
+        source.as_deref(),
+    )
+    .map_err(err_to_string)
 }
 
 /// IPC #4 (액션 ④ 복원): 스냅샷된 이전 배경화면으로 원복한다.
@@ -1053,6 +1074,51 @@ mod tests {
             names.iter().any(|n| n.starts_with("generated_pollinations_")),
             "저장 파일명 접두어는 라벨에서 파생되어야 한다(puter_ 고정 금지): {names:?}"
         );
+    }
+
+    /// 검수 지적(high) 회귀 방지 — ④ 적용(IPC #3)은 후보 파일의 **사이드카에서 생성 정보를
+    /// 복원해** `set_wallpaper_with` 로 넘겨야 한다.
+    ///
+    /// 수정 전 `apply_wallpaper` 는 `set_wallpaper(...)` 만 호출했고, `set_wallpaper` 는
+    /// `set_wallpaper_with(.., None, None)` 로 위임하므로 `record_generation(None, None)` 이
+    /// `state.json` 의 provider/source 를 지웠다. 그 결과 생성한 이미지를 적용할 때마다
+    /// "미기록"으로 보여 사용자가 "또 다른 이미지가 생성된 것 같다"고 느꼈다.
+    /// `generation_info_for_apply` 가 정의·재export 만 되고 호출부가 없던 미완성 계약을
+    /// 이 테스트로 고정한다.
+    #[test]
+    fn test_apply_wallpaper_inherits_sidecar_generation_info() {
+        let _guard = DataDirGuard::new("apply_sidecar");
+        let dir = wallmagic_core::app_data_dir().join("library");
+        std::fs::create_dir_all(&dir).expect("create library dir");
+
+        // (1) 사이드카가 있는 생성 파일 — 라벨이 그대로 복원돼야 한다.
+        let generated = dir.join("generated_pollinations_sidecar_test.jpg");
+        std::fs::write(&generated, b"not-a-real-image").expect("write fake generated image");
+        wallmagic_core::write_generation_sidecar(
+            &generated,
+            Some("pollinations"),
+            Some("Pollinations · flux"),
+        )
+        .expect("write generation sidecar");
+
+        let (provider, source) = generation_info_for_apply_arg(&generated.to_string_lossy());
+        assert_eq!(
+            provider.as_deref(),
+            Some("pollinations"),
+            "적용 경로는 사이드카의 provider 를 이어받아야 한다(무라벨 적용 금지)"
+        );
+        assert_eq!(
+            source.as_deref(),
+            Some("Pollinations · flux"),
+            "적용 경로는 사이드카의 source(모델 표기)도 이어받아야 한다"
+        );
+
+        // (2) 사이드카가 없는 사용자 로컬 이미지 — 임의 라벨을 붙이지 않는다.
+        let local = dir.join("user_local_photo.jpg");
+        std::fs::write(&local, b"not-a-real-image").expect("write fake local image");
+        let (local_provider, local_source) = generation_info_for_apply_arg(&local.to_string_lossy());
+        assert_eq!(local_provider, None, "로컬 이미지에 임의 provider 금지");
+        assert_eq!(local_source, None, "로컬 이미지에 임의 source 금지");
     }
 
     /// GUI 핵심 4개 액션의 IPC 래퍼가 코어와 실제로 연결되는 스모크 테스트.
