@@ -766,26 +766,27 @@ export function App(): React.ReactElement {
     }
   };
 
-  // ① 검색 영역의 '이미지 검색어'(줄바꿈 구분) — 검색 공급자(Search)의 **유일한** 검색어 소스다.
+  // 검색 질의의 **단일 소스**는 ① 검색의 '키워드'다.
+  // 시나리오 순환 검색어(textarea)가 채워져 있으면 그 목록을 순환용으로 쓰고,
+  // **비어 있으면 키워드로 폴백**한다 — "키워드만 입력했는데 온라인 검색이 안 된다"는
+  // 회귀(검색 질의 소스가 별도 필드로 갈라진 결과)를 막는 폴백이다.
   // ② 생성 영역의 프롬프트와는 무관하다(프롬프트→검색어 폴백 없음).
-  // 저장 payload(scenario.json `source.search_queries`)와 ② 버튼이 같은 값을 쓰도록 한 곳에서 파생한다.
-  const searchKeywords = scSearchQueries
+  const searchKeywords = (scSearchQueries.trim() ? scSearchQueries : query)
     .split("\n")
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
-  // 검색(Search) 공급자의 ② 버튼 입력 판정 — 검색어가 없으면 실행할 수 없다(프롬프트로 대체 금지).
-  const searchNeedsInput = scProvider === "search" && searchKeywords.length === 0;
 
   const handleGenerate = async () => {
     const aiPrompt = prompt.trim();
-    // 검색어와 프롬프트는 서로 무관한 별개 입력이다 — 검색은 ① 검색 영역의 검색어만,
-    // 생성은 ② 생성 영역의 프롬프트만 쓴다(프롬프트→검색어 폴백 제거).
+    // ② 생성은 **이미지 생성 전용**이다. 검색(Search)의 실행 지점은 ① 검색 영역의
+    // [검색] 버튼 하나뿐이므로, 생성 영역에서는 검색을 실행하지 않는다(중복 액션 제거).
     if (scProvider === "search") {
-      if (searchKeywords.length === 0) {
-        reportError("검색어를 입력하세요 (① 검색의 '이미지 검색어').");
-        return;
-      }
-    } else if (!aiPrompt) {
+      reportError(
+        "검색(Search)은 ① 검색 영역의 [검색] 버튼으로 실행합니다 — ② 생성은 이미지 생성 전용입니다.",
+      );
+      return;
+    }
+    if (!aiPrompt) {
       reportError("프롬프트를 입력하세요.");
       return;
     }
@@ -795,30 +796,6 @@ export function App(): React.ReactElement {
       reportError(
         `선택한 공급자(${providerLabel(scProvider)})가 Off(비활성)입니다 — 우선순위 목록에서 On 으로 바꾼 뒤 다시 시도하세요.`,
       );
-      return;
-    }
-    // 검색(Search) 공급자: 생성 API 가 아니라 **키워드 검색**이다.
-    // 검색어는 ① 검색 영역의 검색어만 쓴다 — ② 프롬프트로 대체하지 않는다.
-    // 생성과 달리 배경을 바로 적용하지 않는다 — 결과는 후보로만 추가하고 적용은 ④ 에서 한다.
-    if (scProvider === "search") {
-      const keyword = searchKeywords[0];
-      const keywordSource = "① 검색 영역 검색어";
-      setBusy(true);
-      try {
-        const candidate = await invoke<WallpaperCandidate>(
-          "generate_library_wallpaper_with_provider",
-          { prompt: keyword, provider: "search", accountId: null, apiToken: null, model: null },
-        );
-        setCandidates((prev) => [candidate, ...prev.filter((c) => c.path !== candidate.path)]);
-        setSelected(candidate);
-        reportOk(
-          `검색 완료 (Search): ${candidate.file_name} — 검색어: "${keyword}" (${keywordSource}) · 배경 적용은 ④ 바탕화면에 적용`,
-        );
-      } catch (err) {
-        reportError(`검색 실패: ${formatErr(err)}`);
-      } finally {
-        setBusy(false);
-      }
       return;
     }
     setBusy(true);
@@ -1135,10 +1112,9 @@ export function App(): React.ReactElement {
     const localDir = scLocalDir.trim() ? scLocalDir.trim() : null;
     // 검색(Search) 소스 — 줄바꿈 구분 키워드 목록. 빈 줄은 버리고 순서를 유지한다.
     // 이 값이 scenario.json 의 `source.search_queries` 로 저장되어 자동 실행(tick)에서 순환된다.
-    const searchQueries = scSearchQueries
-      .split("\n")
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
+    // 검색 질의의 단일 소스는 ① 검색의 '키워드'다 — 순환 검색어가 비어 있으면 키워드로 폴백한다.
+    // (searchKeywords 가 이미 그 폴백을 담고 있다: scSearchQueries 우선 → query)
+    const searchQueries = searchKeywords;
     // Puter는 WebView 전용 SDK라 백엔드 ImageProvider("pollinations"|"cloudflare-workers-ai"|"openai")로
     // 역직렬화할 수 없다 — 그대로 저장하면 scenario.json 로드 시 실패한다. 저장을 명시적으로 차단한다.
     if (scProvider === "puter") {
@@ -1458,7 +1434,7 @@ export function App(): React.ReactElement {
           <section>
             <h2>① 검색</h2>
             <div className="field">
-              <label htmlFor="query">키워드 (파일명 기준)</label>
+              <label htmlFor="query">키워드 (파일명 검색 + 온라인 검색 질의)</label>
               <input
                 id="query"
                 type="text"
@@ -1481,7 +1457,9 @@ export function App(): React.ReactElement {
               />
             </div>
             <div className="field">
-              <label htmlFor="scSearchQueries">이미지 검색어 (줄바꿈 구분 · 검색 공급자 전용)</label>
+              <label htmlFor="scSearchQueries">
+                시나리오 순환 검색어 (선택 — 비우면 위 키워드 사용)
+              </label>
               <textarea
                 id="scSearchQueries"
                 value={scSearchQueries}
@@ -1489,8 +1467,9 @@ export function App(): React.ReactElement {
                 placeholder={"aurora borealis\nneon city night"}
               />
               <div className="detail">
-                이미지 공급자가 <b>검색(Search)</b> 일 때 이 검색어로 공개 이미지를 찾습니다
-                (순차/랜덤 순환). ② 생성의 프롬프트와는 무관합니다.
+                비어 있으면 위 <b>키워드</b>가 그대로 검색 질의로 쓰입니다(키워드 = 검색 질의의
+                단일 소스). 여러 개를 넣으면 시나리오 자동 실행에서 순차/랜덤으로 순환합니다.
+                ② 생성의 프롬프트와는 무관합니다.
               </div>
             </div>
             <button
@@ -1514,14 +1493,22 @@ export function App(): React.ReactElement {
                 placeholder="예: aurora over icy mountains"
               />
             </div>
-            <button
-              type="button"
-              className="primary block"
-              onClick={() => void handleGenerate()}
-              disabled={busy || searchNeedsInput}
-            >
-              {scProvider === "search" ? "검색 실행 (Search)" : `생성 (${providerLabel(scProvider)})`}
-            </button>
+            {scProvider === "search" ? (
+              <div className="detail">
+                이미지 공급자가 <b>검색(Search)</b> 입니다 — 검색은 <b>① 검색</b> 영역의 [검색]
+                버튼 하나로 실행합니다(로컬 + 온라인). ② 생성은 이미지 생성 전용이므로 이
+                공급자에서는 생성 버튼을 두지 않습니다.
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="primary block"
+                onClick={() => void handleGenerate()}
+                disabled={busy}
+              >
+                생성 ({providerLabel(scProvider)})
+              </button>
+            )}
           </section>
         </aside>
 

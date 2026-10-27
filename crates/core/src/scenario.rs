@@ -1645,10 +1645,10 @@ mod tests {
         let dest = PathBuf::from("dummy.jpg");
 
         // (1) 프롬프트만 있고 검색어가 없으면 시도조차 하지 않는다 (attempt 미호출).
-        let err = generate_ai_with_fallback_with(&s, "manual keyword", &dest, |_, _, d| {
+        let err = generate_ai_with_fallback_with(&s, "manual keyword", &dest, |_, _, _dest| {
             panic!("검색어가 비었으면 Search 는 시도되지 않아야 한다 (프롬프트 폴백 금지)");
             #[allow(unreachable_code)]
-            Ok(d.clone())
+            Ok(_dest.clone())
         })
         .expect_err("검색어 없는 Search 는 명시적 오류여야 한다");
         assert!(matches!(err, WallpaperError::CandidateLoad(_)));

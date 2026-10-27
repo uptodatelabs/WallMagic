@@ -297,6 +297,18 @@ fn search_online_wallpapers(query: &str) -> Result<SearchResult, WallpaperError>
     })
 }
 
+/// 로컬 검색이 0건일 때 온라인 검색으로 폴백해야 하는지 판정한다.
+///
+/// - 키워드가 비어 있으면 온라인 검색을 하지 않는다 — 빈 검색어는 "전체 목록" 요청이고,
+///   온라인에 빈 질의를 보내면 무의미한 결과가 온다.
+/// - 로컬 매칭이 1건이라도 있으면 온라인으로 나가지 않는다(로컬 우선).
+///
+/// 순수 함수로 분리한 이유: 이 조건이 UI 분기와 얽혀 있으면 "키워드를 입력했는데
+/// 로컬에서만 검색된다"는 회귀를 네트워크 없이 테스트로 고정할 수 없다.
+pub fn should_search_online(query: &str, local_matched: usize) -> bool {
+    !query.trim().is_empty() && local_matched == 0
+}
+
 /// 키워드로 로컬 배경화면 후보를 검색한다.
 ///
 /// - `root`가 주어지면 그 폴더만, 없으면 `default_search_roots()`(앱 라이브러리 + Pictures)를 탐색한다.
@@ -331,7 +343,10 @@ pub fn search_wallpapers(
         name(a).cmp(&name(b))
     });
 
-    if matched_paths.is_empty() && !query_lower.is_empty() {
+    // 로컬 0건 + 키워드 존재일 때만 온라인 검색으로 폴백한다. 키워드가 비어 있으면
+    // "전체 목록" 요청이므로 온라인 검색을 하지 않는다 — 이 조건을 순수 함수로 고정해
+    // "키워드를 넣었는데 로컬에서만 검색된다"는 회귀를 테스트로 잡는다.
+    if should_search_online(&query_lower, matched_paths.len()) {
         return search_online_wallpapers(&query_lower);
     }
 

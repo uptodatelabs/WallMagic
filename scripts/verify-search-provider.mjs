@@ -262,13 +262,25 @@ check("② 생성·적용(handleGenerateAi) 검색 분기가 백엔드가 실제
   );
 });
 
-check("② 검색(라이브러리) 경로는 회전 없이 키워드를 그대로 넘겨 표기=실제가 된다", () => {
+check("② 생성은 검색 공급자를 실행하지 않는다(검색 실행 지점은 ① 검색 하나)", () => {
+  // 사용자 지시("검색은 검색 창에서 설정, 생성은 생성 창에서 설정")에 따라 ② 생성 영역의
+  // 검색 실행 분기를 제거했다. ② 가 provider:"search" 로 백엔드 검색을 호출하면 검색
+  // 액션이 두 곳에 중복되고, 그 버튼이 이미지 검색어에 반응해 혼동을 만든다.
   const body = fnBody(app, "handleGenerate");
+  return (
+    /scProvider === "search"/.test(body) &&
+    /① 검색/.test(body) &&
+    !/provider:\s*"search"/.test(body)
+  );
+});
+
+check("① 검색 [검색] 은 키워드를 회전 없이 그대로 넘겨 표기=실제가 된다", () => {
+  const body = fnBody(app, "handleSearch");
   const backend = fnBody(lib, "generate_library_wallpaper_with_provider_impl");
   const searchArm = /"search"\s*=>\s*\{[\s\S]*?\n        \}/.exec(backend);
   return (
-    /provider:\s*"search"/.test(body) &&
-    /prompt:\s*keyword/.test(body) &&
+    /invoke<SearchResult>\("search_wallpapers"/.test(body) &&
+    /\bquery,/.test(body) &&
     Boolean(searchArm) &&
     /generate_search_wallpaper\(trimmed_prompt/.test(searchArm[0]) &&
     !/search_query_for/.test(searchArm[0])

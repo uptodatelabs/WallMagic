@@ -1,13 +1,19 @@
 #!/usr/bin/env node
-// ② 생성 버튼의 검색(Search) 분기 계약 검증 — 공급자="search" 일 때 ② 버튼의 기대 동작을 고정한다.
+// ① 검색 / ② 생성 영역의 액션 분리 계약 검증.
 //
-// 배경(결함): handleGenerate 에 provider="search" 분기가 없어
-//   ① 검색 공급자를 선택해도 ② 버튼이 "생성 (검색 …)" 으로 남아 무엇을 하는지 불명확했고
-//   ② 시나리오 ⑤에 저장한 검색 키워드 목록이 무시된 채 프롬프트만 검색어로 쓰였으며
-//   ③ 프롬프트가 비면 키워드가 있어도 "프롬프트를 입력하세요" 로 막혔다.
+// 배경(요구사항): "검색과 생성시에 검색어와 프롬프트는 내용이 전혀 달라. 따라서 검색은
+//   검색 창에서 설정하도록 하고 생성은 생성 창에서 설정하도록 해줘. 공통성이 없어."
 //
-// 계약: 검색 공급자 선택 시 ② 버튼은 "검색 실행 (Search)" 로 분기하고,
-//       검색어는 ⑤ 키워드(첫 항목) → 프롬프트 순으로 해석하며, 배경 적용은 하지 않는다(후보만).
+// 이전 결함: ② 생성 영역에도 "검색 실행 (Search)" 버튼이 있어 검색 액션이 두 곳에
+//   중복 배치되었고, 그 버튼의 disabled 가 '이미지 검색어'(#scSearchQueries)에 반응해
+//   "왜 이미지 검색어를 입력하니까 생성 창의 검색 실행 버튼이 활성화되는가" 라는
+//   모순을 만들었다(사용자 지적 3).
+//
+// 새 계약:
+//   ① 검색 영역 = 키워드 + [검색] 버튼 **단일** 액션 (로컬 + 온라인).
+//   ② 생성 영역 = 프롬프트 + [생성] 버튼. 검색 공급자일 때는 검색 실행 버튼을 두지 않는다.
+//   ③ 검색 질의 소스는 ① 검색의 키워드다 — 이미지 검색어(순환 목록)가 비어 있으면
+//      키워드로 폴백해 "키워드만 넣어도 인터넷 검색이 된다"(사용자 지적 1)를 보장한다.
 //
 // 사용: node scripts/verify-search-generate-button.mjs [--git=<rev>]
 //   --git 지정 시 `git show <rev>:<path>` 로 과거 소스를 검사한다(Red 재현용).
@@ -24,13 +30,31 @@ const app = gitRev
 
 console.log(`검사 대상: ${gitRev ? `${gitRev}:` : ""}${APP}`);
 
-/** `const name = async () => { ... }` 본문을 중괄호 균형으로 추출한다. */
-function sliceAsyncFn(src, name) {
-  const marker = `const ${name} = async () => {`;
-  const start = src.indexOf(marker);
-  if (start === -1) return "";
+/** `const name = async () => { ... }` 또는 `const name = (...) => ...;` 본문을 추출한다. */
+function sliceFn(src, name) {
+  const re = new RegExp(`const\\s+${name}\\s*=\\s*(?:async\\s*)?`);
+  const m = re.exec(src);
+  if (!m) return "";
+  const start = m.index;
+  // 화살표(`=>`) 뒤에 블록이 오는지 먼저 본다 — 블록이 없으면 세미콜론까지가 본문이다.
+  // (이전 구현은 파일 전체에서 첫 `{` 를 잡아, 블록 없는 화살표 정의에서 **다음 함수의
+  //  본문**까지 포함했다. 그래서 searchKeywords 본문에 handleGenerate 의 `prompt` 가
+  //  딸려 들어와 "프롬프트를 검색어로 쓴다"는 오탐 FAIL 이 났다 — 계측 버그.)
+  const arrow = src.indexOf("=>", start);
+  let bodyStart = src.indexOf("{", start);
+  if (arrow >= 0 && (bodyStart < 0 || bodyStart > arrow)) {
+    const rest = src.slice(arrow + 2);
+    const firstNonSpace = rest.search(/\S/);
+    const first = firstNonSpace < 0 ? -1 : arrow + 2 + firstNonSpace;
+    if (first < 0 || src[first] !== "{") {
+      const semi = src.indexOf(";", arrow);
+      return semi < 0 ? src.slice(start) : src.slice(start, semi + 1);
+    }
+    bodyStart = first;
+  }
+  if (bodyStart < 0) return src.slice(start);
   let depth = 0;
-  for (let i = src.indexOf("{", start); i < src.length; i += 1) {
+  for (let i = bodyStart; i < src.length; i += 1) {
     if (src[i] === "{") depth += 1;
     else if (src[i] === "}") {
       depth -= 1;
@@ -53,75 +77,108 @@ function check(name, fn) {
   console.log(`${ok ? "ok  " : "FAIL"} ${name}${detail ? ` — ${detail}` : ""}`);
 }
 
-const gen = sliceAsyncFn(app, "handleGenerate");
+// ── 영역별 섹션 분리 (① 검색 / ② 생성) ──
+const searchStart = app.indexOf("<h2>① 검색</h2>");
+const createStart = app.indexOf("<h2>② 생성</h2>");
+const createEnd = createStart >= 0 ? app.indexOf("</section>", createStart) : -1;
+const searchSection =
+  searchStart >= 0 && createStart > searchStart ? app.slice(searchStart, createStart) : "";
+const createSection =
+  createStart >= 0 && createEnd > createStart ? app.slice(createStart, createEnd) : "";
 
-check("handleGenerate 본문을 추출한다", () => gen.length > 0);
+check("① 검색 / ② 생성 섹션을 모두 찾는다", () => searchSection.length > 0 && createSection.length > 0);
 
-check("검색 공급자는 ② 생성 핸들러에서 전용 분기로 처리한다", () =>
-  /scProvider\s*===\s*"search"/.test(gen));
+// ── ① 검색 영역: 단일 [검색] 액션 ──
+check("① 검색 영역에 [검색] 버튼이 하나 있다(handleSearch 호출)", () => {
+  const hits = searchSection.match(/onClick=\{\(\) => void handleSearch\(\)\}/g) ?? [];
+  return hits.length === 1;
+});
 
-check('검색 분기는 백엔드 검색 커맨드를 provider "search" 로 호출한다', () =>
-  /"generate_library_wallpaper_with_provider"[\s\S]{0,320}?provider:\s*"search"/.test(gen));
+check("① 검색 영역 [검색] 버튼 라벨은 '검색' 이다", () => {
+  const m = searchSection.match(/onClick=\{\(\) => void handleSearch\(\)\}[\s\S]{0,200}?<\/button>/);
+  return Boolean(m) && />\s*검색\s*</.test(m[0]);
+});
 
-check("검색어는 ① 검색 영역의 검색어만 쓴다(프롬프트 대체 없음)", () =>
-  /const keyword = searchKeywords\[0\];/.test(gen) &&
-  !/searchKeywords\[0\] : aiPrompt/.test(gen));
+check("① 검색의 키워드 입력(#query)이 검색 섹션 안에 있다", () =>
+  /id="query"/.test(searchSection));
 
-check("검색 공급자는 프롬프트가 아니라 검색어 유무로 입력을 판정한다", () =>
-  /if \(scProvider === "search"\) \{\s*if \(searchKeywords\.length === 0\)/.test(gen));
-
-check("검색 분기는 배경을 적용하지 않고 후보만 추가한다", () => {
-  const i = gen.indexOf('if (scProvider === "search")');
-  if (i === -1) return false;
-  const body = gen.slice(i, i + 1400);
+// ── ② 생성 영역: 검색 액션 부재 ──
+check("② 생성 영역에 '검색 실행 (Search)' 버튼이 없다(중복 액션 제거)", () => {
+  if (!createSection) return false;
   return (
-    /setSelected\(candidate\)/.test(body) &&
-    !/apply_generated_image|generate_wallpaper_priority/.test(body)
+    !/검색 실행 \(Search\)/.test(createSection) &&
+    !/handleSearch/.test(createSection)
   );
 });
 
-check("검색 분기는 검색어 출처를 사용자에게 알린다", () =>
-  /검색 완료 \(Search\)/.test(gen));
+check("② 생성 영역에는 생성 액션(handleGenerate)만 있다", () =>
+  /onClick=\{\(\) => void handleGenerate\(\)\}/.test(createSection));
 
-// ── ② 버튼 렌더링 ──
-check("② 버튼 라벨이 검색일 때 '검색 실행 (Search)' 로 바뀐다", () =>
-  /"검색 실행 \(Search\)"/.test(app));
-
-check("② 버튼 라벨은 다른 공급자에서 생성(공급자) 표기를 유지한다", () => {
-  const m = app.match(/onClick=\{\(\) => void handleGenerate\(\)\}[\s\S]{0,200}?<\/button>/);
-  return Boolean(m) && /providerLabel\(scProvider\)/.test(m[0]);
+check("검색 공급자일 때 ② 영역은 버튼 대신 ① 검색 안내문을 보여준다", () => {
+  if (!createSection) return false;
+  const i = createSection.indexOf('scProvider === "search"');
+  if (i < 0) return false;
+  const branch = createSection.slice(i, i + 600);
+  return /① 검색/.test(branch) && !/<button/.test(branch.split(") : (")[0] ?? "");
 });
 
-check("② 버튼은 검색 입력(키워드·프롬프트)이 모두 없으면 비활성화된다", () => {
-  const m = app.match(/onClick=\{\(\) => void handleGenerate\(\)\}[\s\S]{0,200}?<\/button>/);
-  return Boolean(m) && /disabled=\{[^}]*searchNeedsInput[^}]*\}/.test(m[0]);
+check("② 생성 버튼의 disabled 는 검색어(searchNeedsInput)에 반응하지 않는다", () => {
+  const m = createSection.match(/onClick=\{\(\) => void handleGenerate\(\)\}[\s\S]{0,200}?<\/button>/);
+  return Boolean(m) && !/searchNeedsInput/.test(m[0]);
 });
 
-check("searchNeedsInput 은 검색 공급자 + 검색어 공백 조건으로 정의된다(프롬프트 미관여)", () => {
-  const i = app.indexOf("const searchNeedsInput");
-  if (i === -1) return false;
-  const decl = app.slice(i, i + 200).split(";")[0];
+check("searchNeedsInput 심볼이 제거되었다(이미지 검색어↔생성 버튼 바인딩 해소)", () => {
+  const decl = /const\s+searchNeedsInput\b/.test(app);
+  const used = /searchNeedsInput/.test(app);
+  return !decl && !used;
+});
+
+// ── 검색 질의 소스: 키워드 단일 소스 + 폴백 (지적 1) ──
+const searchKeywordsFn = sliceFn(app, "searchKeywords");
+check("searchKeywords 정의를 추출한다", () => searchKeywordsFn.length > 0);
+
+check("이미지 검색어가 비면 ① 검색의 키워드(query)로 폴백한다(키워드만으로 온라인 검색)", () =>
+  /scSearchQueries\.trim\(\)/.test(searchKeywordsFn) &&
+  /\?\s*scSearchQueries\s*:\s*query/.test(searchKeywordsFn));
+
+check("searchKeywords 는 ② 생성의 프롬프트를 검색어로 쓰지 않는다", () =>
+  !/\bprompt\b/.test(searchKeywordsFn));
+
+check("① 검색 [검색] 핸들러는 키워드(query)를 그대로 백엔드에 넘긴다(회전 없음)", () => {
+  const body = sliceFn(app, "handleSearch");
+  return /invoke<SearchResult>\("search_wallpapers"/.test(body) && /\bquery,/.test(body);
+});
+
+// ── ② 생성: 검색 공급자에서 검색을 실행하지 않는다(가드 유지) ──
+check("handleGenerate 는 검색 공급자에서 ① 검색으로 안내하고 종료한다", () => {
+  const body = sliceFn(app, "handleGenerate");
   return (
-    /scProvider === "search"/.test(decl) &&
-    /searchKeywords\.length === 0/.test(decl) &&
-    !/prompt\.trim\(\)/.test(decl)
+    /scProvider === "search"/.test(body) &&
+    /① 검색 영역의 \[검색\] 버튼/.test(body) &&
+    !/generate_library_wallpaper_with_provider[\s\S]{0,200}provider:\s*"search"/.test(body)
   );
 });
 
 // ── 다른 공급자 회귀 없음 ──
-check("Puter 분기(puterGenerateWithAuth)는 그대로 유지된다", () =>
-  /scProvider\s*===\s*"puter"/.test(gen) && /puterGenerateWithAuth/.test(gen));
+check("Puter 분기(puterGenerateWithAuth)는 그대로 유지된다", () => {
+  const body = sliceFn(app, "handleGenerate");
+  return /scProvider === "puter"/.test(body) && /puterGenerateWithAuth/.test(body);
+});
 
-check("비-Puter 공급자는 백엔드로 선택 공급자를 전달한다(provider: scProvider)", () =>
-  /provider:\s*scProvider/.test(gen));
+check("비-Puter 공급자는 백엔드로 선택 공급자를 전달한다(provider: scProvider)", () => {
+  const body = sliceFn(app, "handleGenerate");
+  return /provider:\s*scProvider/.test(body);
+});
 
-check("OpenAI/Cloudflare 자격증명 분기가 그대로 유지된다", () =>
-  /scOpenaiKey\.trim\(\)/.test(gen) && /scCfToken\.trim\(\)/.test(gen));
+check("OpenAI/Cloudflare 자격증명 분기가 그대로 유지된다", () => {
+  const body = sliceFn(app, "handleGenerate");
+  return /scOpenaiKey\.trim\(\)/.test(body) && /scCfToken\.trim\(\)/.test(body);
+});
 
 const failed = results.filter((r) => !r.ok).length;
 console.log(
   failed === 0
-    ? `${results.length}항목 전부 ok — 검색 공급자 ② 버튼 계약 통과`
-    : `${failed} FAIL / ${results.length - failed} ok — 검색 공급자 ② 버튼 계약 미충족`,
+    ? `\n${results.length}항목 전부 ok — 검색/생성 액션 분리 계약 통과`
+    : `\n${failed} FAIL / ${results.length - failed} ok — 검색/생성 액션 분리 계약 미충족`,
 );
 process.exit(failed === 0 ? 0 : 1);

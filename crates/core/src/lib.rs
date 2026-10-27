@@ -27,7 +27,8 @@ pub use scenario::{
 };
 pub use search::{
     generate_library_wallpaper, generate_search_wallpaper, library_output_path, load_candidate,
-    online_cache_file_name, search_wallpapers, WallpaperCandidate, SearchResult,
+    online_cache_file_name, search_wallpapers, should_search_online, WallpaperCandidate,
+    SearchResult,
     SUPPORTED_EXTENSIONS,
 };
 pub use wallpaper::{
@@ -367,6 +368,26 @@ mod tests {
             vec!["sunset_a.bmp".to_string(), "sunset_c.png".to_string()],
             "search must return only name-matching, decodable, >=640x480 images in sorted order"
         );
+    }
+
+    /// 회귀 테스트 (지적 1: "키워드에 sunset 을 입력하면 인터넷에서 잘 찾았는데 지금은
+    /// 로컬에서만 검색된다"): 로컬 매칭이 0건이면 **키워드가 있을 때 온라인 검색으로
+    /// 폴백**해야 한다. 이 판정을 순수 함수(`should_search_online`)로 분리해 두어야
+    /// UI 분기와 얽히지 않고 네트워크 없이 기대 동작을 고정할 수 있다.
+    #[test]
+    fn test_keyword_only_falls_back_to_online_search() {
+        // ① 키워드만 있고 로컬 0건 → 온라인 검색을 수행한다(사용자 기대 동작).
+        assert!(
+            should_search_online("sunset", 0),
+            "keyword with no local match must fall back to the online search"
+        );
+        // ② 로컬에 1건이라도 있으면 로컬 우선 — 온라인으로 나가지 않는다.
+        assert!(!should_search_online("sunset", 1));
+        // ③ 키워드가 비면 "전체 목록" 요청이므로 온라인 검색을 하지 않는다.
+        assert!(!should_search_online("", 0));
+        assert!(!should_search_online("   ", 0));
+        // ④ 대소문자·앞뒤 공백이 있어도 키워드로 인정된다(UI 는 소문자로 정규화해 넘긴다).
+        assert!(should_search_online("  Sunset  ".trim().to_lowercase().as_str(), 0));
     }
 
     /// 회귀 테스트 (검수 지적 1): 알파 채널이 있는 PNG는 JPEG 인코더가 Rgba8을 거부하므로
