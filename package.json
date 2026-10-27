@@ -18,6 +18,13 @@
     "windows"
   ],
   "type": "module",
+  "files": [
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md"
+  ],
   "scripts": {
     "dev": "node scripts/free-port.mjs && vite",
     "build": "tsc && vite build",
