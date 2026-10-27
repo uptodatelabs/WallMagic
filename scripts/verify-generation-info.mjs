@@ -248,7 +248,9 @@ ok(
 // 요구("미리보기에 생성 정보가 없어 Puter 로 생성됐는지 알 수 없다"): 상태바(footer)
 // 하단만으로는 생성 직후 눈에 띄지 않으므로, ③ 미리보기 패널 안에서도
 // 공급자 라벨 + 경로 상세를 항상 볼 수 있어야 한다.
-const previewStart = ui.indexOf("<h2>③ 미리보기</h2>");
+// 좌측 패널 제목에서 ①~⑤ 번호를 제거했다(사용자 요청) — 앵커도 번호 없는 실제 UI와 맞춘다.
+// 번호가 남아 있으면 indexOf 가 -1 을 돌려 미리보기 블록 검사가 통째로 무력화된다.
+const previewStart = ui.indexOf("<h2>미리보기</h2>");
 const previewEnd = previewStart >= 0 ? ui.indexOf("</aside>", previewStart) : -1;
 const previewBlock =
   previewStart >= 0 && previewEnd > previewStart

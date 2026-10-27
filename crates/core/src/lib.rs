@@ -31,7 +31,8 @@ pub use search::{
     should_search_online, WallpaperCandidate, SearchResult, SUPPORTED_EXTENSIONS,
 };
 pub use wallpaper::{
-    app_data_dir, generate_online_wallpaper, generate_sample_wallpaper, generation_sidecar_path,
+    app_data_dir, generate_online_wallpaper, generate_sample_wallpaper,
+    generation_info_for_apply, generation_sidecar_path,
     get_current_wallpaper, is_staged_path, list_monitors, load_state, normalize_to_hd,
     read_generation_sidecar, record_generation, restore_wallpaper, save_state, set_wallpaper,
     set_wallpaper_with, state_file_path, validate_and_stage_image, write_generation_sidecar,
@@ -162,6 +163,55 @@ mod tests {
             staged.starts_with(guard.dir()),
             "staged wallpaper must be written inside the isolated data dir: {}",
             staged.display()
+        );
+
+        let _ = fs::remove_file(&tmp);
+    }
+
+    /// 회귀 테스트 (사용자 지적 3: "생성된 이미지를 바탕화면에 적용할 때마다 이미지가 또
+    /// 생성되는 것 같다"): 적용 결과 파일(`active_<stem>_<monitor>.bmp`)을 다시 적용하면
+    /// 스테이징 접두어(`active_`)와 모니터 접미어(`_primary`)가 누적된 **새 파일**이 생겨
+    /// 매번 새 이미지가 만들어진 것처럼 보였다.
+    ///
+    /// 같은 이미지를 반복 적용해도 경로가 수렴하고, active 디렉터리에 파일이 늘어나지
+    /// 않아야 한다(재인코딩·재기록 없음 = "또 생성" 아님).
+    #[test]
+    fn test_reapplying_staged_wallpaper_reuses_same_file() {
+        let guard = DataDirGuard::new("reuse_staged");
+        let tmp = std::env::temp_dir().join("wallmagic_test_reuse.bmp");
+        let generated = generate_sample_wallpaper("reuse staged path", &tmp).expect("generate");
+
+        let first = validate_and_stage_image(&generated, Some("primary")).expect("first stage");
+        assert!(first.exists());
+
+        // ④ 적용을 반복하는 상황 — 적용된 파일을 다시 후보로 넣는다.
+        let second = validate_and_stage_image(&first, Some("primary")).expect("second stage");
+        assert_eq!(
+            first,
+            second,
+            "re-applying a staged wallpaper must converge to the same staged path"
+        );
+
+        let third = validate_and_stage_image(&second, Some("primary")).expect("third stage");
+        assert_eq!(first, third, "repeated apply must stay idempotent");
+
+        let active_dir = guard.dir().join("active");
+        let mut names: Vec<String> = fs::read_dir(&active_dir)
+            .expect("read active dir")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .filter(|name| name.ends_with(".bmp"))
+            .collect();
+        names.sort();
+
+        assert_eq!(
+            names.len(),
+            1,
+            "repeated apply must not create additional staged files: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|name| name.starts_with("active_active_")),
+            "staging prefix must not accumulate: {names:?}"
         );
 
         let _ = fs::remove_file(&tmp);

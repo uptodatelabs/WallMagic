@@ -78,8 +78,9 @@ function check(name, fn) {
 }
 
 // ── 영역별 섹션 분리 (① 검색 / ② 생성) ──
-const searchStart = app.indexOf("<h2>① 검색</h2>");
-const createStart = app.indexOf("<h2>② 생성</h2>");
+// 제목 앞 번호(①②③⑤)는 UI 정리 요청으로 제거되었다 — 단언도 번호 없는 제목을 검사한다.
+const searchStart = app.indexOf("<h2>검색</h2>");
+const createStart = app.indexOf("<h2>생성</h2>");
 const createEnd = createStart >= 0 ? app.indexOf("</section>", createStart) : -1;
 const searchSection =
   searchStart >= 0 && createStart > searchStart ? app.slice(searchStart, createStart) : "";
@@ -172,11 +173,13 @@ check("① 검색 [검색] 핸들러는 키워드(query)를 그대로 백엔드�
 });
 
 // ── ② 생성: 검색 공급자에서 검색을 실행하지 않는다(가드 유지) ──
-check("handleGenerate 는 검색 공급자에서 ① 검색으로 안내하고 종료한다", () => {
+// 안내 문구의 번호 접두어(①/②)는 UI 제목에서 제거되었다(사용자 지시: 좌측 패널 제목 앞
+// 숫자 삭제). 계약은 "검색 영역의 [검색] 버튼으로 안내"라는 의미이므로 번호 없이 매칭한다.
+check("handleGenerate 는 검색 공급자에서 검색 영역으로 안내하고 종료한다", () => {
   const body = sliceFn(app, "handleGenerate");
   return (
     /scProvider === "search"/.test(body) &&
-    /① 검색 영역의 \[검색\] 버튼/.test(body) &&
+    /검색 영역의 \[검색\] 버튼/.test(body) &&
     !/generate_library_wallpaper_with_provider[\s\S]{0,200}provider:\s*"search"/.test(body)
   );
 });

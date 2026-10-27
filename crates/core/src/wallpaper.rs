@@ -121,6 +121,39 @@ pub fn save_state(state: &WallpaperState) -> Result<(), WallpaperError> {
     Ok(())
 }
 
+/// 스테이징 파일명에 쓸 stem 을 정규화한다.
+///
+/// `active_<stem>_<monitor>.bmp` / `staged_<stem>_<monitor>.bmp` 를 다시 입력으로 받아도
+/// 접두어(`active_`, `staged_`)와 모니터 접미어(`_<monitor>`)를 제거해 **원래 stem** 으로
+/// 되돌린다. 이 정규화가 없으면 적용을 반복할 때마다 접두어가 누적된 새 파일이 생긴다.
+/// 영숫자 외 문자는 기존 규칙대로 `_` 로 치환한다.
+pub fn staged_stem(raw: &str, monitor_suffix: &str) -> String {
+    let mut s = raw;
+    loop {
+        match s.strip_prefix("active_").or_else(|| s.strip_prefix("staged_")) {
+            Some(rest) if !rest.is_empty() => s = rest,
+            _ => break,
+        }
+    }
+    let suffix = format!("_{monitor_suffix}");
+    if !monitor_suffix.is_empty() {
+        if let Some(rest) = s.strip_suffix(&suffix) {
+            if !rest.is_empty() {
+                s = rest;
+            }
+        }
+    }
+    let cleaned: String = s
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    if cleaned.is_empty() {
+        "wallpaper".to_string()
+    } else {
+        cleaned
+    }
+}
+
 /// Validates that the candidate image exists, decodes cleanly, and meets minimum 640x480 resolution,
 /// then stages it atomically into `%LOCALAPPDATA%\WallMagic\active\active_<stem>_<monitor>.bmp`.
 pub fn validate_and_stage_image(
@@ -143,22 +176,36 @@ pub fn validate_and_stage_image(
     let active_dir = app_data_dir().join("active");
     fs::create_dir_all(&active_dir)?;
 
-    let stem: String = candidate_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("wallpaper")
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect();
-
     let sanitized_suffix: String = monitor_id
         .unwrap_or("primary")
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect();
 
+    // 적용된 `active_<stem>_<monitor>.bmp` 를 다시 적용해도 스테이징 접두어와 모니터
+    // 접미어가 누적되지 않도록 정규화한다. 정규화가 없으면 적용할 때마다
+    // `active_active_...`, `..._primary_primary.bmp` 가 새로 만들어져
+    // "적용할 때마다 이미지가 또 생성된다"처럼 보인다.
+    let stem = staged_stem(
+        candidate_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("wallpaper"),
+        &sanitized_suffix,
+    );
+
     let staged_tmp = active_dir.join(format!("staged_{stem}_{sanitized_suffix}.bmp"));
     let active_final = active_dir.join(format!("active_{stem}_{sanitized_suffix}.bmp"));
+
+    // 후보가 이미 최종 스테이징 경로와 같으면 재인코딩·재기록하지 않는다.
+    // (같은 파일을 다시 만들어 "또 생성된 것"처럼 보이던 경로를 끊는다)
+    if candidate_path == active_final.as_path() {
+        tracing::info!(
+            reused = %active_final.display(),
+            "Wallpaper already staged — skipping re-encode"
+        );
+        return Ok(active_final);
+    }
 
     img.save(&staged_tmp)?;
     fs::rename(&staged_tmp, &active_final)?;
@@ -484,6 +531,22 @@ pub fn read_generation_sidecar(image_path: &Path) -> Option<GenerationSidecar> {
     let path = generation_sidecar_path(image_path);
     let text = fs::read_to_string(&path).ok()?;
     serde_json::from_str(&text).ok()
+}
+
+/// ④ 적용 시 **후보 파일의 생성 정보를 이어받기** 위한 순수 조회.
+///
+/// `set_wallpaper` 는 `set_wallpaper_with(.., None, None)` 로 위임하므로, 이 함수를 거치지
+/// 않고 적용하면 `record_generation(&mut state, None, None)` 이 state.json 의 provider/source
+/// 를 **지운다**. 그러면 생성한 이미지를 적용할 때마다 "미기록"으로 보여 사용자가
+/// "또 다른 이미지가 생성된 것 같다"고 느낀다. 적용 경로는 반드시 이 함수로 사이드카를
+/// 먼저 읽어 공급자·경로를 넘겨야 귀속이 유지된다.
+///
+/// 사이드카가 없으면 `(None, None)` — 사용자 로컬 이미지에 임의 라벨을 붙이지 않는다.
+pub fn generation_info_for_apply(image_path: &Path) -> (Option<String>, Option<String>) {
+    match read_generation_sidecar(image_path) {
+        Some(sidecar) => (sidecar.provider, sidecar.source),
+        None => (None, None),
+    }
 }
 
 /// `set_wallpaper` + 생성 정보 기록. 실제 생성 경로(공급자·모델)를 함께 남긴다.

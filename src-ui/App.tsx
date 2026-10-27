@@ -8,19 +8,6 @@ import {
   type PuterUsageResult,
 } from "./puterUsage";
 import { parseAppliedSearchQuery } from "./appliedQuery";
-// 모델별 1회당 크레딧 — 계산·표시는 순수 모듈(./puterModelCredits)이 담당하고
-// App 은 배선(모델 select·단가 표)만 한다. 단가 미확인 모델은 null(→ "정보 없음")로
-// 두어 추정치를 실측처럼 표시하지 않는다.
-import {
-  creditForModel,
-  estimateImagesForCredits,
-  formatCreditsPerImage,
-  mergeModelCredits,
-  parseModelCatalogCredits,
-  PUTER_DEFAULT_MODEL_ID,
-  PUTER_MODEL_CREDITS,
-  type PuterModelCredit,
-} from "./puterModelCredits";
 
 /* ── Puter.js 전역 선언 (WebView 전용 SDK) ──
    `index.html`이 `https://js.puter.com/v2/`를 로드하므로 브라우저 전역에 `puter`가 생긴다.
@@ -38,12 +25,6 @@ declare global {
         // 월간 사용량·잔여 allowance 조회 (Puter User-Pays 모델).
         // 근거: https://docs.puter.com/Objects/monthlyusage/
         getMonthlyUsage?: () => Promise<unknown>;
-      };
-      // 드라이버 직접 호출 — 이미지 모델 카탈로그(단가 포함) 조회에 쓴다.
-      // 근거: https://docs.puter.com/AI/txt2img/
-      //   "await puter.drivers.call('puter-image-generation', 'models', {})"
-      drivers?: {
-        call?: (driver: string, method: string, args?: Record<string, unknown>) => Promise<unknown>;
       };
     };
   }
@@ -152,40 +133,6 @@ export async function fetchPuterUsage(): Promise<PuterUsageResult> {
   }
   const raw = await auth.getMonthlyUsage();
   return { summary: puterUsageSummary(raw), raw };
-}
-
-/// Puter 이미지 모델 카탈로그(단가 포함)를 조회한다.
-///
-/// 진입점: `puter.drivers.call('puter-image-generation','models',{})`
-/// 근거: https://docs.puter.com/AI/txt2img/ — "including model IDs, aliases, provider names,
-///       and pricing metadata"
-///
-/// 응답 정규화는 순수 모듈(`parseModelCatalogCredits`)이 담당하고, 여기서는 SDK 호출·세션
-/// 확인만 한다. `pricing.unit` 이 credits 가 아닌 항목(달러/센트)은 채택하지 않는다 —
-/// `$0.04` 를 "0.04 credits" 로 표시하면 실제 소모를 1/475 로 오해하게 된다.
-/// 세션 미확립·SDK 부재는 0/null 로 위장하지 않고 명시적 오류로 실패한다.
-export async function fetchPuterModelCredits(): Promise<{
-  live: { id: string; creditsPerImage: number }[];
-  raw: unknown;
-}> {
-  if (!window.puter) {
-    throw new Error("Puter.js SDK를 불러오지 못했습니다 (오프라인/스크립트 차단).");
-  }
-  const drivers = window.puter.drivers;
-  if (!drivers || typeof drivers.call !== "function") {
-    throw new Error(
-      "이 Puter.js SDK 버전에는 drivers.call 이 없습니다 — 모델 단가를 조회할 수 없습니다.",
-    );
-  }
-  const auth = window.puter.auth;
-  const signedIn = await puterIsSignedIn(() => (auth && auth.isSignedIn ? auth.isSignedIn() : false));
-  if (!signedIn) {
-    throw new Error(
-      "Puter 로그인이 필요합니다 — [Puter 로그인] 후 [모델 단가 조회]를 다시 누르세요.",
-    );
-  }
-  const raw = await drivers.call("puter-image-generation", "models", {});
-  return { live: parseModelCatalogCredits(raw), raw };
 }
 
 /// 팝업 차단 안내 모달을 띄우기 위한 컴포넌트 등록 지점.
@@ -515,22 +462,8 @@ export function App(): React.ReactElement {
   const [puterUsage, setPuterUsage] = useState<PuterUsageResult | null>(null);
   const [puterUsageErr, setPuterUsageErr] = useState<string>("");
   const [puterUsageBusy, setPuterUsageBusy] = useState<boolean>(false);
-  // 모델 단가 목록 — 정적 표(PUTER_MODEL_CREDITS)를 기반으로 두고, Puter 카탈로그
-  // (`drivers.call('puter-image-generation','models')`)를 조회하면 그 값으로 병합한다.
-  // 병합 전에는 실측 1건 외 14개가 "정보 없음"이며, 이는 위장이 아니라 미확인 상태다.
-  const [puterModelCredits, setPuterModelCredits] =
-    useState<PuterModelCredit[]>(PUTER_MODEL_CREDITS);
-  const [puterCatalogErr, setPuterCatalogErr] = useState<string>("");
-  const [puterCatalogBusy, setPuterCatalogBusy] = useState<boolean>(false);
-  // 모델 미선택 시 실제로 쓰이는 모델은 Puter 기본값이므로, 단가도 그 기본 모델 기준으로 보여준다.
-  // (빈 값을 "정보 없음"으로 두면 기본 모델로 생성하면서 단가를 모르는 것처럼 보인다.)
-  const selectedPuterModelId = scPuterModel.trim() ? scPuterModel.trim() : PUTER_DEFAULT_MODEL_ID;
-  const selectedPuterCredit = creditForModel(selectedPuterModelId, puterModelCredits);
-  // 남은 크레딧으로 이 모델을 몇 회 만들 수 있는지 — 잔액 미조회/단가 미확인이면 null(표시 안 함).
-  const puterImagesPossible = estimateImagesForCredits(
-    puterUsage ? puterUsage.summary.remaining : null,
-    selectedPuterCredit ? selectedPuterCredit.creditsPerImage : null,
-  );
+  // 모델별 1회당 크레딧 표시는 제거했다 — 15개 중 14개가 "정보 없음"이어서 유용한 정보가
+  // 없었고(사용자 요청), 남은 크레딧 조회(puterUsage)만 유지한다.
   // 프롬프트는 좌측 ②의 단일 #prompt를 모든 AI 공급자에 공통 적용한다(중복 입력 제거).
   const [scInfo, setScInfo] = useState<string>("시나리오 미조회");
   // 자동 틱 연속 실패 횟수 (지적 #4: 에러 은폐 방지용 카운터)
@@ -851,7 +784,7 @@ export function App(): React.ReactElement {
     // [검색] 버튼 하나뿐이므로, 생성 영역에서는 검색을 실행하지 않는다(중복 액션 제거).
     if (scProvider === "search") {
       reportError(
-        "검색(Search)은 ① 검색 영역의 [검색] 버튼으로 실행합니다 — ② 생성은 이미지 생성 전용입니다.",
+        "검색(Search)은 왼쪽 검색 영역의 [검색] 버튼으로 실행합니다 — 생성 화면은 이미지 생성 전용입니다.",
       );
       return;
     }
@@ -1428,28 +1361,6 @@ export function App(): React.ReactElement {
     }
   };
 
-  // Puter 모델 카탈로그(단가) 조회 — 실패를 '정보 없음'으로 위장하지 않고 사유를 남긴다.
-  // 성공 시 정적 표(PUTER_MODEL_CREDITS)에 병합해 14개 모델의 미확인 단가를 런타임 값으로 채운다.
-  const handleRefreshPuterModelCredits = async () => {
-    setPuterCatalogBusy(true);
-    setPuterCatalogErr("");
-    try {
-      const { live } = await fetchPuterModelCredits();
-      if (live.length === 0) {
-        // 카탈로그가 왔지만 credits 단가 항목이 없으면(달러 단가 등) 병합하지 않고 사유를 남긴다.
-        setPuterCatalogErr(
-          "카탈로그에서 credits 단가 항목을 찾지 못했습니다 — pricing.unit 이 credits 인 항목이 없습니다(달러/센트 단가는 채택하지 않습니다).",
-        );
-        return;
-      }
-      setPuterModelCredits((prev) => mergeModelCredits(prev, live));
-    } catch (err) {
-      setPuterCatalogErr(formatErr(err));
-    } finally {
-      setPuterCatalogBusy(false);
-    }
-  };
-
   const handlePuterSignIn = async () => {
     setBusy(true);
     try {
@@ -1540,13 +1451,13 @@ export function App(): React.ReactElement {
               ))}
             </select>
             <div className="detail">
-              <b>검색(Search)</b> 을 고르면 ① 검색 화면만, 생성 공급자를 고르면 ② 생성 화면만
+              <b>검색(Search)</b> 을 고르면 검색 화면만, 생성 공급자를 고르면 생성 화면만
               표시합니다. 검색어와 프롬프트는 서로 다른 입력입니다(자동 대체 없음).
             </div>
           </div>
           {scProvider === "search" ? (
           <section>
-            <h2>① 검색</h2>
+            <h2>검색</h2>
             {/* 검색 공급자 선택 시 이 화면만 렌더된다 — 생성 입력(#prompt)은 아래 else 분기에만 있다. */}
             <div className="field">
               <label htmlFor="query">키워드 (파일명 검색 + 온라인 검색 질의)</label>
@@ -1584,7 +1495,7 @@ export function App(): React.ReactElement {
               <div className="detail">
                 비어 있으면 위 <b>키워드</b>가 그대로 검색 질의로 쓰입니다(키워드 = 검색 질의의
                 단일 소스). 여러 개를 넣으면 시나리오 자동 실행에서 순차/랜덤으로 순환합니다.
-                ② 생성의 프롬프트와는 무관합니다.
+                생성의 프롬프트와는 무관합니다.
               </div>
             </div>
             <button
@@ -1598,7 +1509,7 @@ export function App(): React.ReactElement {
           </section>
           ) : (
           <section>
-            <h2>② 생성</h2>
+            <h2>생성</h2>
             <div className="field">
               <label htmlFor="prompt">프롬프트 (생성 전용 — AI 이미지 공급자 공통)</label>
               <textarea
@@ -1654,7 +1565,7 @@ export function App(): React.ReactElement {
 
         {/* ── 우: 미리보기 / 적용 ── */}
         <aside className="panel panel-right">
-          <h2>③ 미리보기</h2>
+          <h2>미리보기</h2>
           {selected ? (
             <>
               <div className="preview">
@@ -1777,7 +1688,7 @@ export function App(): React.ReactElement {
             disabled={busy || !selected}
             style={{ marginBottom: "8px" }}
           >
-            ④ 바탕화면에 적용
+            바탕화면에 적용
           </button>
           <button
             type="button"
@@ -1790,7 +1701,7 @@ export function App(): React.ReactElement {
           </button>
 
           <section id="scenario-section">
-            <h2>⑤ 시나리오 · Cloudflare (자동 업데이트)</h2>
+            <h2>시나리오 · Cloudflare (자동 업데이트)</h2>
             <div className="field">
               <label htmlFor="scEnabled">자동 업데이트</label>
               <select
@@ -1832,7 +1743,7 @@ export function App(): React.ReactElement {
               />
             </div>
             <div className="detail">
-              이미지 검색어는 ① 검색 영역에서 입력합니다(검색 공급자 전용). 저장 시
+              이미지 검색어는 검색 영역에서 입력합니다(검색 공급자 전용). 저장 시
               <code> source.search_queries</code> 로 함께 저장됩니다.
             </div>
             <div className="field">
@@ -2047,7 +1958,7 @@ export function App(): React.ReactElement {
                   >
                     {PUTER_IMAGE_MODELS.map((m) => (
                       <option key={m.id} value={m.id}>
-                        {m.label} — {formatCreditsPerImage(creditForModel(m.id, puterModelCredits))}
+                        {m.label}
                       </option>
                     ))}
                   </select>
@@ -2055,53 +1966,6 @@ export function App(): React.ReactElement {
                     모델을 선택하지 않으면 Puter 기본 모델(OpenAI gpt-image-2)이 사용됩니다.
                     모델마다 결과 화질·속도·사용 크레딧이 다릅니다.
                   </div>
-                </div>
-                <div className="field">
-                  <label htmlFor="puterModelCredits">모델별 1회당 크레딧</label>
-                  <div id="puterModelCredits" className="detail">
-                    <div>
-                      선택 모델(<code>{selectedPuterModelId}</code>):{" "}
-                      <b>{formatCreditsPerImage(selectedPuterCredit)}</b>
-                      {puterImagesPossible !== null ? ` · 남은 크레딧으로 약 ${puterImagesPossible}회 생성 가능` : ""}
-                    </div>
-                    <div>근거: {selectedPuterCredit ? selectedPuterCredit.basis : "정보 없음"}</div>
-                    {!puterUsage && (
-                      <div>
-                        남은 크레딧을 조회하면 생성 가능 횟수도 함께 표시됩니다 — [크레딧 조회].
-                      </div>
-                    )}
-                    {puterCatalogErr && (
-                      <div style={{ color: "#c0392b" }}>
-                        모델 단가 조회 실패: {puterCatalogErr}
-                      </div>
-                    )}
-                    {!puterCatalogErr && !puterCatalogBusy && (
-                      <div>
-                        단가는 실측 1건 외에는 미확인입니다 — [모델 단가 조회]로 Puter 카탈로그
-                        (<code>drivers.call('puter-image-generation','models')</code>)의 credits
-                        단가를 병합합니다. 달러/센트 단가는 채택하지 않습니다.
-                      </div>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    className="block"
-                    onClick={() => void handleRefreshPuterModelCredits()}
-                    disabled={busy || puterCatalogBusy}
-                    style={{ marginBottom: "8px" }}
-                  >
-                    모델 단가 조회
-                  </button>
-                  <details style={{ marginBottom: "8px" }}>
-                    <summary className="detail">모델 전체 단가 표 (15개)</summary>
-                    <div className="detail" style={{ marginTop: "6px" }}>
-                      {puterModelCredits.map((c) => (
-                        <div key={c.id}>
-                          <code>{c.id}</code> — {formatCreditsPerImage(c)}
-                        </div>
-                      ))}
-                    </div>
-                  </details>
                 </div>
                 <div className="field">
                   <label htmlFor="puterUsageRemaining">Puter 남은 크레딧 (월간 allowance)</label>
