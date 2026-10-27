@@ -321,43 +321,293 @@ seed 모드가 `fixed` 인지 확인하세요. `random` 이면 매 요청에 새
 
 ## English
 
-**WallMagic** is a Windows desktop app that **searches, AI-generates, applies, and restores desktop wallpapers**. Built with Tauri v2 + Rust + React 19 + TypeScript.
+**English** | [한국어](#wallmagic이란)
+
+> Full English translation of every section above — same structure, same tables, same code blocks.
+
+## What is WallMagic?
+
+WallMagic is a desktop application that finishes four desktop-wallpaper flows — **find · generate · apply · restore** — in a single window. It wires the local library and remote image search, five AI image providers, per-monitor apply, and snapshot restore into one pipeline.
 
 ### Key Features
 
-- **Native apply** — uses the `IDesktopWallpaper` COM API first and falls back to `SystemParametersInfoW` automatically. Per-monitor apply with 6 layout modes.
-- **Zero-Black-Screen** — the original wallpaper is snapshotted before applying, so no failure path leaves a black desktop.
-- **BYOK (Bring Your Own Key)** — image generation uses the provider account you connect. No API keys are bundled in this repository.
-- **Local-first** — search, history, settings, and snapshots live under `%LOCALAPPDATA%\WallMagic`. No backend server.
-- **Fully bilingual** — Korean / English, with every user-facing string going through a dictionary.
-- **Seed control** — `random` (default), `incremental`, and `fixed` modes decide whether repeated prompts stay stable or change.
+- **Native apply** — uses the `IDesktopWallpaper` COM API first and falls back to `SystemParametersInfoW` automatically on failure. Per-monitor apply and 6 layout modes are supported.
+- **Zero-Black-Screen** — the original wallpaper is snapshotted before applying, so no failure path leaves a black screen.
+- **BYOK (Bring Your Own Key)** — AI image generation uses the provider account you connect. No API key is hardcoded in this repository.
+- **Local-first** — search · history · settings · snapshots are all stored on your PC (`%LOCALAPPDATA%\WallMagic`). There is no backend server.
+- **Bilingual** — full Korean / English support. Every user-facing string goes through the dictionary.
+- **Seed control** — `random` (default) · `incremental` · `fixed` decide whether repeated prompts stay stable or change.
 
-### Supported providers
+### Feature Summary
 
-| Provider | Key | seed | Note |
-|---|---|---|---|
-| Pollinations | ❌ | ✅ | free, 1 image per 45 s per IP |
-| Cloudflare Workers AI | ✅ | flux models only | non-flux → seed not sent |
-| OpenAI Images | ✅ | ❌ | not supported by the API |
-| Puter | ❌ (sign-in) | ❌ | browser SDK |
-| Search | ❌ | ❌ | not generation |
+| Area | What it does |
+|---|---|
+| **Search** | Local library + remote image search, keyword / resolution filters, rotating queries |
+| **Generate** | 5 providers (free Pollinations · Cloudflare Workers AI · OpenAI Images · Puter · Search), model selection, credential management |
+| **Seed control** | `random` · `incremental` · `fixed` — the UI shows per provider whether seed is supported |
+| **Preview** | 3 viewer modes (fit / fill / actual) + original-resolution loading + fullscreen |
+| **Apply · Restore** | Per-monitor apply, layout mode, snapshot-based restore, applied-history sync |
+| **History** | Manage generation · search history in a separate window (timestamp · newest first · per-item delete · prompt reuse) |
+| **File management** | Delete candidate image files (allow-root validated + sidecar `*.geninfo.json` cleaned up together) |
+| **Scenario** | Provider priority · auto-run interval · query rotation · On/Off toggles |
+| **Bilingual** | Full Korean / English support (every user-facing string goes through the dictionary) |
 
-### Requirements
+> **26** IPC commands, **5** screens + 1 history window. See [`docs/VERIFY_ALL_FEATURES.md`](docs/VERIFY_ALL_FEATURES.md) for the full inventory.
 
-Windows 10 (1809+) / Windows 11 (x64), WebView2 (bundled with Windows), Node.js 20+, Rust 1.82+, MSVC build tools.
+## Technology Stack
 
-### Quick start
+| Layer | Technology |
+|---|---|
+| GUI shell | [Tauri v2](https://tauri.app) — `tauri 2` · `tauri-build 2` · `tauri-plugin-opener 2` |
+| Core | Rust 1.82+ (edition 2021) — `ureq 2` (TLS) · `image 0.25` (png/jpeg/bmp) · `serde` / `serde_json` · `thiserror 2` · `base64 0.22` · `urlencoding 2` · `tracing 0.1` |
+| Windows integration | `windows 0.62` — `Win32_System_Com` · `Win32_UI_Shell` · `Win32_UI_Shell_Common` · `Win32_UI_WindowsAndMessaging` · `Win32_Graphics_Gdi` · `Win32_Foundation` |
+| Frontend | [React 19](https://react.dev) · TypeScript 5.7 · Vite 6 · `@tauri-apps/api 2` |
+| Test / verification | `cargo test` (2 workspace crates) · 28 contract verification scripts (Node.js, no extra framework) |
+
+- **Build pipeline** — the `dist/` produced by `tsc` → `vite build` is embedded into the bundle by Tauri as static assets.
+- **Two windows share one HTML** — the main window and the history window share a single `index.html`, and `src-ui/main.tsx` picks the render target via `getCurrentWindow().label`.
+- **Single metadata source** — version · license · author · repository live only in `Cargo.toml` `[workspace.package]` and are inherited by `crates/core` · `src-tauri`. If `package.json` · `tauri.conf.json` · `LICENSE` drift from those values, `node scripts/verify-app-meta.mjs` fails.
+
+## Requirements
+
+| Item | Requirement |
+|---|---|
+| OS | Windows 10 (1809+) / Windows 11 (x64) |
+| Runtime | WebView2 (bundled with Windows 10/11 — no separate install) |
+| Build tools | Node.js 20+ / npm, Rust 1.82+ (`rustup`), MSVC build tools (C++ workload) |
+| Disk | about 50 MB |
+
+## Quick Start
+
+### Installation
 
 ```bash
 git clone https://github.com/uptodatelabs/WallMagic.git
 cd WallMagic
 npm install
-npm run build
+```
+
+### Build
+
+```bash
+npx tsc --noEmit         # frontend type check
+npm run build            # tsc + vite build → dist/
+cargo build --workspace  # build the Rust workspace
+```
+
+### Run (dev mode)
+
+```bash
 npm run tauri dev
 ```
 
-Build installers with `npm run tauri build` (NSIS + MSI).
+Starts the Vite dev server together with the Tauri window. To see the frontend only, without a window, use `npm run dev` — that command **frees port 1420 first** and then runs Vite alone.
 
-Run the contract suite with `node scripts/run-all-verify.mjs` (28 scripts).
+### Release artifacts
 
-Licensed under the [MIT License](LICENSE). Copyright (c) 2026 uptodatelabs.
+```bash
+npm run tauri build
+```
+
+| Artifact | Path |
+|---|---|
+| Executable | `target/release/wallmagic-app.exe` |
+| NSIS installer | `target/release/bundle/nsis/` |
+| MSI installer | `target/release/bundle/msi/` |
+
+### Windows helper scripts
+
+| File | What it does |
+|---|---|
+| `build-installer.cmd` | Build the installers (NSIS / MSI) |
+| `run-app.cmd` | Launch the built app |
+| `stop-app.cmd` | Stop a running app |
+| `check-app.cmd` | Fast compile check via `cargo check` |
+| `test-workspace.cmd` | Workspace tests |
+
+## How It Works
+
+```
+ Search (local/remote)            Generate (5 AI providers)
+        │                               │
+        └───────────────┬───────────────┘
+                        ▼
+              [ candidate image list ]
+              · thumbnail + generation-info sidecar (*.geninfo.json)
+              · history (prompt · query) recorded
+                        ▼
+              [ preview viewer ]
+              · fit / fill / actual + original resolution + fullscreen
+                        ▼
+              [ apply (IDesktopWallpaper COM) ]
+              · original snapshot saved before apply   ← Zero-Black-Screen
+              · SystemParametersInfoW fallback on failure
+                        ▼
+              [ desktop changed ] ───▶ [ restore (snapshot) ]
+```
+
+The dependency direction is fixed and one-way.
+
+```
+src-ui (React)  ── IPC / JSON ──▶  src-tauri (Tauri v2)  ── function call ──▶  wallmagic-core
+```
+
+`wallmagic-core` never references UI or IPC types. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for details.
+
+## Provider Setup
+
+Choosing a provider on the Generate screen shows only the inputs that provider needs. Credentials are stored in the app settings (`scenario.json`).
+
+#### 1. Pollinations (free · no key)
+
+No input required — generate right away. Images are requested at 1920×1080, and the free tier allows **1 image per 45 seconds per IP**. When the limit is hit, a `402 FREE_LIMIT` notice shows the remaining wait time.
+
+#### 2. Cloudflare Workers AI
+
+Requires `account_id`, `api_token`, and a model name.
+
+**⚠️ seed is only sent when the model name contains `flux`.**
+
+❌ Example where seed is NOT sent:
+
+```
+@cf/stabilityai/stable-diffusion-xl-base-1.0
+```
+
+→ Non-flux models reject the seed parameter, so the app **does not send** seed to avoid a 400 error.
+
+✅ Example where seed IS sent:
+
+```
+@cf/black-forest-labs/flux-1-schnell
+```
+
+#### 3. OpenAI Images
+
+Requires `api_key` (`sk-...`). The Images API **does not support the seed parameter** — the app does not send it. Output size is a fixed value set by the API.
+
+#### 4. Puter
+
+Browser-SDK based. After signing in from the app, the model list and **remaining credits** are shown. seed is not supported.
+
+#### 5. Search
+
+Does not generate images. It finds public images and adds them as candidates, so it needs a **query** rather than a prompt.
+
+### Provider summary
+
+| Provider | Key | seed | Note |
+|---|---|---|---|
+| Pollinations | ❌ | ✅ | free · 1 image per 45 s per IP |
+| Cloudflare Workers AI | ✅ | flux models only | non-flux → seed not sent |
+| OpenAI Images | ✅ | ❌ | not supported by the API |
+| Puter | ❌ (sign-in) | ❌ | browser SDK |
+| Search | ❌ | ❌ | not generation |
+
+### The three seed modes
+
+| Mode | Behavior |
+|---|---|
+| `random` (default) | Draws a fresh seed for every generation, so the same prompt yields different results. |
+| `incremental` | Advances a counter by 1. Use it for reproducible variations. |
+| `fixed` | Keeps using the single value you specify. Same prompt = same result (cache included). |
+
+## Screens
+
+| Screen | What it does |
+|---|---|
+| Search | Local/remote search by keyword · resolution filter · rotating queries |
+| Generate | Provider selection · prompt · seed mode · model · credentials |
+| Results | Candidate card list · per-item delete |
+| Preview | fit / fill / actual · original resolution · fullscreen · apply |
+| Scenario | Provider priority · interval · query rotation · On/Off · save |
+| History window | History with timestamps · newest first · per-item delete · reuse in main |
+
+History opens in a **separate window**, not in the main panel. The fullscreen preview closes with `Esc`.
+
+## Data Locations
+
+| File / folder | Location | Contents |
+|---|---|---|
+| `state.json` | `%LOCALAPPDATA%\WallMagic\` | Current / previous wallpaper, backend used |
+| `scenario.json` | 〃 | Scenario settings (provider priority · interval · credentials) |
+| `history.json` | 〃 | Generation / search history |
+| `active\` | 〃 | Image staged immediately before apply |
+| `online_cache\` | 〃 | Temporary cache for remote images |
+| `*.geninfo.json` | next to the image | Generation-info sidecar (provider · model · prompt · seed) |
+
+## Verification
+
+This repository ships **28 contract verification scripts**. They automatically detect when a code change breaks IPC names and argument keys, i18n keys, seed policy, preview modes, the window-creation thread rule, or repository hygiene (secrets · personal paths).
+
+```bash
+# full contract suite (28 scripts)
+node scripts/run-all-verify.mjs
+
+# run individually
+node scripts/verify-ipc-contract.mjs         # IPC names + argument keys ↔ Rust signatures
+node scripts/verify-app-meta.mjs             # version · license · author single source
+node scripts/verify-persist-i18n-meta.mjs    # i18n keys · metadata contract
+node scripts/verify-seed.mjs                 # seed modes · per-provider UI notices
+node scripts/verify-window-builder-async.mjs # window-creating commands must be async
+node scripts/verify-repo-hygiene.mjs         # secrets · personal paths · build artifacts untracked
+```
+
+Rust tests that need real networking or a real OS wallpaper change are separated with `#[ignore]`.
+
+```bash
+cargo test --workspace               # default (ignored excluded)
+cargo test --workspace -- --ignored  # opt-in: real network / desktop change
+```
+
+> ⚠️ Running `--ignored` **changes your actual desktop wallpaper**. Only run it on your own machine.
+
+Docs: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`docs/USER_MANUAL.md`](docs/USER_MANUAL.md) · [`docs/VERIFY_ALL_FEATURES.md`](docs/VERIFY_ALL_FEATURES.md) · [`docs/CLOUDFLARE_SCENARIO.md`](docs/CLOUDFLARE_SCENARIO.md) · [`docs/COMMERCIAL_READINESS.md`](docs/COMMERCIAL_READINESS.md)
+
+## Troubleshooting
+
+**The dev-server port (1420) is reported as already in use**
+
+`npm run dev` frees port 1420 before starting. If it still lingers, stop the leftover process with `stop-app.cmd` and run it again.
+
+**Generation fails with `402`**
+
+That is the Pollinations free-tier limit (1 image per 45 seconds per IP). Wait the time shown in the notice and try again.
+
+**The same prompt keeps producing the same result**
+
+Check whether the seed mode is `fixed`. With `random`, every request carries a new seed. For Cloudflare, seed is not sent when the model name lacks `flux`.
+
+**The history window shows a white screen**
+
+Window creation must be an `async` command. You can check for regressions with `node scripts/verify-window-builder-async.mjs`.
+
+**Tests take a long time**
+
+`cargo test --workspace` excludes `#[ignore]`. If you don't need the real-network tests, use the default run only.
+
+## Security & Known Limitations
+
+This project is at a **development-build stage with no code signing, no auto-update, and no CSP**. It is a public repository, but the following remain before commercial distribution ([`docs/COMMERCIAL_READINESS.md`](docs/COMMERCIAL_READINESS.md) P0):
+
+- Code signing · notarization not configured
+- No auto-update path
+- CSP `null` (Tauri default)
+- Provider API keys are **stored in plaintext** in `scenario.json` — values are masked in IPC responses, but the file itself is not encrypted
+- Single instance not guaranteed
+
+For vulnerability reports see [`SECURITY.md`](SECURITY.md).
+
+## Contributing
+
+Bug reports · feature requests · PRs are all welcome. Please read [`CONTRIBUTING.md`](CONTRIBUTING.md) before starting. **IPC contracts and i18n rules are enforced by the verification scripts**, so run `node scripts/run-all-verify.mjs` before opening a PR.
+
+Change history lives in [`CHANGELOG.md`](CHANGELOG.md).
+
+## License
+
+[MIT License](LICENSE) — Copyright (c) 2026 **uptodatelabs**
+
+> MIT is a permissive license that allows free use · modification · distribution · resale, provided the copyright notice and the full license text are kept.
+>
+> To change the distribution policy, edit `LICENSE` · `Cargo.toml` (`[workspace.package] license`) · `package.json` (`license`) **together**. If the three drift apart, `node scripts/verify-app-meta.mjs` fails.
