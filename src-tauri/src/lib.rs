@@ -1079,8 +1079,24 @@ fn open_history_window_impl(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 /// IPC #25: 히스토리 전용 창 열기.
+///
+/// # `async` 가 필수인 이유 (백색 창 + 닫기 불가의 실제 원인)
+///
+/// Tauri v2 에서 `async` 가 아닌 `#[tauri::command]` 는 **메인 스레드에서 실행된다**.
+/// 그 상태에서 `WebviewWindowBuilder::build()` 를 호출하면 Windows(wry)의 WebView2
+/// 생성이 완료를 기다리며 메인 스레드의 메시지 펌프를 중첩 재진입시키고, 이 조합이
+/// 교착을 만든다. 관측된 증상이 정확히 이것이다:
+///
+/// 1. Win32 창 껍데기만 흰색으로 뜨고 React 가 렌더되지 않는다(웹뷰 미완성).
+/// 2. 메시지 루프가 멈춰 `X`(WM_CLOSE)·메인 창 종료가 처리되지 않고, 콘솔의 Ctrl-C
+///    로만 프로세스가 죽는다.
+///
+/// `async fn` 으로 선언하면 명령이 async 런타임 스레드에서 실행되므로, 창 생성은
+/// 메인 스레드로 디스패치되어 정상 완료된다(메인 스레드를 붙잡지 않는다).
+/// 메인 창은 `setup()` 안에서 생성되기 때문에 같은 교착이 발생하지 않았고, 이것이
+/// 두 창의 유일한 차이였다.
 #[tauri::command]
-fn open_history_window(app: tauri::AppHandle) -> Result<(), String> {
+async fn open_history_window(app: tauri::AppHandle) -> Result<(), String> {
     open_history_window_impl(&app)
 }
 
@@ -1232,6 +1248,30 @@ pub fn run() {
                     }
                 })
                 .build()?;
+
+            // 메인 창을 닫으면 **프로세스까지 종료**한다 (사용자 지적: 메인을 닫아도
+            // 히스토리 창이 남아 콘솔 Ctrl-C 로만 죽던 문제).
+            //
+            // Tauri 는 "마지막 창이 닫힐 때" 앱을 종료하므로, 히스토리 창이 열려 있으면
+            // 메인 창만 닫혀도 프로세스가 살아남는다. 메인 창의 CloseRequested 에서
+            // 나머지 창을 정리하고 exit 를 호출해 이 잔존을 없앤다.
+            // (히스토리 창의 `X` 는 그 창만 닫는 기본 동작을 유지한다 — 메인은 계속 산다.)
+            {
+                use tauri::Manager;
+                let handle = app.handle().clone();
+                if let Some(main_window) = app.get_webview_window("main") {
+                    main_window.on_window_event(move |event| {
+                        if let tauri::WindowEvent::CloseRequested { .. } = event {
+                            for (label, win) in handle.webview_windows() {
+                                if label != "main" {
+                                    let _ = win.close();
+                                }
+                            }
+                            handle.exit(0);
+                        }
+                    });
+                }
+            }
             Ok(())
         })
         .run(tauri::generate_context!())

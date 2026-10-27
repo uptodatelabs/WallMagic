@@ -41,7 +41,10 @@ const rs = readFileSync(resolve(root, "src-tauri/src/lib.rs"), "utf8");
 
 const invocations = [...ui.matchAll(/invoke(?:<[^>]*>)?\(\s*["']([a-z_]+)["']/g)].map((m) => m[1]);
 // Tauri v2 제한: lib.rs의 command 함수는 pub 불가(E0255) — pub 유무와 무관하게 매칭
-const commands = [...rs.matchAll(/#\[tauri::command\]\s*(?:pub\s+)?fn ([a-z_]+)/g)].map((m) => m[1]);
+// `async fn` 도 매칭해야 한다: `open_history_window` 는 메인 스레드 교착을 피하려고
+// async 로 선언했다. async 를 빠뜨리면 rust 쪽에서 그 명령이 사라진 것으로 보여
+// "missing_in_rust=[open_history_window]" 라는 거짓 MISMATCH 가 난다(실측).
+const commands = [...rs.matchAll(/#\[tauri::command\]\s*(?:pub\s+)?(?:async\s+)?fn ([a-z_]+)/g)].map((m) => m[1]);
 
 console.log("UI invokes   : " + invocations.join(", "));
 console.log("Rust commands: " + commands.join(", "));
@@ -137,7 +140,7 @@ function splitTopLevel(text) {
 /** Rust 명령의 파라미터 목록 `( … )` 본문을 뽑는다 (여러 줄 허용). */
 function rustCommandParams(src, fnName) {
   const idx = src.search(
-    new RegExp(`#\\[tauri::command\\]\\s*(?:pub\\s+)?fn\\s+${fnName}\\s*\\(`)
+    new RegExp(`#\\[tauri::command\\]\\s*(?:pub\\s+)?(?:async\\s+)?fn\\s+${fnName}\\s*\\(`)
   );
   if (idx < 0) return [];
   const open = src.indexOf("(", idx);
