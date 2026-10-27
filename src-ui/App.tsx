@@ -1941,7 +1941,10 @@ export function App(): React.ReactElement {
           <h2>{t(lang, "preview.heading")}</h2>
           {selected ? (
             <>
-              <div className="preview">
+              {/* 컨테이너에도 모드 클래스를 준다 — CSS `:has()` 에만 의존하면
+                  WebView2 버전에 따라 조용히 무시되어 "형식을 바꿔도 크기가 그대로"로
+                  되돌아갈 수 있다. 클래스와 속성 두 경로를 모두 둔다. */}
+              <div className={`preview preview-${previewFit}`}>
                 {/* 보기 방식(창맞춤/원본/채우기)을 썸네일에도 즉시 반영한다.
                     style 을 주지 않으면 CSS 고정값만 적용되어 선택이 화면에 드러나지 않는다. */}
                 <img

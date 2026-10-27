@@ -79,7 +79,9 @@ body {
 /* ── 3패널 스튜디오 ────────────────────────── */
 .studio {
   display: grid;
-  grid-template-columns: 300px 1fr 320px;
+  /* 미리보기 패널을 320px → 380px 로 넓혔다 — 320px 에서는 16:9 이미지가
+     손바닥만 하게 그려져 "미리보기가 너무 작다"는 증상의 한 원인이었다. */
+  grid-template-columns: 300px 1fr 380px;
   flex: 1;
   min-height: 0;
 }
@@ -302,6 +304,10 @@ button.danger:hover:not(:disabled) {
 }
 
 /* ── 미리보기 ─────────────────────────────── */
+/* 미리보기 컨테이너 — 보기 형식이 **실제 렌더 크기**를 바꾸도록 높이를 준다.
+   이전에는 컨테이너에 높이가 없고 이미지에 `height: 180px` 가 고정돼 있어,
+   세 가지 보기 형식이 모두 180px 상자 안의 object-fit 차이로만 보였다
+   (= 형식을 바꿔도 크기가 같은 것처럼 보인 직접 원인). */
 .preview {
   position: relative;
   border: 1px solid var(--border);
@@ -309,6 +315,31 @@ button.danger:hover:not(:disabled) {
   overflow: hidden;
   background: #0b0e14;
   margin-bottom: 12px;
+  /* fit(창맞춤): 창 높이에 비례해 커지되 상한을 둔다. */
+  height: clamp(240px, 34vh, 400px);
+}
+
+/* fill(채우기): 잘림을 감수하고 **fit 보다 더 크게** 보여준다.
+   fit 과 fill 의 컨테이너 높이가 같으면 object-fit 만 바뀌어 "형식을 바꿔도
+   크기가 그대로"로 보인다 — 높이 자체를 다르게 두는 것이 요구의 핵심이다.
+
+   선택자는 **class 우선**(`.preview-fill` — App.tsx 가 `preview preview-${previewFit}` 로
+   붙인다)이다. `:has()` 는 브라우저 지원에 의존하므로, 지원되지 않는 런타임에서
+   규칙 전체가 무효화되면 다시 "형식을 바꿔도 크기가 같다"로 되돌아간다.
+   `:has()` 는 같은 값을 주는 폴백으로만 남긴다(지원 시 결과 동일, 미지원 시 무시). */
+.preview.preview-fill,
+.preview:has(img[data-fit="fill"]) {
+  height: clamp(300px, 46vh, 560px);
+}
+
+/* actual(원본 크기): 원본 픽셀 그대로 — 컨테이너는 내용에 맞춰 늘어나고
+   넘치면 스크롤한다. (class 우선, `:has()` 는 폴백 — 위 fill 설명 참조) */
+.preview.preview-actual,
+.preview:has(img[data-fit="actual"]) {
+  height: auto;
+  min-height: 320px;
+  max-height: 70vh;
+  overflow: auto;
 }
 
 /* 미리보기 전체화면 버튼 */
@@ -357,9 +388,28 @@ button.danger:hover:not(:disabled) {
 
 .preview img {
   display: block;
+  /* 컨테이너(=모드별 높이)를 가득 채우도록 두고, 실제 크기 차이는
+     `.preview` 의 height 분기에서 만든다. */
   width: 100%;
-  height: 180px;
+  height: 100%;
   object-fit: contain;
+}
+
+/* 보기 형식별 실제 크기 분기 — 세 모드가 서로 다른 렌더 결과를 낸다.
+   fit   : 컨테이너를 채우되 전체가 보이도록 축소/확대 (contain)
+   fill  : 컨테이너를 가득 채우고 넘치는 부분은 잘림 (cover)
+   actual: 원본 픽셀 크기 그대로 (축소·확대 없음, 필요 시 컨테이너가 스크롤) */
+.preview img[data-fit="fill"] {
+  object-fit: cover;
+}
+
+.preview img[data-fit="actual"] {
+  width: auto;
+  height: auto;
+  max-width: none;
+  max-height: none;
+  object-fit: none;
+  margin: 0 auto;
 }
 
 .detail {
