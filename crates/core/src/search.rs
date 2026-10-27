@@ -99,6 +99,42 @@ fn is_supported_image(path: &Path) -> bool {
 
 /// 파일을 열어 유효한 후보(디코딩 가능 + 640x480 이상)로 변환하고 썸네일을 생성한다.
 /// 유효하지 않으면 `None`을 반환한다 — 검색 결과에는 "적용 가능한 후보"만 노출한다.
+/// 전체화면 뷰어용 미리보기의 최대 변 (px).
+///
+/// 카드 썸네일은 `THUMBNAIL_MAX_DIM`(320px)이라 전체화면에 그대로 쓰면 원본이 4K 여도
+/// 320px 로만 그려져 "전체화면에서 그림이 작다"가 된다. 반대로 원본 픽셀을 그대로
+/// base64 JPEG 로 IPC 에 넘기면 수 MB 가 되어 전송·디코딩이 무거워진다.
+/// 그 사이의 절충값: 2560px 이면 1440p·2K 모니터의 전체화면을 채우고도 페이로드가
+/// 수백 KB 대에 머문다(원본이 그보다 작으면 **축소하지 않는다**).
+pub const PREVIEW_MAX_DIM: u32 = 2560;
+
+/// 전체화면 뷰어용 미리보기(base64 JPEG)를 만든다 — 카드 썸네일과 달리 **원본 해상도**를 쓴다.
+///
+/// `load_candidate` 가 `Option`(읽기 실패를 조용히 후보 제외)인 것과 달리, 이 함수는
+/// 사용자가 명시적으로 연 뷰어 경로이므로 실패를 `WallpaperError` 로 **명시적으로** 돌려준다
+/// (뷰어가 흰 화면으로 남는 대신 사유를 표시할 수 있게 하기 위함).
+pub fn load_preview_base64(path: &Path) -> Result<String, WallpaperError> {
+    if !path.is_file() {
+        return Err(WallpaperError::FileNotFound(path.display().to_string()));
+    }
+    let img = image::open(path)?;
+    let img = if img.width().max(img.height()) > PREVIEW_MAX_DIM {
+        img.resize(
+            PREVIEW_MAX_DIM,
+            PREVIEW_MAX_DIM,
+            image::imageops::FilterType::Lanczos3,
+        )
+    } else {
+        img
+    };
+    // 알파 채널이 있는 PNG를 JPEG로 인코딩하면 실패하므로 RGB로 고정한다
+    // (`load_candidate` 의 썸네일 생성과 같은 이유·같은 방식).
+    let mut buf: Vec<u8> = Vec::new();
+    img.to_rgb8()
+        .write_to(&mut Cursor::new(&mut buf), ImageFormat::Jpeg)?;
+    Ok(BASE64.encode(&buf))
+}
+
 pub fn load_candidate(path: &Path) -> Option<WallpaperCandidate> {
     // 파일 자체의 생성 정보(사이드카)를 먼저 읽는다 — "현재 배경" state.json 과 무관한 귀속.
     // 사이드카가 없으면(미기록) None 이므로 후보의 gen_* 는 null 로 표시된다.

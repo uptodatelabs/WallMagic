@@ -197,6 +197,12 @@ export const STRINGS: Record<string, Entry> = {
   "preview.fitFit": { ko: "창맞춤 (Fit)", en: "Fit to window" },
   "preview.fitActual": { ko: "원본 크기 (100%)", en: "Actual size (100%)" },
   "preview.fitFill": { ko: "채우기 (Fill)", en: "Fill" },
+  // 뷰어가 원본 해상도 로딩에 실패해 썸네일(320px)로 폴백했을 때 사유를 노출한다.
+  // 무음 폴백이면 사용자는 "전체화면이 왜 작은지" 알 수 없다.
+  "preview.viewerLoadFailed": {
+    ko: "원본 해상도를 불러오지 못해 축소 썸네일로 표시합니다 — {reason}",
+    en: "Could not load the full-resolution image; showing the downscaled thumbnail — {reason}",
+  },
   "preview.clickFullscreen": {
     ko: "클릭하면 전체화면으로 봅니다",
     en: "Click to view fullscreen",

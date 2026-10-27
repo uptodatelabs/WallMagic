@@ -548,6 +548,11 @@ export function App(): React.ReactElement {
   const [busy, setBusy] = useState<boolean>(false);
   // ③ 미리보기 전체화면 뷰어 열림 상태
   const [viewerOpen, setViewerOpen] = useState<boolean>(false);
+  // 전체화면 뷰어에 표시할 이미지 — 카드 썸네일(320px)을 그대로 쓰면 원본이 4K 여도
+  // 320px 로 그려져 "전체화면에서 그림이 작다"가 된다(사용자 보고의 직접 원인).
+  // 뷰어를 열 때 백엔드에서 원본 해상도(최대 PREVIEW_MAX_DIM=2560px) JPEG 를 받아 교체한다.
+  const [viewerSrc, setViewerSrc] = useState<string | null>(null);
+  const [viewerErr, setViewerErr] = useState<string | null>(null);
 
   /* ── 다국어(한국어/영어) ──
      문자열은 `./i18n` 사전 한 곳에만 존재하고, 언어 설정은 localStorage 에 저장해
@@ -649,6 +654,26 @@ export function App(): React.ReactElement {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [viewerOpen]);
+
+  // 뷰어가 열릴 때 **원본 해상도** 미리보기를 불러온다.
+  // 실패하면 축소 썸네일로 되돌리되 사유를 화면에 남긴다(무음 실패 금지).
+  useEffect(() => {
+    if (!viewerOpen || !selected) return;
+    let cancelled = false;
+    setViewerErr(null);
+    setViewerSrc(null);
+    void (async () => {
+      try {
+        const b64 = await invoke<string>("load_preview_image", { path: selected.path });
+        if (!cancelled) setViewerSrc(b64);
+      } catch (err) {
+        if (!cancelled) setViewerErr(formatErr(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [viewerOpen, selected]);
   /// 팝업 차단 안내 모달 상태 — null 이면 닫힘, 문자열이면 그 URL을 담은 모달이 열린다.
   const [puterPromptUrl, setPuterPromptUrl] = useState<string | null>(null);
   /// 모달 안에 표시되는 복사/열기 결과 피드백(토스트 역할).
@@ -2057,12 +2082,27 @@ export function App(): React.ReactElement {
               aria-label={`${selected.file_name} 전체화면`}
               onClick={() => setViewerOpen(false)}
             >
-              <div className="viewer-body" onClick={(e) => e.stopPropagation()}>
+              {/* 보기 방식(창맞춤/원본/채우기)을 **전체화면 뷰어에도 그대로** 적용한다.
+                  클래스와 data-fit 두 경로를 모두 둔다(`:has()` 미지원 런타임 대비). */}
+              <div
+                className={`viewer-body viewer-${previewFit}`}
+                onClick={(e) => e.stopPropagation()}
+              >
                 <img
-                  src={`data:image/jpeg;base64,${selected.thumb_base64}`}
+                  src={`data:image/jpeg;base64,${viewerSrc ?? selected.thumb_base64}`}
                   alt={selected.file_name}
+                  data-fit={previewFit}
+                  style={previewFitStyle(previewFit)}
                 />
               </div>
+              {/* 원본 해상도 로딩 실패를 **무음으로 남기지 않는다** — 썸네일(320px)로
+                  폴백된 상태에서 사용자는 "왜 전체화면이 작은지" 알 수 없기 때문이다.
+                  실패 사유를 뷰어 안에 표시해 축소 표시의 원인을 드러낸다. */}
+              {viewerErr ? (
+                <div className="viewer-err" id="viewerError">
+                  {t(lang, "preview.viewerLoadFailed", { reason: viewerErr })}
+                </div>
+              ) : null}
               <button
                 type="button"
                 id="viewerClose"

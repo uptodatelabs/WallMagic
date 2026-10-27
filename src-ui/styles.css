@@ -380,10 +380,71 @@ button.danger:hover:not(:disabled) {
   background: #0b0e14;
 }
 
+/* 전체화면 뷰어에도 미리보기에서 고른 **보기 방식**을 그대로 적용한다
+   (요구: "보기 방식이 전체화면 버튼을 눌렀을 때에도 적용").
+   이전에는 뷰어 이미지가 `object-fit: contain` 고정이라, 창맞춤/원본/채우기를 골라도
+   전체화면에서는 항상 같은 크기·같은 배치로만 보였다.
+   선택자는 **class 우선**(`.viewer-body.viewer-fill`)이다 — `:has()` 는 WebView2 버전
+   의존이라 1차 계약이 될 수 없다(지원 시 무시되어도 클래스 규칙이 동작한다). */
+.viewer-body.viewer-fill,
+.viewer:has(img[data-fit="fill"]) .viewer-body {
+  width: 100%;
+  height: 100%;
+}
+
+.viewer img[data-fit="fill"] {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  object-fit: cover;
+}
+
+/* 원본 크기(100%): 축소·확대 없이 원본 픽셀 그대로. 화면을 넘치면 뷰어가 스크롤한다. */
+.viewer-body.viewer-actual,
+.viewer:has(img[data-fit="actual"]) .viewer-body {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+
+.viewer img[data-fit="actual"] {
+  width: auto;
+  height: auto;
+  max-width: none;
+  max-height: none;
+  object-fit: none;
+}
+
+/* fit(창맞춤)은 기존 `.viewer img` 의 contain 을 그대로 쓴다 — 화면 안에 전체가 보인다. */
+.viewer-body.viewer-fit,
+.viewer:has(img[data-fit="fit"]) .viewer-body {
+  width: 100%;
+  height: 100%;
+}
+
 .viewer-close {
   position: absolute;
   top: 16px;
   right: 16px;
+}
+
+/* 원본 해상도 로딩 실패 안내 — 뷰어 하단에 고정해 이미지를 가리지 않는다.
+   (실패 시 썸네일로 폴백되므로, 사유를 모르면 "전체화면이 작다"로만 보인다) */
+.viewer-err {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 16px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: #ffd7d7;
+  background: rgba(120, 24, 24, 0.9);
+  border: 1px solid rgba(255, 120, 120, 0.5);
+  border-radius: 6px;
+  word-break: break-all;
 }
 
 .preview img {

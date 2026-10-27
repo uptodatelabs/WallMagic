@@ -1200,6 +1200,28 @@ fn restore_library_candidates_impl() -> Result<Vec<WallpaperCandidate>, String> 
     Ok(out)
 }
 
+/// IPC #26: 전체화면 뷰어용 **고해상도** 미리보기(base64 JPEG).
+///
+/// 카드 썸네일은 320px(`THUMBNAIL_MAX_DIM`)이라 전체화면에 그대로 쓰면 원본이 4K 여도
+/// 320px 로만 그려져 "전체화면에서 그림이 작다"가 된다(사용자 보고의 직접 원인).
+/// 이 커맨드는 원본 경로에서 최대 `PREVIEW_MAX_DIM`(2560px) 로 축소한 JPEG 를 돌려준다 —
+/// 원본 픽셀을 그대로 IPC 로 넘기면 수 MB 가 되므로 상한을 둔다(원본이 더 작으면 축소 없음).
+///
+/// 실패는 **명시적 오류**로 돌려준다: 뷰어가 흰 화면으로 남는 대신 사유를 표시하고,
+/// UI 는 카드 썸네일로 폴백할 수 있다.
+#[tauri::command]
+fn load_preview_image(path: String) -> Result<String, String> {
+    load_preview_image_impl(&path)
+}
+
+pub fn load_preview_image_impl(path: &str) -> Result<String, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("load_preview_image: path 가 필요합니다".to_string());
+    }
+    wallmagic_core::load_preview_base64(&PathBuf::from(trimmed)).map_err(err_to_string)
+}
+
 /// IPC #23: 시작 시 생성 이미지 후보 목록 복원.
 #[tauri::command]
 fn restore_library_candidates() -> Result<Vec<WallpaperCandidate>, String> {
@@ -1235,6 +1257,7 @@ pub fn run() {
             open_history_window,
             record_library_entry,
             restore_library_candidates,
+            load_preview_image,
         ])
         .setup(|app| {
             // 팝업 차단의 구조적 원인 해소: `tauri.conf.json` 의 `app.windows` 로 자동 생성된
