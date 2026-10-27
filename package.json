@@ -22,7 +22,9 @@
     "dev": "node scripts/free-port.mjs && vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "release:build": "tauri build",
+    "release:check": "node scripts/verify-release.mjs --require-artifacts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.2.0",

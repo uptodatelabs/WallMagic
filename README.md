@@ -45,7 +45,7 @@ WallMagic은 Windows 데스크톱의 바탕화면을 **찾고 · 만들고 · �
 | 코어 | Rust 1.82+ (edition 2021) — `ureq 2`(TLS) · `image 0.25`(png/jpeg/bmp) · `serde` / `serde_json` · `thiserror 2` · `base64 0.22` · `urlencoding 2` · `tracing 0.1` |
 | Windows 연동 | `windows 0.62` — `Win32_System_Com` · `Win32_UI_Shell` · `Win32_UI_Shell_Common` · `Win32_UI_WindowsAndMessaging` · `Win32_Graphics_Gdi` · `Win32_Foundation` |
 | 프론트엔드 | [React 19](https://react.dev) · TypeScript 5.7 · Vite 6 · `@tauri-apps/api 2` |
-| 테스트 / 검증 | `cargo test`(워크스페이스 2개 크레이트) · 계약 검증 스크립트 28종 (Node.js, 추가 프레임워크 없음) |
+| 테스트 / 검증 | `cargo test`(워크스페이스 2개 크레이트) · 계약 검증 스크립트 29종 (Node.js, 추가 프레임워크 없음) |
 
 - **빌드 파이프라인** — `tsc` → `vite build` 로 만든 `dist/` 를 Tauri 가 정적 자산으로 번들에 포함합니다.
 - **두 창이 하나의 HTML 공유** — `index.html` 하나를 메인 창과 히스토리 창이 함께 쓰고, `src-ui/main.tsx` 가 `getCurrentWindow().label` 로 렌더 대상을 고릅니다.
@@ -92,9 +92,26 @@ Vite dev 서버와 Tauri 창을 함께 띄웁니다. 창 없이 프론트엔드�
 
 ### 배포 산출물
 
+릴리스는 **버전 정합 → CHANGELOG 승격 → 번들 빌드 → 산출물 검증** 순서로만 진행합니다.
+
 ```bash
-npm run tauri build
+npm run release:build    # = tauri build (NSIS / MSI 생성)
+npm run release:check    # = verify-release.mjs --require-artifacts (버전 정합 + 산출물 확인)
 ```
+
+절차 상세는 [`CHANGELOG.md`](CHANGELOG.md) 의 **릴리스 승격 규칙**을 참조하세요. 요약:
+
+1. 버전 3곳을 같은 값으로 — `Cargo.toml` `[workspace.package].version` · `package.json` · `src-tauri/tauri.conf.json` (한 곳만 바꾸면 `release:check` 가 실패합니다)
+2. `CHANGELOG.md` 의 `[Unreleased]` 를 `## [X.Y.Z] — YYYY-MM-DD` 로 승격하고 새 `[Unreleased]` 블록 생성
+3. `node scripts/verify-release.mjs` — 계약 검사 (산출물 없이 통과)
+4. `npm run release:build` — NSIS / MSI 생성
+5. `npm run release:check` — 산출물 실재 + **파일명에 버전 포함** 확인
+6. `git tag -a vX.Y.Z -m "WallMagic X.Y.Z"` → `git push origin vX.Y.Z`
+7. GitHub Release 생성 후 `bundle/nsis/*.exe` · `bundle/msi/*.msi` 첨부
+
+> 코드 서명 · 자동 업데이트가 아직 없으므로 4~7단계는 **로컬 산출물 생성 + 수동 업로드**입니다. 자동화(tauri-action)는 코드 서명 설정과 함께 도입해야 서명 없는 산출물이 배포되지 않습니다.
+
+이전 버전 산출물이 남아 있으면 `release:check` 가 `warn` 으로 알려줍니다. 정리하려면 `target/release/bundle` · `src-tauri/target/release/bundle` 을 비우세요.
 
 | 산출물 | 경로 |
 |---|---|
@@ -235,10 +252,10 @@ src-ui (React)  ── IPC / JSON ──▶  src-tauri (Tauri v2)  ── 함수
 
 ## 검증
 
-이 저장소는 **계약 검증 스크립트 28종**을 함께 운영합니다. IPC 이름과 인자 키, i18n 키, seed 정책, 미리보기 모드, 창 생성 스레드 규칙, 저장소 위생(비밀정보·개인 경로)이 코드 변경으로 깨지면 자동으로 감지됩니다.
+이 저장소는 **계약 검증 스크립트 29종**을 함께 운영합니다. IPC 이름과 인자 키, i18n 키, seed 정책, 미리보기 모드, 창 생성 스레드 규칙, 저장소 위생(비밀정보·개인 경로)이 코드 변경으로 깨지면 자동으로 감지됩니다.
 
 ```bash
-# 전체 계약 검증 (28종)
+# 전체 계약 검증 (29종)
 node scripts/run-all-verify.mjs
 
 # 개별 실행
@@ -362,7 +379,7 @@ WallMagic is a desktop application that finishes four desktop-wallpaper flows �
 | Core | Rust 1.82+ (edition 2021) — `ureq 2` (TLS) · `image 0.25` (png/jpeg/bmp) · `serde` / `serde_json` · `thiserror 2` · `base64 0.22` · `urlencoding 2` · `tracing 0.1` |
 | Windows integration | `windows 0.62` — `Win32_System_Com` · `Win32_UI_Shell` · `Win32_UI_Shell_Common` · `Win32_UI_WindowsAndMessaging` · `Win32_Graphics_Gdi` · `Win32_Foundation` |
 | Frontend | [React 19](https://react.dev) · TypeScript 5.7 · Vite 6 · `@tauri-apps/api 2` |
-| Test / verification | `cargo test` (2 workspace crates) · 28 contract verification scripts (Node.js, no extra framework) |
+| Test / verification | `cargo test` (2 workspace crates) · 29 contract verification scripts (Node.js, no extra framework) |
 
 - **Build pipeline** — the `dist/` produced by `tsc` → `vite build` is embedded into the bundle by Tauri as static assets.
 - **Two windows share one HTML** — the main window and the history window share a single `index.html`, and `src-ui/main.tsx` picks the render target via `getCurrentWindow().label`.
@@ -405,9 +422,26 @@ Starts the Vite dev server together with the Tauri window. To see the frontend o
 
 ### Release artifacts
 
+Releases follow one order only: **version alignment → CHANGELOG promotion → bundle build → artifact verification**.
+
 ```bash
-npm run tauri build
+npm run release:build    # = tauri build (creates NSIS / MSI)
+npm run release:check    # = verify-release.mjs --require-artifacts (version alignment + artifacts)
 ```
+
+See the **release promotion rule** in [`CHANGELOG.md`](CHANGELOG.md) for details. In short:
+
+1. Set the version in all three places — `Cargo.toml` `[workspace.package].version` · `package.json` · `src-tauri/tauri.conf.json` (changing only one makes `release:check` fail)
+2. Promote the `[Unreleased]` block in `CHANGELOG.md` to `## [X.Y.Z] — YYYY-MM-DD` and create a new `[Unreleased]` block
+3. `node scripts/verify-release.mjs` — contract check (passes without artifacts)
+4. `npm run release:build` — produce NSIS / MSI
+5. `npm run release:check` — artifact existence + **version in the file name**
+6. `git tag -a vX.Y.Z -m "WallMagic X.Y.Z"` → `git push origin vX.Y.Z`
+7. Create the GitHub Release and attach `bundle/nsis/*.exe` · `bundle/msi/*.msi`
+
+> Code signing and auto-update are not in place yet, so steps 4–7 are **local artifact creation + manual upload**. Automation (tauri-action) must ship together with signing so unsigned artifacts are never published.
+
+If artifacts from a previous version remain, `release:check` reports them as `warn`. To clean up, empty `target/release/bundle` and `src-tauri/target/release/bundle`.
 
 | Artifact | Path |
 |---|---|
@@ -538,10 +572,10 @@ History opens in a **separate window**, not in the main panel. The fullscreen pr
 
 ## Verification
 
-This repository ships **28 contract verification scripts**. They automatically detect when a code change breaks IPC names and argument keys, i18n keys, seed policy, preview modes, the window-creation thread rule, or repository hygiene (secrets · personal paths).
+This repository ships **29 contract verification scripts**. They automatically detect when a code change breaks IPC names and argument keys, i18n keys, seed policy, preview modes, the window-creation thread rule, or repository hygiene (secrets · personal paths).
 
 ```bash
-# full contract suite (28 scripts)
+# full contract suite (29 scripts)
 node scripts/run-all-verify.mjs
 
 # run individually

@@ -4,10 +4,40 @@
 
 ## [Unreleased]
 
+아직 릴리스되지 않은 변경. 릴리스 시 아래 **승격 규칙**에 따라 버전 섹션으로 옮긴다.
+
+### Added
+
+- 릴리스 준비 자동화 — `npm run release:build`(Tauri 번들 빌드) · `npm run release:check`(버전 정합 + 산출물 확인)
+- `scripts/verify-release.mjs` — 버전 3곳 정합 · CHANGELOG 릴리스 섹션 · 릴리스 스크립트 존재 · 번들 활성화 · 산출물 파일명 검증
+- 저장소 위생 검사기 `scripts/verify-repo-hygiene.mjs` — 비밀정보 · 빌드 산출물 · 로컬 절대경로 추적 차단
+
+### Changed
+
+- `README.md` 를 한국어 / 영어 1:1 대응 구조로 재작성 (배지 · 언어 토글 · Quick Start 하위 섹션 · 요약 표)
+
 ### 예정 (Planned)
 
 - 코드 서명 · 공증, 자동 업데이트 경로, CSP 적용, API 키 암호화(DPAPI/키체인), 단일 인스턴스 보장 — [`docs/COMMERCIAL_READINESS.md`](docs/COMMERCIAL_READINESS.md) P0
 - 생성/검색 취소 · 진행률 표시, 구조화 로깅, CI 파이프라인 (P1)
+
+### 릴리스 시 승격 규칙 (Release promotion rule)
+
+릴리스는 **버전 3곳 정합 → CHANGELOG 승격 → 번들 빌드 → 산출물 검증** 순서로만 진행한다.
+
+1. **버전 범프 — 세 곳을 같은 값으로** (한 곳만 바꾸면 `verify-release` 가 실패한다)
+   - `Cargo.toml` `[workspace.package].version` ← 단일 소스
+   - `package.json` `version`
+   - `src-tauri/tauri.conf.json` `version`
+2. **이 `[Unreleased]` 블록을 `## [X.Y.Z] — YYYY-MM-DD` 로 승격**하고, 새 `[Unreleased]` 블록을 만든다
+3. `node scripts/verify-release.mjs` — 버전 정합 · CHANGELOG 섹션 존재 확인 (산출물은 아직 없어도 통과)
+4. `npm run release:build` — NSIS / MSI 생성 (`beforeBuildCommand` 가 웹 번들을 먼저 만든다)
+5. `npm run release:check` — 산출물 실재 + **파일명에 버전 포함** 여부까지 확인
+6. `git tag -a vX.Y.Z -m "WallMagic X.Y.Z"` → `git push origin vX.Y.Z`
+7. GitHub Release 생성 후 `bundle/nsis/*.exe` · `bundle/msi/*.msi` 첨부
+
+> 서명 · 자동 업데이트가 아직 없으므로 4~7단계는 **로컬 산출물 생성 + 수동 업로드**다.
+> 자동화(tauri-action 등)를 도입할 때는 코드 서명 설정과 함께 넣어야 서명 없는 산출물이 배포되지 않는다.
 
 ---
 
