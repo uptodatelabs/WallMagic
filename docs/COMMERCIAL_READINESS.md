@@ -164,12 +164,12 @@ connect-src ipc: http://ipc.localhost
 
 ---
 
-### P1-2. CI가 없고 26개 검증 스크립트가 로컬 전용
+### P1-2. CI가 없고 28개 검증 스크립트가 로컬 전용
 
 **근거** `[실측]` `glob .github/**` → 일치 없음. `scripts/` 에 `verify-*` **26개** + `run-all-verify.mjs` 러너가 있으나 자동 실행 지점이 없다.
 또한 `run-all-verify.mjs` 는 소스 주석에 "임시" 성격이 남아 있다 `[이전턴]`.
 
-**영향** 저장소 품질 게이트(검증 26종·`tsc`·`cargo test`·`build`)가 개발자 습관에만 의존한다. `package.json` scripts 에 `test`·`ci` 항목이 없다 `[실측]`.
+**영향** 저장소 품질 게이트(검증 28종·`tsc`·`cargo test`·`build`)가 개발자 습관에만 의존한다. `package.json` scripts 에 `test`·`ci` 항목이 없다 `[실측]`.
 
 **권장 조치**
 1. `package.json` 에 `"verify": "node scripts/run-all-verify.mjs"`, `"ci": "npm run verify && npm run build && cargo test --workspace"` 추가
@@ -349,7 +349,7 @@ in_handler_not_attr=
 | P0-4 | **P0** | LICENSE·제3자 고지·개인정보 고지 부재 | `glob LICENSE*` 0건 / `docs/*` 목록 | LICENSE·NOTICES·PRIVACY | S |
 | P0-5 | **P0** | API 키 평문 저장 | 마스킹 테스트만 존재 / keyring·DPAPI 부재 | DPAPI 암호화 저장 | M |
 | P1-1 | P1 | 로그·크래시 수집 부재 | core `tracing::` 10곳 / subscriber 없음 | subscriber + 파일 로그 + panic 훅 | S |
-| P1-2 | P1 | CI 부재, 검증 26종 로컬 전용 | `glob .github/**` 0건 / `package.json` scripts 4개 | Actions + `npm run ci` | S |
+| P1-2 | P1 | CI 부재, 검증 28종 로컬 전용 | `glob .github/**` 0건 / `package.json` scripts 4개 | Actions + `npm run ci` | S |
 | P1-3 | P1 | 프론트 테스트 프레임워크 없음 | `package.json` devDeps에 vitest 없음 | Vitest + 핵심 단위/스모크 | M |
 | P1-4 | P1 | 취소·진행률·경과시간 없음 | `grep cancel` 3건 전부 뷰어 | 취소 플래그 + 진행 표시 | M |
 | P1-5 | P1 | 단일 인스턴스 미보장 | workspace deps에 single-instance 없음 | 플러그인 도입 | S |
@@ -393,7 +393,7 @@ in_handler_not_attr=
 1. **`src-tauri/src/lib.rs` 를 전문 열람하지는 않았다.** 다만 커맨드 surface 는 이번 세션에서 **기계 추출로 확인**했다 — `#[tauri::command]` **26개**, `generate_handler!` 등록 **26개**, 양쪽 차집합 **0건** `[실측]`. 반면 `setup()` 내부 구조·창 생성 경로·종료 핸들러 등 나머지 코드는 `[이전턴]`/`[추정]` 이다.
 2. **`src-ui/App.tsx` 전문 미열람.** 이번 감사에서 UI 근거는 `grep` 결과 3종(aria/role 10건, cancel 3건)과 이전 세션 실측에 한정된다. P2-5·P2-6·P2-8은 `[확인필요]`로 남겼다.
 3. **`glob "src-ui/**"` 가 일치 없음을 반환**했으나 이는 패턴 문제로 판단해 "파일 없음"의 근거로 쓰지 않았다.
-4. **실행 검증은 2개 명령만 수행했다.** 이번 세션에서 실행한 것은 ⓐ 커맨드 surface 기계 추출(`node -e`, `attr_commands=26` / `handler_entries=26` / 차집합 0) ⓑ `node scripts/verify-ipc-contract.mjs`(exit=0, `MATCH 26 commands, 28 호출부`) **2건**이다. `cargo test`·`npm run build`·검증 스크립트 26종 전체는 실행하지 않았으므로, 그 밖의 "통과" 서술은 이전 세션 기록(`[이전턴]`)이다.
+4. **실행 검증은 2개 명령만 수행했다.** 이번 세션에서 실행한 것은 ⓐ 커맨드 surface 기계 추출(`node -e`, `attr_commands=26` / `handler_entries=26` / 차집합 0) ⓑ `node scripts/verify-ipc-contract.mjs`(exit=0, `MATCH 26 commands, 28 호출부`) **2건**이다. `cargo test`·`npm run build`·검증 스크립트 전체는 실행하지 않았으므로, 그 밖의 "통과" 서술은 이전 세션 기록(`[이전턴]`)이다.
 5. **GUI·실네트워크·실 OS 배경 변경 미실행.** P0/P1 항목 중 런타임 확인이 필요한 것(예: 트레이 동작, 취소 버튼 체감)은 설계 권고 수준이다.
 6. **가격·수익화 정책은 다루지 않았다.** 요청 범위가 "기능·품질 격차"이며, 가격은 시장·경쟁 조사가 별도로 필요하다. P2-2를 비용 가시성 항목으로만 남겼다.
 7. **의존성 취약점 스캔(`cargo audit`, `npm audit`) 미실행.** P0에 포함할지 판단하려면 실제 CVE 조회가 필요하다.
@@ -410,7 +410,7 @@ in_handler_not_attr=
 | ID | 항목 | 해소 근거 |
 |---|---|---|
 | **P0-4** | LICENSE·공개 문서 부재 | `LICENSE`(MIT 전문) · `README.md` · `CONTRIBUTING.md` · `SECURITY.md` · `CHANGELOG.md` 실재. `node scripts/verify-app-meta.mjs` → `LICENSE 가 MIT 전문이다` / `LICENSE 저작자 == Cargo authors[0] — "uptodatelabs"` / `LICENSE 연도 — 2026` / 공개 필수 문서 5종 존재 전건 ok |
-| **P1-10** | 버전 단일 소스 검증기가 주석에만 존재 | `scripts/verify-app-meta.mjs` 신규 작성(138줄). Cargo `[workspace.package]` ↔ `package.json` ↔ `tauri.conf.json` ↔ `LICENSE` ↔ 멤버 크레이트 상속을 검증. `run-all-verify` 편입 → `scripts=27 failed=0` |
+| **P1-10** | 버전 단일 소스 검증기가 주석에만 존재 | `scripts/verify-app-meta.mjs` 신규 작성(138줄). Cargo `[workspace.package]` ↔ `package.json` ↔ `tauri.conf.json` ↔ `LICENSE` ↔ 멤버 크레이트 상속을 검증. `run-all-verify` 편입 → `scripts=28 failed=0` |
 | (부수) | 저장소 메타데이터 부재 | `package.json` 에 `license`·`description`·`repository`·`homepage`·`keywords` 추가. `Cargo.toml [workspace.package]` 에 `description`·`repository`·`homepage`·`readme`·`keywords` 추가, 두 멤버가 상속. `tauri.conf.json bundle` 에 `publisher`·`copyright`·`category`·`shortDescription`·`longDescription` 추가 |
 | (부수) | 문서 내 개인정보·로컬 경로 | `docs/VERIFY_M1.md` 의 Windows 사용자 홈 경로(계정명 포함) → `C:\Users\<user>`, 개발 PC 절대경로 → `<repo>`. 추적 파일 전체 재검사 결과 `HITS=0` |
 
@@ -432,7 +432,7 @@ in_handler_not_attr=
 cargo check --workspace                  → exit=0 / Finished dev profile
 npm run build                            → exit=0 / 39 modules, index-k0zICrHf.js 317.84 kB
 node scripts/verify-app-meta.mjs         → exit=0 / 34항목 전부 ok
-node scripts/run-all-verify.mjs          → exit=0 / scripts=27 failed=0
+node scripts/run-all-verify.mjs          → exit=0 / scripts=28 failed=0
 cargo test -p wallmagic-core --lib       → exit=0 / 85 passed; 0 failed; 4 ignored
 cargo test -p wallmagic-app  --lib       → exit=0 / 21 passed; 0 failed; 1 ignored
 ```

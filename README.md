@@ -45,7 +45,7 @@ WallMagic은 Windows 데스크톱의 바탕화면을 **찾고 · 만들고 · �
 | 코어 | Rust 1.82+ (edition 2021) — `ureq 2`(TLS) · `image 0.25`(png/jpeg/bmp) · `serde` / `serde_json` · `thiserror 2` · `base64 0.22` · `urlencoding 2` · `tracing 0.1` |
 | Windows 연동 | `windows 0.62` — `Win32_System_Com` · `Win32_UI_Shell` · `Win32_UI_Shell_Common` · `Win32_UI_WindowsAndMessaging` · `Win32_Graphics_Gdi` · `Win32_Foundation` |
 | 프론트엔드 | [React 19](https://react.dev) · TypeScript 5.7 · Vite 6 · `@tauri-apps/api 2` |
-| 테스트 / 검증 | `cargo test`(워크스페이스 2개 크레이트) · 계약 검증 스크립트 27종 (Node.js, 추가 프레임워크 없음) |
+| 테스트 / 검증 | `cargo test`(워크스페이스 2개 크레이트) · 계약 검증 스크립트 28종 (Node.js, 추가 프레임워크 없음) |
 
 - **빌드 파이프라인** — `tsc` → `vite build` 로 만든 `dist/` 를 Tauri 가 정적 자산으로 번들에 포함합니다.
 - **두 창이 하나의 HTML 공유** — `index.html` 하나를 메인 창과 히스토리 창이 함께 쓰고, `src-ui/main.tsx` 가 `getCurrentWindow().label` 로 렌더 대상을 고릅니다.
@@ -235,10 +235,10 @@ src-ui (React)  ── IPC / JSON ──▶  src-tauri (Tauri v2)  ── 함수
 
 ## 검증
 
-이 저장소는 **계약 검증 스크립트 27종**을 함께 운영합니다. IPC 이름과 인자 키, i18n 키, seed 정책, 미리보기 모드, 창 생성 스레드 규칙이 코드 변경으로 깨지면 자동으로 감지됩니다.
+이 저장소는 **계약 검증 스크립트 28종**을 함께 운영합니다. IPC 이름과 인자 키, i18n 키, seed 정책, 미리보기 모드, 창 생성 스레드 규칙, 저장소 위생(비밀정보·개인 경로)이 코드 변경으로 깨지면 자동으로 감지됩니다.
 
 ```bash
-# 전체 계약 검증 (27종)
+# 전체 계약 검증 (28종)
 node scripts/run-all-verify.mjs
 
 # 개별 실행
@@ -247,6 +247,7 @@ node scripts/verify-app-meta.mjs             # 버전 · 라이선스 · 제작�
 node scripts/verify-persist-i18n-meta.mjs    # i18n 키 · 메타데이터 계약
 node scripts/verify-seed.mjs                 # seed 모드 · 공급자별 안내 분기
 node scripts/verify-window-builder-async.mjs # 창 생성 커맨드는 async 여야 한다
+node scripts/verify-repo-hygiene.mjs         # 비밀정보 · 개인 경로 · 빌드 산출물 미추적
 ```
 
 Rust 테스트 중 실네트워크 · 실 OS 배경 변경이 필요한 케이스는 `#[ignore]` 로 분리되어 있습니다.
@@ -357,6 +358,6 @@ npm run tauri dev
 
 Build installers with `npm run tauri build` (NSIS + MSI).
 
-Run the contract suite with `node scripts/run-all-verify.mjs` (27 scripts).
+Run the contract suite with `node scripts/run-all-verify.mjs` (28 scripts).
 
 Licensed under the [MIT License](LICENSE). Copyright (c) 2026 uptodatelabs.

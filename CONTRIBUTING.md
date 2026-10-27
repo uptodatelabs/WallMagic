@@ -31,7 +31,7 @@ PR을 올리기 전에 아래 4개를 **모두** 통과시켜 주세요. CI가 �
 npx tsc --noEmit                      # 타입 체크
 npm run build                         # 프론트엔드 번들
 cargo test --workspace                # Rust 테스트 (ignored 제외)
-node scripts/run-all-verify.mjs       # 계약 검증 26종
+node scripts/run-all-verify.mjs       # 계약 검증 28종
 ```
 
 `run-all-verify` 가 실패하면 PR은 리뷰 이전에 반려됩니다. 스크립트가 실패하면 대부분 **계약이 실제로 깨진 것**이니, 통과를 위해 검사를 느슨하게 고치는 대신 코드를 고쳐 주세요. 검사 자체가 틀렸다고 판단되면 근거(실행 출력)와 함께 스크립트를 수정해 주세요.
@@ -138,7 +138,7 @@ reportError(t(lang, "history.deleteFailed", { err: formatErr(err) }));
 - [ ] `npx tsc --noEmit` 통과
 - [ ] `npm run build` 통과
 - [ ] `cargo test --workspace` 통과
-- [ ] `node scripts/run-all-verify.mjs` 통과 (26종)
+- [ ] `node scripts/run-all-verify.mjs` 통과 (28종)
 - [ ] 사용자 노출 문자열을 모두 i18n 사전에 등록 (ko/en 쌍)
 - [ ] 새 IPC 커맨드를 추가했다면 `generate_handler!` 등록 + `verify-ipc-contract` 통과
 - [ ] 비밀정보·실제 개인 경로가 포함되지 않음
