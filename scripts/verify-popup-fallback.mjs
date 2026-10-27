@@ -46,6 +46,8 @@ const cssPath = positional[2] ?? "src-ui/styles.css";
 let app = readFileSync(appPath, "utf8");
 const lib = readFileSync(libPath, "utf8");
 const css = readFileSync(cssPath, "utf8");
+// 사용자 노출 문구는 i18n 사전으로 이관되었다 — 리터럴 대신 키의 존재·내용을 검사한다.
+const i18n = readFileSync("src-ui/i18n.ts", "utf8");
 
 /// `--red`: 이번 수정으로 없앤 형태를 되살려 아래 검사가 실제 FAIL 하는지 확인한다.
 ///  (a) 모달 JSX 제거  (b) fallback 이 브라우저를 즉시 여는 형태
@@ -122,9 +124,12 @@ ok(
   /await\s+openPuterLoginFallback/.test(app) === false,
   "fallback은 동기(void) — await openPuterLoginFallback 형태가 아니다",
 );
+// 문구는 사전(err.promptModalUnavailable)으로 이관되었다 — 리터럴이 아니라
+// "명시적 오류를 던지는가 + 그 문구가 사전을 거치는가"를 함께 본다.
 ok(
-  /throw new Error\("Puter 로그인 안내 창을 표시할 수 없습니다/.test(app),
-  "모달 등록 전(비정상 경로)에 조용히 넘어가지 않고 명시적 오류",
+  /throw new Error\(th\("err\.promptModalUnavailable"\)\)/.test(app) &&
+    /"err\.promptModalUnavailable":/.test(i18n),
+  "모달 등록 전(비정상 경로)에 조용히 넘어가지 않고 명시적 오류(i18n 키)",
 );
 
 // ── 3) 모달 등록 지점 (모듈 스코프 → 컴포넌트 setState) ────────────────
@@ -157,12 +162,15 @@ ok(
   "모달 표시 실패를 catch(fallbackErr)로 받는다 (빈 catch 삼킴 금지)",
 );
 ok(
-  /안내 창을 표시하지 못했습니다/.test(signInBody),
-  "모달 표시마저 실패했을 때만 노출되는 실패 안내 존재",
+  /th\("err\.popupBlockedNoModal", \{ err: formatErr\(fallbackErr\) \}\)/.test(signInBody) &&
+    /"err\.popupBlockedNoModal":/.test(i18n),
+  "모달 표시마저 실패했을 때만 노출되는 실패 안내 존재(i18n 키)",
 );
 ok(
-  /\[바로가기\]/.test(signInBody) && /\[URL 복사\]/.test(signInBody),
-  "차단 안내 메시지가 사용자 선택지([URL 복사]/[바로가기])를 명시",
+  /th\("err\.popupBlockedAdvice"\)/.test(signInBody) &&
+    /\[바로가기\]/.test(i18n) &&
+    /\[URL 복사\]/.test(i18n),
+  "차단 안내 메시지가 사용자 선택지([URL 복사]/[바로가기])를 명시(i18n 사전 문구)",
 );
 ok(
   !/\}\s*catch\s*\{\s*(\/\/[^\n]*\n)?\s*\}/.test(signInBody),
@@ -226,8 +234,8 @@ ok(
   "복사/열기 결과 피드백 영역(role=status + puterCopyMsg) 존재",
 );
 ok(
-  /onClick=\{\(\) => setPuterPromptUrl\(null\)\}[\s\S]{0,40}닫기/.test(app),
-  "모달 닫기 버튼 존재",
+  /onClick=\{\(\) => setPuterPromptUrl\(null\)\}[\s\S]{0,60}?t\(lang, "modal\.close"\)/.test(app),
+  "모달 닫기 버튼 존재(i18n 사전 modal.close)",
 );
 ok(
   /onClick=\{\(e\) => e\.stopPropagation\(\)\}/.test(app),
@@ -245,12 +253,12 @@ ok(
   "비보안 컨텍스트 대체 경로(execCommand copy) 존재",
 );
 ok(
-  /setPuterCopyMsg\("URL을 클립보드에 복사했습니다"\)/.test(copyBody),
-  "복사 성공 피드백 표시",
+  /setPuterCopyMsg\(t\(lang, "modal\.copied"\)\)/.test(copyBody),
+  "복사 성공 피드백 표시(i18n 사전 modal.copied)",
 );
 ok(
-  /setPuterCopyMsg\(`URL 복사 실패: \$\{formatErr\(err\)\}`\)/.test(copyBody),
-  "복사 실패 피드백 표시 (조용한 실패 금지)",
+  /setPuterCopyMsg\(t\(lang, "modal\.copyFailed", \{ err: formatErr\(err\) \}\)\)/.test(copyBody),
+  "복사 실패 피드백 표시 (조용한 실패 금지, i18n 키)",
 );
 
 // ── 9) 열기 핸들러 계약 ──────────────────────────────────────────────
@@ -260,8 +268,9 @@ ok(
   "handleOpenPuterUrl이 openPuterLoginInBrowser를 호출",
 );
 ok(
-  /브라우저에서 로그인 페이지를 열었습니다|브라우저 열기 실패/.test(openHBody),
-  "열기 핸들러가 성공/실패 피드백을 모두 노출",
+  /t\(lang, "modal\.opened"\)/.test(openHBody) &&
+    /t\(lang, "modal\.openFailed", \{ err: formatErr\(err\) \}\)/.test(openHBody),
+  "열기 핸들러가 성공/실패 피드백을 모두 노출(i18n 키)",
 );
 
 // ── 10) 스타일 ───────────────────────────────────────────────────────

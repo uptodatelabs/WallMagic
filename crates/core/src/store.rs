@@ -82,8 +82,28 @@ pub struct LibraryIndex {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppMeta {
     pub product: String,
+    /// semver 원본(`1.0.0`) — 배포·비교용.
     pub version: String,
+    /// 화면 표시용(`1.0`) — `display_version()` 파생값.
+    pub version_display: String,
     pub author: String,
+}
+
+/// 표시용 버전 문자열을 만든다.
+///
+/// semver 단일 소스(`Cargo.toml` 의 `version = "1.0.0"`)는 그대로 두고, 화면에는
+/// 후행 패치 `.0` 만 생략한다(사용자 요구 "버전 1.0" 표기).
+/// - `1.0.0` → `1.0` / `1.2.0` → `1.2` / `1.2.3` → `1.2.3`
+/// - 프리릴리스·빌드 메타데이터(`1.0.0-beta`, `1.0.0+abc`)는 정보 손실을 막기 위해 원본 유지
+pub fn display_version(version: &str) -> String {
+    if version.contains('-') || version.contains('+') {
+        return version.to_string();
+    }
+    let parts: Vec<&str> = version.split('.').collect();
+    if parts.len() == 3 && parts[2] == "0" && !parts[0].is_empty() && !parts[1].is_empty() {
+        return format!("{}.{}", parts[0], parts[1]);
+    }
+    version.to_string()
 }
 
 /// Cargo 메타데이터에서 앱 정보를 만든다(별도 상수 중복 정의 금지).
@@ -95,9 +115,11 @@ pub fn app_meta() -> AppMeta {
         .find(|s| !s.is_empty())
         .unwrap_or("")
         .to_string();
+    let version = env!("CARGO_PKG_VERSION").to_string();
     AppMeta {
         product: "WallMagic".to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version_display: display_version(&version),
+        version,
         author,
     }
 }
@@ -441,5 +463,24 @@ mod tests {
         assert_eq!(meta.version, env!("CARGO_PKG_VERSION"));
         assert!(!meta.author.is_empty(), "제작자가 비면 안 된다");
         assert_eq!(meta.product, "WallMagic");
+        // 화면 표시용 버전은 semver 원본에서 파생된다(원본은 그대로 유지).
+        assert_eq!(meta.version_display, display_version(env!("CARGO_PKG_VERSION")));
+        assert!(!meta.version_display.is_empty(), "표시 버전이 비면 안 된다");
+    }
+
+    /// 표시용 버전은 후행 패치 `.0` 만 생략한다 — 사용자 요구 "버전 1.0" 표기.
+    /// semver 원본은 유지하고 표시 문자열에서만 축약한다.
+    #[test]
+    fn test_display_version_drops_trailing_patch_zero() {
+        assert_eq!(display_version("1.0.0"), "1.0", "1.0.0 → 1.0");
+        assert_eq!(display_version("1.2.0"), "1.2", "1.2.0 → 1.2");
+        assert_eq!(display_version("1.2.3"), "1.2.3", "패치가 0 이 아니면 유지");
+        assert_eq!(display_version("2.0.0"), "2.0", "2.0.0 → 2.0");
+        // 프리릴리스·빌드 메타데이터는 정보 손실을 막기 위해 원본 유지한다.
+        assert_eq!(display_version("1.0.0-beta.1"), "1.0.0-beta.1");
+        assert_eq!(display_version("1.0.0+abc"), "1.0.0+abc");
+        // 형식이 3분절이 아니면 손대지 않는다.
+        assert_eq!(display_version("1.0"), "1.0");
+        assert_eq!(display_version(""), "");
     }
 }

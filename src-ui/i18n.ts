@@ -46,14 +46,9 @@ export const STRINGS: Record<string, Entry> = {
   "common.delete": { ko: "삭제", en: "Delete" },
   "common.deleteThis": { ko: "이 파일 삭제", en: "Delete this file" },
   "common.fullscreen": { ko: "전체화면", en: "Fullscreen" },
-  "common.close": { ko: "닫기", en: "Close" },
   "common.closeEsc": { ko: "닫기 (Esc)", en: "Close (Esc)" },
-  "common.save": { ko: "저장", en: "Save" },
-  "common.clear": { ko: "지우기", en: "Clear" },
-  "common.reuse": { ko: "재사용", en: "Reuse" },
   "common.busy": { ko: "처리 중...", en: "Working..." },
   "common.ready": { ko: "준비됨", en: "Ready" },
-  "common.deleteTitle": { ko: "{name} 파일 삭제", en: "Delete file {name}" },
   "common.noPath": { ko: "삭제할 파일 경로가 없습니다.", en: "No file path to delete." },
   "common.deleteFailed": { ko: "삭제 실패: {err}", en: "Delete failed: {err}" },
   "common.deleteDone": { ko: "삭제 완료 — {name}", en: "Deleted — {name}" },
@@ -183,14 +178,6 @@ export const STRINGS: Record<string, Entry> = {
     ko: "우선순위 생성 실패 (기존 배경 유지): {err}",
     en: "Priority generation failed (previous wallpaper kept): {err}",
   },
-  "gen.priorityDone": {
-    ko: "우선순위 생성·적용 완료 — 백엔드: {backend}",
-    en: "Priority generation applied — backend: {backend}",
-  },
-  "gen.prioritySkipped": {
-    ko: "아직 주기가 안 됐거나 OFF/소스 없음",
-    en: "interval not reached, or OFF / no source",
-  },
 
   /* 결과 */
   "results.heading": { ko: "결과 ({count})", en: "Results ({count})" },
@@ -247,14 +234,6 @@ export const STRINGS: Record<string, Entry> = {
   "history.clear": { ko: "히스토리 지우기", en: "Clear history" },
   "history.reusePrompt": { ko: "이 프롬프트 사용", en: "Use this prompt" },
   "history.reuseSearch": { ko: "이 검색어 사용", en: "Use this keyword" },
-  "history.restoredPrompt": {
-    ko: "프롬프트를 되살렸습니다: \"{text}\"",
-    en: "Prompt restored: \"{text}\"",
-  },
-  "history.restoredSearch": {
-    ko: "검색어를 되살렸습니다: \"{text}\"",
-    en: "Keyword restored: \"{text}\"",
-  },
   "history.cleared": { ko: "히스토리를 지웠습니다", en: "History cleared" },
   "history.clearFailed": {
     ko: "히스토리 삭제 실패: {err}",
@@ -304,14 +283,6 @@ export const STRINGS: Record<string, Entry> = {
     ko: "Pollinations 는 같은 프롬프트·같은 seed 면 캐시된 동일 이미지를 돌려줍니다. 기본값 랜덤이면 생성마다 seed 가 달라져 결과가 매번 달라집니다.",
     en: "Pollinations returns the cached image when the prompt and seed are the same. With the default random mode the seed changes every run, so results differ each time.",
   },
-  "scenario.seedCfFluxHint": {
-    ko: "Cloudflare Workers AI 는 flux 계열 모델에서만 seed 를 받습니다 — 현재 모델 {model} 은 flux 이므로 seed 가 전송됩니다.",
-    en: "Cloudflare Workers AI accepts a seed only for flux models — the current model {model} is flux, so the seed is sent.",
-  },
-  "scenario.seedCfNonFluxHint": {
-    ko: "현재 모델 {model} 은 flux 계열이 아니므로 seed 를 전송하지 않습니다 — 비-flux 모델에 seed 를 보내면 400 오류가 납니다.",
-    en: "The current model {model} is not a flux model, so the seed is not sent — sending a seed to non-flux models returns HTTP 400.",
-  },
   "scenario.seedOpenaiHint": {
     ko: "OpenAI Images API 는 seed 파라미터를 지원하지 않아 전송하지 않습니다 — seed 설정은 이 공급자에 적용되지 않습니다.",
     en: "The OpenAI Images API has no seed parameter, so none is sent — the seed setting does not apply to this provider.",
@@ -338,13 +309,7 @@ export const STRINGS: Record<string, Entry> = {
     ko: "이미지 생성 우선순위 (폴백 순서 — 위부터 시도, 실패 시 다음 공급자)",
     en: "Generation priority (fallback order — tried top-down, next provider on failure)",
   },
-  "scenario.priorityHint": {
-    ko: "Off 로 두면 이 공급자는 생성·폴백·시나리오 자동 실행에서 모두 제외됩니다.",
-    en: "When Off, this provider is excluded from generation, fallback and the scenario runner.",
-  },
-  "scenario.resetFree": { ko: "무료 우선으로 초기화", en: "Reset to free-first" },
   "scenario.on": { ko: "On", en: "On" },
-  "scenario.offExcluded": { ko: "Off (제외)", en: "Off (excluded)" },
   "scenario.offHint": {
     ko: "Off 로 두면 이 공급자는 생성·폴백·시나리오 자동 실행에서 모두 제외됩니다.",
     en: "If set to Off, this provider is excluded from generation, fallback and scenario auto runs.",
@@ -382,7 +347,6 @@ export const STRINGS: Record<string, Entry> = {
   },
   "scenario.model": { ko: "모델", en: "Model" },
   "scenario.openaiKey": { ko: "OpenAI API Key", en: "OpenAI API Key" },
-  "scenario.openaiKeyPlaceholder": { ko: "sk-...", en: "sk-..." },
   "scenario.clearKey": {
     ko: "저장된 API 키 삭제 (체크 후 저장 시 삭제)",
     en: "Delete saved API key (removed when saved with this checked)",
@@ -396,10 +360,6 @@ export const STRINGS: Record<string, Entry> = {
   "scenario.puterModelHint": {
     ko: "모델을 선택하지 않으면 Puter 기본 모델(OpenAI gpt-image-2)이 사용됩니다. 모델마다 결과 화질·속도·사용 크레딧이 다릅니다.",
     en: "If no model is selected, Puter's default model (OpenAI gpt-image-2) is used. Image quality, speed and credit usage differ per model.",
-  },
-  "scenario.creditLabel": {
-    ko: "Puter 남은 크레딧 (월간 allowance)",
-    en: "Puter remaining credits (monthly allowance)",
   },
   "scenario.creditBusy": { ko: "조회 중...", en: "Fetching..." },
   "scenario.creditIdle": {
@@ -424,6 +384,7 @@ export const STRINGS: Record<string, Entry> = {
     en: " / monthly allowance {allowance}",
   },
   "scenario.creditSpent": { ko: " · 사용 {spent}", en: " · used {spent}" },
+  "scenario.creditUnitUnspecified": { ko: "미표기", en: "unspecified" },
   "scenario.creditUnitPath": {
     ko: " · 단위: {unit}({path}) · 경로: 남음 {remainingPath} / 한도 {allowancePath} / 사용 {spentPath}",
     en: " · unit: {unit}({path}) · paths: remaining {remainingPath} / allowance {allowancePath} / spent {spentPath}",
@@ -443,10 +404,6 @@ export const STRINGS: Record<string, Entry> = {
   "scenario.autoApplied": {
     ko: "시나리오 자동 적용 — 백엔드: {backend}",
     en: "Scenario applied automatically — backend: {backend}",
-  },
-  "scenario.saved": {
-    ko: "시나리오 저장 완료 — 다음 #{next} · {onoff}",
-    en: "Scenario saved — next #{next} · {onoff}",
   },
   "scenario.saveFailed": {
     ko: "시나리오 저장 실패: {err}",
@@ -485,13 +442,6 @@ export const STRINGS: Record<string, Entry> = {
   },
   "scenario.runNow": { ko: "지금 실행", en: "Run now" },
   "scenario.save": { ko: "시나리오 저장", en: "Save scenario" },
-  "scenario.position": { ko: "배치 방식", en: "Placement" },
-  "scenario.intervalTooShort": {
-    ko: "주기는 5분 이상이어야 합니다 (입력값: {value})",
-    en: "The interval must be at least 5 minutes (input: {value})",
-  },
-  "scenario.toggleOn": { ko: "ON", en: "ON" },
-  "scenario.toggleOff": { ko: "OFF", en: "OFF" },
 
   /* 정보(About) */
   "about.heading": { ko: "정보", en: "About" },
@@ -568,6 +518,141 @@ export const STRINGS: Record<string, Entry> = {
   "scenario.seedCfFluxNo": { ko: "현재 모델은 flux 계열이 아니므로 seed 를 전송하지 않습니다 — 비-flux 모델에 seed 를 보내면 400 오류가 납니다.", en: "The current model is not in the flux family, so no seed is sent — sending one to a non-flux model returns HTTP 400." },
   "history.reusedSearch": { ko: "검색어를 되살렸습니다: \"{text}\"", en: "Restored the keyword: \"{text}\"" },
   "history.reusedPrompt": { ko: "프롬프트를 되살렸습니다: \"{text}\"", en: "Restored the prompt: \"{text}\"" },
+
+  /* 상태바/시나리오 상태 메시지 — reportOk/reportError 로 전달되는 모든 문구.
+     호출부에 한글 리터럴을 두지 않기 위해 여기 한 곳에만 존재한다. */
+  "scenario.notLoaded": { ko: "시나리오 미조회", en: "Scenario not loaded" },
+  "scenario.savedInfo": {
+    ko: "저장됨 · 다음 #{next} · {onoff} · {minutes}분",
+    en: "Saved · next #{next} · {onoff} · {minutes} min",
+  },
+  "scenario.savedCleared": {
+    ko: "시나리오 저장 완료 — 저장된 API 토큰/키를 삭제했습니다",
+    en: "Scenario saved — the stored API token/key was deleted",
+  },
+  "scenario.savedPlain": { ko: "시나리오 저장 완료", en: "Scenario saved" },
+  "scenario.puterSignedIn": {
+    ko: "Puter 세션 연결 완료 — 이제 이미지 생성을 사용할 수 있습니다",
+    en: "Puter session connected — image generation is now available",
+  },
+  "scenario.puterSignInFailed": {
+    ko: "Puter 로그인 실패: {err}",
+    en: "Puter sign-in failed: {err}",
+  },
+  "gen.sdkNotLoaded": { ko: "Puter.js SDK 미로드", en: "Puter.js SDK not loaded" },
+  "gen.notSignedIn": { ko: "Puter 로그인 상태 아님", en: "Puter is not signed in" },
+  "gen.skippedSdk": {
+    ko: "{provider}: SDK 미로드 — 건너뜀",
+    en: "{provider}: SDK not loaded — skipped",
+  },
+  "gen.skippedSignedOut": {
+    ko: "{provider}: 로그인 상태 아님 — 건너뜀",
+    en: "{provider}: not signed in — skipped",
+  },
+  "gen.providerFailed": { ko: "{provider}: {err}", en: "{provider}: {err}" },
+  "gen.strictFailed": {
+    ko: "선택한 공급자({provider}) 실패: {err} — 자동 폴백 비활성",
+    en: "Selected provider ({provider}) failed: {err} — automatic fallback is off",
+  },
+  "gen.noProvider": {
+    ko: "시도 가능한 이미지 공급자가 없습니다.",
+    en: "No image provider available to try.",
+  },
+  "gen.failedBefore": { ko: " · 앞선 실패: {list}", en: " · earlier failures: {list}" },
+  "gen.stateJsonNote": {
+    ko: " · state.json: {provider}{source}",
+    en: " · state.json: {provider}{source}",
+  },
+  "gen.stateJsonNone": {
+    ko: " · state.json: 생성 정보 없음",
+    en: " · state.json: no generation info",
+  },
+  "gen.priorityDoneDetail": {
+    ko: "우선순위 생성·적용 완료 — 선택: {selected} → 실제: {used} · 응답 provider: {responseProvider}{savedNote} · 백엔드: {backend}{skippedNote}",
+    en: "Priority generation applied — selected: {selected} → actual: {used} · response provider: {responseProvider}{savedNote} · backend: {backend}{skippedNote}",
+  },
+  "gen.aiPromptRequired": {
+    ko: "AI 프롬프트를 입력하세요.",
+    en: "Please enter an AI prompt.",
+  },
+  "common.none": { ko: "없음", en: "none" },
+  "scenario.tickSkipped": {
+    ko: "시나리오: 아직 주기가 안 됐거나 OFF/소스 없음",
+    en: "Scenario: interval not reached, or OFF / no source",
+  },
+
+  /* Puter 이미지 모델 라벨 — 브랜드명은 그대로, 부연만 번역한다. */
+  "puter.model.gptImage2": {
+    ko: "GPT Image 2 (Puter 기본값)",
+    en: "GPT Image 2 (Puter default)",
+  },
+  "puter.model.fluxSchnell": {
+    ko: "FLUX.1 schnell (빠름)",
+    en: "FLUX.1 schnell (fast)",
+  },
+
+  /* 모듈 스코프 헬퍼(Puter SDK·브라우저 열기 등)가 만드는 사용자 노출 오류.
+     이 문구들은 Error.message 로 상태바에 그대로 표시되므로 사전을 거쳐야
+     영어 선택 시 한국어 오류가 남지 않는다. React 상태(lang)에 접근할 수 없는
+     위치이므로 아래 `th()`(현재 언어)를 쓴다. */
+  "err.puterBase64Failed": {
+    ko: "Puter 이미지 base64 변환 실패",
+    en: "Failed to convert the Puter image to base64",
+  },
+  "err.puterImageDownload": {
+    ko: "Puter 이미지 다운로드 실패: HTTP {status}",
+    en: "Puter image download failed: HTTP {status}",
+  },
+  "err.puterResultUnparsable": {
+    ko: "Puter 응답 형식을 해석할 수 없습니다: {kind}",
+    en: "Cannot interpret the Puter response format: {kind}",
+  },
+  "err.sdkNotLoaded": {
+    ko: "Puter.js SDK를 불러오지 못했습니다 (오프라인/스크립트 차단).",
+    en: "Failed to load the Puter.js SDK (offline or script blocked).",
+  },
+  "err.authUnavailable": {
+    ko: "Puter 로그인(auth)을 사용할 수 없습니다 — SDK 버전을 확인하세요.",
+    en: "Puter auth is unavailable — check the SDK version.",
+  },
+  "err.signInUnavailable": {
+    ko: "Puter 로그인(auth.signIn)을 사용할 수 없습니다 — SDK 버전을 확인하세요.",
+    en: "Puter auth.signIn is unavailable — check the SDK version.",
+  },
+  "err.noMonthlyUsage": {
+    ko: "이 Puter.js SDK 버전에는 getMonthlyUsage 가 없습니다 — 잔여 크레딧을 조회할 수 없습니다.",
+    en: "This Puter.js SDK version has no getMonthlyUsage — remaining credits cannot be fetched.",
+  },
+  "err.signInRequired": {
+    ko: "Puter 로그인이 필요합니다 — [Puter 로그인] 후 다시 조회하세요.",
+    en: "Puter sign-in is required — sign in and fetch again.",
+  },
+  "err.promptModalUnavailable": {
+    ko: "Puter 로그인 안내 창을 표시할 수 없습니다 — 잠시 후 다시 시도하세요.",
+    en: "Cannot show the Puter sign-in notice — try again in a moment.",
+  },
+  "err.shellOpenFailed": { ko: "셸 오픈 실패: {err}", en: "Shell open failed: {err}" },
+  "err.linkFallbackFailed": {
+    ko: "링크 폴백 실패: {err}",
+    en: "Link fallback failed: {err}",
+  },
+  "err.popupBlockedNoModal": {
+    ko: "팝업이 차단되었습니다 — 안내 창을 표시하지 못했습니다 ({err})",
+    en: "The popup was blocked and the notice could not be shown ({err})",
+  },
+  "err.popupBlockedAdvice": {
+    ko: "팝업이 차단되었습니다 — 화면에 표시된 안내 창에서 [URL 복사] 또는 [바로가기]를 선택하세요.",
+    en: "The popup was blocked — use [Copy URL] or [Open] in the notice on screen.",
+  },
+  "err.copyCommandFailed": {
+    ko: "execCommand('copy') 실패",
+    en: "execCommand('copy') failed",
+  },
+  "err.unknown": { ko: "알 수 없는 오류", en: "Unknown error" },
+  "err.unknownWithKeys": {
+    ko: "알 수 없는 오류 (keys: {keys})",
+    en: "Unknown error (keys: {keys})",
+  },
 };
 
 /** 사전에 실제로 존재하는 키 목록(검증 스크립트용). */
@@ -599,6 +684,35 @@ export function t(lang: Lang, key: string, vars?: Record<string, string | number
   const fallback = lang === "ko" ? entry.en : entry.ko;
   const text = primary && primary.trim() ? primary : fallback && fallback.trim() ? fallback : key;
   return interpolate(text, vars);
+}
+
+/**
+ * 현재 언어 보관 — **React 상태에 접근할 수 없는 모듈 스코프 코드**(Puter SDK 오류
+ * 문구, formatErr 폴백 등)가 사전을 쓰기 위한 접근자.
+ *
+ * 왜 필요한가: 이 파일의 `t(lang, …)` 는 호출부가 언어를 넘겨야 하는데, App.tsx 의
+ * 모듈 스코프 함수(컴포넌트 밖)는 `lang` 상태를 볼 수 없어 한국어 리터럴을 하드코딩했다.
+ * 그 결과 영어를 선택해도 Puter 관련 오류만 한국어로 남았다(검수 지적).
+ * `setActiveLang()` 은 App 이 언어를 바꿀 때마다 호출되어 이 값을 갱신한다.
+ *
+ * 초기값은 `loadLang()` 으로 지연 초기화한다 — 저장된 언어가 영어면 첫 오류부터 영어다.
+ */
+let activeLang: Lang | null = null;
+
+/** 현재 언어를 등록한다(App 의 언어 상태 변경 시 호출). */
+export function setActiveLang(lang: Lang): void {
+  activeLang = lang;
+}
+
+/** 현재 언어 조회(미등록이면 저장값/기본값으로 초기화). */
+export function currentLang(): Lang {
+  if (activeLang === null) activeLang = loadLang();
+  return activeLang;
+}
+
+/** 현재 언어로 번역 — 모듈 스코프 코드용 `t()` 단축. */
+export function th(key: string, vars?: Record<string, string | number>): string {
+  return t(currentLang(), key, vars);
 }
 
 /** 저장된 언어 설정 읽기(없거나 손상되면 기본 언어). */

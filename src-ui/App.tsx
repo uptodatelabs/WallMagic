@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   formatUsage,
@@ -8,7 +8,7 @@ import {
   type PuterUsageResult,
 } from "./puterUsage";
 import { parseAppliedSearchQuery } from "./appliedQuery";
-import { LANGS, loadLang, saveLang, t, type Lang } from "./i18n";
+import { LANGS, loadLang, saveLang, setActiveLang, t, th, type Lang } from "./i18n";
 
 /* ── Puter.js 전역 선언 (WebView 전용 SDK) ──
    `index.html`이 `https://js.puter.com/v2/`를 로드하므로 브라우저 전역에 `puter`가 생긴다.
@@ -36,8 +36,11 @@ declare global {
 ///       https://docs.puter.com/AI/txt2img/ (options.model, 제공자 기본 모델표)
 /// 모델 ID를 생략하면 Puter가 제공자 기본 모델(현재 OpenAI `gpt-image-2`)을 고르므로,
 /// UI의 "(기본 모델)" 항목은 options 자체를 넘기지 않는 것과 동일하다.
-const PUTER_IMAGE_MODELS: { id: string; label: string }[] = [
-  { id: "openai/gpt-image-2", label: "GPT Image 2 (Puter 기본값)" },
+/// 라벨은 브랜드명(번역 불필요)과 부연(번역 필요)을 구분한다 — 부연이 있는 항목은
+/// `labelKey`(i18n 사전)를 쓰고, 렌더에서 `labelKey ? t(lang,labelKey) : label` 로 해석한다.
+/// (한국어 부연을 리터럴로 두면 영어 선택 시 한국어가 남는다 — 검수 지적 [medium])
+const PUTER_IMAGE_MODELS: { id: string; label?: string; labelKey?: string }[] = [
+  { id: "openai/gpt-image-2", labelKey: "puter.model.gptImage2" },
   { id: "openai/gpt-image-2.5-flare", label: "GPT Image 2.5 Flare" },
   { id: "openai/gpt-image-2.5-sunburst", label: "GPT Image 2.5 Sunburst" },
   { id: "google/gemini-3-pro-image", label: "Nano Banana Pro (Gemini 3 Pro Image)" },
@@ -47,7 +50,7 @@ const PUTER_IMAGE_MODELS: { id: string; label: string }[] = [
   { id: "black-forest-labs/flux-2-dev", label: "FLUX.2 [dev]" },
   { id: "black-forest-labs/flux-2-klein-9b-base", label: "FLUX.2 [klein] 9B" },
   { id: "black-forest-labs/flux-1.1-pro", label: "FLUX 1.1 [pro]" },
-  { id: "black-forest-labs/flux-schnell", label: "FLUX.1 schnell (빠름)" },
+  { id: "black-forest-labs/flux-schnell", labelKey: "puter.model.fluxSchnell" },
   { id: "x-ai/grok-imagine-image-2.0", label: "Grok Imagine Image 2.0" },
   { id: "leonardoai/lucid-origin", label: "Leonardo Lucid Origin" },
   { id: "qwen/qwen-image", label: "Qwen Image" },
@@ -59,7 +62,7 @@ function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error("Puter 이미지 base64 변환 실패"));
+    reader.onerror = () => reject(new Error(th("err.puterBase64Failed")));
     reader.readAsDataURL(blob);
   });
 }
@@ -72,7 +75,7 @@ async function puterResultToBase64(result: unknown): Promise<string> {
     const value = result.trim();
     if (value.startsWith("data:")) return value;
     const resp = await fetch(value);
-    if (!resp.ok) throw new Error(`Puter 이미지 다운로드 실패: HTTP ${resp.status}`);
+    if (!resp.ok) throw new Error(th("err.puterImageDownload", { status: resp.status }));
     return blobToBase64(await resp.blob());
   }
   if (result instanceof Blob) return blobToBase64(result);
@@ -85,7 +88,7 @@ async function puterResultToBase64(result: unknown): Promise<string> {
     if (src) {
       try {
         const resp = await fetch(src);
-        if (!resp.ok) throw new Error(`Puter 이미지 다운로드 실패: HTTP ${resp.status}`);
+        if (!resp.ok) throw new Error(th("err.puterImageDownload", { status: resp.status }));
         return await blobToBase64(await resp.blob());
       } catch (err) {
         // fetch 실패는 치명적이지 않다 — 동일 출처 이미지는 아래 canvas 경로로도 성공한다.
@@ -101,7 +104,7 @@ async function puterResultToBase64(result: unknown): Promise<string> {
     return canvas.toDataURL("image/png");
   }
   throw new Error(
-    `Puter 응답 형식을 해석할 수 없습니다: ${Object.prototype.toString.call(result)}`,
+    th("err.puterResultUnparsable", { kind: Object.prototype.toString.call(result) }),
   );
 }
 
@@ -117,20 +120,18 @@ const PUTER_LOGIN_URL = "https://puter.com/auth/";
 /// SDK 미로드/미로그인/API 부재는 조용히 0 으로 표시하지 않고 명시적 오류로 실패한다.
 export async function fetchPuterUsage(): Promise<PuterUsageResult> {
   if (!window.puter) {
-    throw new Error("Puter.js SDK를 불러오지 못했습니다 (오프라인/스크립트 차단).");
+    throw new Error(th("err.sdkNotLoaded"));
   }
   const auth = window.puter.auth;
   if (!auth) {
-    throw new Error("Puter 로그인(auth)을 사용할 수 없습니다 — SDK 버전을 확인하세요.");
+    throw new Error(th("err.authUnavailable"));
   }
   if (typeof auth.getMonthlyUsage !== "function") {
-    throw new Error(
-      "이 Puter.js SDK 버전에는 getMonthlyUsage 가 없습니다 — 잔여 크레딧을 조회할 수 없습니다.",
-    );
+    throw new Error(th("err.noMonthlyUsage"));
   }
   const signedIn = await puterIsSignedIn(() => (auth.isSignedIn ? auth.isSignedIn() : false));
   if (!signedIn) {
-    throw new Error("Puter 로그인이 필요합니다 — [Puter 로그인] 후 다시 조회하세요.");
+    throw new Error(th("err.signInRequired"));
   }
   const raw = await auth.getMonthlyUsage();
   return { summary: puterUsageSummary(raw), raw };
@@ -150,7 +151,7 @@ function openPuterLoginFallback(): void {
     showPuterLoginPrompt(PUTER_LOGIN_URL);
     return;
   }
-  throw new Error("Puter 로그인 안내 창을 표시할 수 없습니다 — 잠시 후 다시 시도하세요.");
+  throw new Error(th("err.promptModalUnavailable"));
 }
 
 /// [바로가기] 버튼 핸들러 — 사용자가 명시적으로 눌렀을 때만 실행된다 (2단계 시도).
@@ -166,7 +167,7 @@ async function openPuterLoginInBrowser(): Promise<void> {
     await invoke("open_external_url", { url: PUTER_LOGIN_URL });
     return;
   } catch (err) {
-    errors.push(`셸 오픈 실패: ${formatErr(err)}`);
+    errors.push(th("err.shellOpenFailed", { err: formatErr(err) }));
   }
   try {
     const anchor = document.createElement("a");
@@ -179,7 +180,7 @@ async function openPuterLoginInBrowser(): Promise<void> {
     anchor.remove();
     return;
   } catch (err) {
-    errors.push(`링크 폴백 실패: ${formatErr(err)}`);
+    errors.push(th("err.linkFallbackFailed", { err: formatErr(err) }));
   }
   throw new Error(errors.join(" · "));
 }
@@ -197,14 +198,10 @@ async function puterSignIn(auth: any): Promise<void> {
         openPuterLoginFallback();
       } catch (fallbackErr) {
         // 모달 표시마저 실패 — 성공 위장 금지. 원인을 포함해 호출부로 그대로 던진다.
-        throw new Error(
-          `팝업이 차단되었습니다 — 안내 창을 표시하지 못했습니다 (${formatErr(fallbackErr)})`
-        );
+        throw new Error(th("err.popupBlockedNoModal", { err: formatErr(fallbackErr) }));
       }
       // 브라우저는 사용자가 [바로가기]를 눌렀을 때만 열린다 (즉시 열지 않음).
-      throw new Error(
-        "팝업이 차단되었습니다 — 화면에 표시된 안내 창에서 [URL 복사] 또는 [바로가기]를 선택하세요."
-      );
+      throw new Error(th("err.popupBlockedAdvice"));
     }
     throw err;
   }
@@ -246,8 +243,8 @@ function formatErr(err: unknown): string {
       if (typeof fallback === "string" && fallback) {
         return keys.length > 0 ? `${fallback} (keys: ${keys.join(", ")})` : fallback;
       }
-      if (keys.length > 0) return `알 수 없는 오류 (keys: ${keys.join(", ")})`;
-      return "알 수 없는 오류";
+      if (keys.length > 0) return th("err.unknownWithKeys", { keys: keys.join(", ") });
+      return th("err.unknown");
     }
   }
   return String(err);
@@ -258,7 +255,7 @@ function formatErr(err: unknown): string {
 async function ensurePuterSession(): Promise<void> {
   const txt2img = window.puter?.ai?.txt2img;
   if (!txt2img) {
-    throw new Error("Puter.js SDK를 불러오지 못했습니다 (오프라인/스크립트 차단).");
+    throw new Error(th("err.sdkNotLoaded"));
   }
   const auth = window.puter?.auth;
   if (!auth?.isSignedIn) return;
@@ -273,7 +270,7 @@ async function ensurePuterSession(): Promise<void> {
     typeof raw === "boolean" ? raw : await puterIsSignedIn(() => raw as Promise<boolean>);
   if (signedIn) return;
   if (!auth.signIn) {
-    throw new Error("Puter 로그인(auth.signIn)을 사용할 수 없습니다 — SDK 버전을 확인하세요.");
+    throw new Error(th("err.signInUnavailable"));
   }
   await puterSignIn(auth); // 로그인 팝업 → 세션 연결 후 원래 생성 흐름 재개 (popup_blocked 안내 변환 포함)
 }
@@ -282,7 +279,7 @@ async function ensurePuterSession(): Promise<void> {
 async function puterGenerateWithAuth(produce: string, model?: string): Promise<unknown> {
   const txt2img = window.puter?.ai?.txt2img;
   if (!txt2img) {
-    throw new Error("Puter.js SDK를 불러오지 못했습니다 (오프라인/스크립트 차단).");
+    throw new Error(th("err.sdkNotLoaded"));
   }
   // 모델이 비어 있으면 options를 넘기지 않아 Puter 기본 모델을 쓴다.
   // (빈 문자열을 model로 보내면 bad_request가 되므로 undefined로 정규화한다)
@@ -332,7 +329,10 @@ export interface WallpaperState {
 /** `get_app_meta` 응답 — 버전/제작자는 Cargo 메타데이터가 단일 소스다. */
 export interface AppMeta {
   product: string;
+  /** semver 원본(`1.0.0`) — 배포·비교용. */
   version: string;
+  /** 화면 표시용(`1.0`) — 백엔드 `display_version()` 파생값(후행 `.0` 생략). */
+  version_display: string;
   author: string;
 }
 
@@ -407,14 +407,13 @@ export type WallpaperPosition =
   | "fill"
   | "span";
 
-const POSITION_LABELS: Record<WallpaperPosition, string> = {
-  fill: "채우기 (Fill)",
-  fit: "맞춤 (Fit)",
-  stretch: "늘이기 (Stretch)",
-  tile: "바둑판식 (Tile)",
-  center: "가운데 (Center)",
-  span: "스팬 (Span)",
-};
+/**
+ * 배치 방식 id 목록 — **표시 라벨은 여기 두지 않는다**.
+ * 라벨은 i18n 사전(`position.*`)에서만 가져온다. 한국어 리터럴을 여기 남기면
+ * 영어를 선택해도 이 값이 그대로 노출되어 "영어인데 한국어가 보인다"가 된다.
+ * (순서 = select 표시 순서)
+ */
+const POSITION_IDS: WallpaperPosition[] = ["fill", "fit", "stretch", "tile", "center", "span"];
 
 /**
  * 미리보기 보기 방식 → CSS.
@@ -471,15 +470,21 @@ export function App(): React.ReactElement {
   const [scSeedNext, setScSeedNext] = useState<number>(0);
   // `ProviderId`: 이미지 공급자 전체 집합(4종) — select 옵션·우선순위 목록이 같은 PROVIDERS 상수에서 파생된다.
   type ProviderId = "pollinations" | "puter" | "cloudflare-workers-ai" | "openai" | "search";
-  const PROVIDERS: { id: ProviderId; label: string; backend: boolean }[] = [
-    { id: "pollinations", label: "Pollinations (무료·키 불필요)", backend: true },
-    { id: "search", label: "검색 (Search — 키워드·키 불필요)", backend: true },
-    { id: "puter", label: "Puter (무료·브라우저 SDK)", backend: false },
-    { id: "cloudflare-workers-ai", label: "Cloudflare Workers AI", backend: true },
-    { id: "openai", label: "OpenAI", backend: true },
+  // 공급자 라벨도 i18n 사전 키만 보관한다 — 화면 리터럴을 두면 영어 선택 시 한국어가 남는다.
+  const PROVIDERS: { id: ProviderId; labelKey: string; backend: boolean }[] = [
+    { id: "pollinations", labelKey: "provider.pollinations", backend: true },
+    { id: "search", labelKey: "provider.search", backend: true },
+    { id: "puter", labelKey: "provider.puter", backend: false },
+    { id: "cloudflare-workers-ai", labelKey: "provider.cloudflare", backend: true },
+    { id: "openai", labelKey: "provider.openai", backend: true },
   ];
   const FREE_FIRST_ORDER: ProviderId[] = PROVIDERS.map((p) => p.id);
-  const providerLabel = (id: ProviderId): string => PROVIDERS.find((p) => p.id === id)?.label ?? id;
+  // `langRef` 는 아래(hooks)에서 선언되지만, 이 함수는 렌더/이벤트 시점에만 호출되므로
+  // 선언 시점 문제가 없다. 상태바·메시지는 항상 **현재 언어**로 만든다.
+  const providerLabel = (id: ProviderId): string => {
+    const found = PROVIDERS.find((p) => p.id === id);
+    return found ? t(langRef.current, found.labelKey) : id;
+  };
   // Puter는 WebView 전용(Puter.js 브라우저 SDK)이라 Rust 백엔드 `ImageProvider`가 모른다 —
   // 저장 payload와 우선순위 생성(provider_order)에는 backend:true인 공급자만 전달한다.
   const backendOrderIds = (order: ProviderId[]): ProviderId[] =>
@@ -526,7 +531,9 @@ export function App(): React.ReactElement {
   // 모델별 1회당 크레딧 표시는 제거했다 — 15개 중 14개가 "정보 없음"이어서 유용한 정보가
   // 없었고(사용자 요청), 남은 크레딧 조회(puterUsage)만 유지한다.
   // 프롬프트는 좌측 ②의 단일 #prompt를 모든 AI 공급자에 공통 적용한다(중복 입력 제거).
-  const [scInfo, setScInfo] = useState<string>("시나리오 미조회");
+  // 초기값은 **빈 문자열**이다 — 한국어 리터럴을 초기값으로 두면 영어 선택 시
+  // 첫 렌더(조회 전)에만 한국어가 노출된다. 표시 시점에 사전 폴백을 쓴다.
+  const [scInfo, setScInfo] = useState<string>("");
   // 자동 틱 연속 실패 횟수 (지적 #4: 에러 은폐 방지용 카운터)
   const [scAutoFail, setScAutoFail] = useState<number>(0);
   // 저장 시 커서·시각 보존용 원본 스냅샷 (지적 #2: 하드코딩 방지)
@@ -534,7 +541,8 @@ export function App(): React.ReactElement {
 
   // 상태
   const [status, setStatus] = useState<AppStatus | null>(null);
-  const [statusMsg, setStatusMsg] = useState<string>("준비됨");
+  // 초기값도 빈 문자열 — 표시 시점에 `common.ready` 사전 값으로 폴백한다.
+  const [statusMsg, setStatusMsg] = useState<string>("");
   const [statusKind, setStatusKind] = useState<"ok" | "error" | "info">("info");
   const [busy, setBusy] = useState<boolean>(false);
   // ③ 미리보기 전체화면 뷰어 열림 상태
@@ -545,6 +553,16 @@ export function App(): React.ReactElement {
      재시동 후에도 유지한다. 저장 실패(사생활 보호 모드 등)는 조용히 넘기지 않고
      상태바에 알린다. */
   const [lang, setLang] = useState<Lang>(() => loadLang());
+  // `useCallback([])` 로 메모이즈된 조회 함수가 **현재 언어**로 메시지를 내도록 최신 lang 을
+  // ref 로 참조한다. lang 을 의존성 배열에 넣으면 언어를 바꿀 때 refreshScenario 가
+  // 디스크 값으로 폼을 되돌려(미저장 편집 소실) 버리므로 ref 방식을 쓴다.
+  const langRef = useRef<Lang>(lang);
+  useEffect(() => {
+    langRef.current = lang;
+    // 모듈 스코프 헬퍼(Puter SDK 오류·formatErr 폴백)도 현재 언어로 문구를 만들도록
+    // 사전 접근자에 현재 언어를 알린다 — 상태를 볼 수 없는 위치의 한국어 잔존 방지.
+    setActiveLang(lang);
+  }, [lang]);
 
   /* ── ③ 미리보기 보기 방식 ──
      창맞춤(fit) / 원본 크기(100%) / 채우기(fill). 이전에는 썸네일을 그대로 늘려
@@ -725,11 +743,11 @@ export function App(): React.ReactElement {
         area.select();
         const okCopy = document.execCommand("copy");
         area.remove();
-        if (!okCopy) throw new Error("execCommand('copy') 실패");
+        if (!okCopy) throw new Error(th("err.copyCommandFailed"));
       }
-      setPuterCopyMsg("URL을 클립보드에 복사했습니다");
+      setPuterCopyMsg(t(lang, "modal.copied"));
     } catch (err) {
-      setPuterCopyMsg(`URL 복사 실패: ${formatErr(err)}`);
+      setPuterCopyMsg(t(lang, "modal.copyFailed", { err: formatErr(err) }));
     }
   };
 
@@ -737,9 +755,9 @@ export function App(): React.ReactElement {
   const handleOpenPuterUrl = async () => {
     try {
       await openPuterLoginInBrowser();
-      setPuterCopyMsg("브라우저에서 로그인 페이지를 열었습니다");
+      setPuterCopyMsg(t(lang, "modal.opened"));
     } catch (err) {
-      setPuterCopyMsg(`브라우저 열기 실패: ${formatErr(err)}`);
+      setPuterCopyMsg(t(lang, "modal.openFailed", { err: formatErr(err) }));
     }
   };
 
@@ -748,7 +766,7 @@ export function App(): React.ReactElement {
       const s = await invoke<AppStatus>("get_app_status");
       setStatus(s);
     } catch (err) {
-      reportError(`상태 조회 실패: ${formatErr(err)}`);
+      reportError(t(langRef.current, "common.stateQueryFailed", { err: formatErr(err) }));
     }
   }, []);
 
@@ -757,7 +775,7 @@ export function App(): React.ReactElement {
       const list = await invoke<MonitorInfo[]>("list_monitors");
       setMonitors(list);
     } catch (err) {
-      reportError(`모니터 조회 실패: ${formatErr(err)}`);
+      reportError(t(langRef.current, "common.monitorQueryFailed", { err: formatErr(err) }));
     }
   }, []);
 
@@ -827,10 +845,16 @@ export function App(): React.ReactElement {
       if (sc.prompt) setPrompt(sc.prompt);
       setScPrev(sc);
       setScInfo(
-        `다음 #${sc.next_index} · 마지막 ${sc.last_run_at ?? "없음"} · ${sc.enabled ? "ON" : "OFF"}`,
+        t(langRef.current, "scenario.infoLine", {
+          next: sc.next_index,
+          last: sc.last_run_at ?? t(langRef.current, "scenario.lastNone"),
+          onoff: sc.enabled
+            ? t(langRef.current, "scenario.onShort")
+            : t(langRef.current, "scenario.off"),
+        }),
       );
     } catch (err) {
-      setScInfo(`시나리오 조회 실패: ${formatErr(err)}`);
+      setScInfo(t(langRef.current, "scenario.loadFailed", { err: formatErr(err) }));
     }
   }, []);
 
@@ -896,7 +920,11 @@ export function App(): React.ReactElement {
                   }
                 : prev,
             );
-            reportOk(`시나리오 자동 적용 — 백엔드: ${applied.backend_used ?? "unknown"}`);
+            reportOk(
+              t(lang, "scenario.autoApplied", {
+                backend: applied.backend_used ?? t(lang, "common.unknown"),
+              }),
+            );
             await refreshScenario();
             await refreshStatus();
           }
@@ -906,7 +934,7 @@ export function App(): React.ReactElement {
             const next = n + 1;
             setScInfo(
               (prev) =>
-                `자동 업데이트 실패(${next}회 연속) — 수동 "지금 실행"으로 상세 확인: ${formatErr(err)} · ${prev}`,
+                `${t(lang, "scenario.autoTickFail", { n: next, err: formatErr(err) })} · ${prev}`,
             );
             return next;
           });
@@ -930,11 +958,14 @@ export function App(): React.ReactElement {
       if (query.trim()) void noteHistory("search", query, scProvider);
       reportOk(
         result.truncated
-          ? `검색 완료: ${result.total_matched}건 중 ${result.candidates.length}건 표시`
-          : `검색 완료: ${result.candidates.length}개 후보`,
+          ? t(lang, "search.doneTruncated", {
+              total: result.total_matched,
+              shown: result.candidates.length,
+            })
+          : t(lang, "search.done", { shown: result.candidates.length }),
       );
     } catch (err) {
-      reportError(`검색 실패: ${formatErr(err)}`);
+      reportError(t(lang, "search.failed", { err: formatErr(err) }));
     } finally {
       setBusy(false);
     }
@@ -955,9 +986,7 @@ export function App(): React.ReactElement {
     // ② 생성은 **이미지 생성 전용**이다. 검색(Search)의 실행 지점은 ① 검색 영역의
     // [검색] 버튼 하나뿐이므로, 생성 영역에서는 검색을 실행하지 않는다(중복 액션 제거).
     if (scProvider === "search") {
-      reportError(
-        "검색(Search)은 왼쪽 검색 영역의 [검색] 버튼으로 실행합니다 — 생성 화면은 이미지 생성 전용입니다.",
-      );
+      reportError(t(lang, "gen.searchOnly"));
       return;
     }
     if (!aiPrompt) {
@@ -967,9 +996,7 @@ export function App(): React.ReactElement {
     // 개별 On/Off: Off 로 둔 공급자는 ② 생성에서도 시도하지 않는다.
     // (우선순위 생성·시나리오 자동 실행과 같은 규칙 — 경로마다 판정이 달라지면 안 된다)
     if (!scProviderEnabled[scProvider]) {
-      reportError(
-        `선택한 공급자(${providerLabel(scProvider)})가 Off(비활성)입니다 — 우선순위 목록에서 On 으로 바꾼 뒤 다시 시도하세요.`,
-      );
+      reportError(t(lang, "gen.providerOff", { provider: providerLabel(scProvider) }));
       return;
     }
     setBusy(true);
@@ -993,7 +1020,12 @@ export function App(): React.ReactElement {
         // 프롬프트·생성 이미지 인덱스를 디스크에 남긴다(요구 ①② — 재시동 후 복원 근거).
         void noteHistory("prompt", aiPrompt, scProvider);
         void noteLibrary(candidate);
-        reportOk(`생성 완료 (${providerLabel(scProvider)}): ${candidate.file_name}`);
+        reportOk(
+          t(lang, "gen.done", {
+            provider: providerLabel(scProvider),
+            name: candidate.file_name,
+          }),
+        );
         return;
       }
       // 비-Puter 공급자는 백엔드가 provider 문자열로 정확히 분기한다.
@@ -1032,9 +1064,19 @@ export function App(): React.ReactElement {
       // 프롬프트·생성 이미지 인덱스를 디스크에 남긴다(요구 ①② — 재시동 후 복원 근거).
       void noteHistory("prompt", aiPrompt, scProvider);
       void noteLibrary(candidate);
-      reportOk(`생성 완료 (${providerLabel(scProvider)}): ${candidate.file_name}`);
+      reportOk(
+        t(lang, "gen.done", {
+          provider: providerLabel(scProvider),
+          name: candidate.file_name,
+        }),
+      );
     } catch (err) {
-      reportError(`생성 실패 (${providerLabel(scProvider)}): ${formatErr(err)}`);
+      reportError(
+        t(lang, "gen.failed", {
+          provider: providerLabel(scProvider),
+          err: formatErr(err),
+        }),
+      );
     } finally {
       setBusy(false);
     }
@@ -1046,7 +1088,7 @@ export function App(): React.ReactElement {
     if (scProvider === "puter") {
       const aiPrompt = prompt.trim();
       if (!aiPrompt) {
-        reportError("AI 프롬프트를 입력하세요.");
+        reportError(t(lang, "gen.aiPromptRequired"));
         return;
       }
       setBusy(true);
@@ -1075,12 +1117,14 @@ export function App(): React.ReactElement {
             : prev,
         );
         await syncSelectedToApplied(state);
-        reportOk(`Puter 생성·적용 완료 — 백엔드: ${state.backend_used ?? "unknown"}`);
+        reportOk(
+          t(lang, "gen.puterDone", { backend: state.backend_used ?? t(lang, "common.unknown") }),
+        );
         await refreshStatus();
         // 생성은 크레딧을 소모하므로 성공 시 잔여 allowance 를 자동 갱신한다(실패는 표시만).
         void handleRefreshPuterUsage();
       } catch (err) {
-        reportError(`Puter 생성 실패 (기존 배경 유지): ${formatErr(err)}`);
+        reportError(t(lang, "gen.puterFailed", { err: formatErr(err) }));
       } finally {
         setBusy(false);
       }
@@ -1093,7 +1137,7 @@ export function App(): React.ReactElement {
     if (scProvider === "search") {
       const keyword = searchKeywords[0] ?? "";
       if (!keyword) {
-        reportError("검색 키워드를 입력하세요.");
+        reportError(t(lang, "search.noKeyword"));
         return;
       }
       setBusy(true);
@@ -1129,11 +1173,14 @@ export function App(): React.ReactElement {
         // (소스 정규식 문자열 검사로는 절단 버그를 잡지 못해 실행 가능 모듈로 분리)
         const appliedQuery = parseAppliedSearchQuery(state.source) ?? keyword;
         reportOk(
-          `검색 생성·적용 완료 — 검색어: "${appliedQuery}" · 백엔드: ${state.backend_used ?? "unknown"}`,
+          t(lang, "gen.searchApplied", {
+            query: appliedQuery,
+            backend: state.backend_used ?? t(lang, "common.unknown"),
+          }),
         );
         await refreshStatus();
       } catch (err) {
-        reportError(`검색 생성 실패 (기존 배경 유지): ${formatErr(err)}`);
+        reportError(t(lang, "gen.searchFailed", { err: formatErr(err) }));
       } finally {
         setBusy(false);
       }
@@ -1143,7 +1190,7 @@ export function App(): React.ReactElement {
     if (scProvider === "openai") {
       const aiPrompt = prompt.trim();
       if (!aiPrompt) {
-        reportError("AI 프롬프트를 입력하세요.");
+        reportError(t(lang, "gen.aiPromptRequired"));
         return;
       }
       setBusy(true);
@@ -1168,10 +1215,14 @@ export function App(): React.ReactElement {
             : prev,
         );
         await syncSelectedToApplied(state);
-        reportOk(`OpenAI 생성·적용 완료 — 백엔드: ${state.backend_used ?? "unknown"}`);
+        reportOk(
+          t(lang, "gen.openaiDone", {
+            backend: state.backend_used ?? t(lang, "common.unknown"),
+          }),
+        );
         await refreshStatus();
       } catch (err) {
-        reportError(`OpenAI 생성 실패 (기존 배경 유지): ${formatErr(err)}`);
+        reportError(t(lang, "gen.openaiFailed", { err: formatErr(err) }));
       } finally {
         setBusy(false);
       }
@@ -1180,12 +1231,12 @@ export function App(): React.ReactElement {
     // 검수 지적 [medium](1): 토큰 사전 검사는 account_id만 요구한다.
     // api_token이 비어 있으면 Rust generate_wallpaper_ai_impl이 디스크 저장 토큰으로 폴백한다.
     if (!scCfAccount.trim()) {
-      reportError("Cloudflare Account ID를 입력하세요. (API Token은 저장된 토큰 사용 — 미저장 시 입력 필요)");
+      reportError(t(lang, "gen.cloudflareAccountRequired"));
       return;
     }
     const aiPrompt = prompt.trim();
     if (!aiPrompt) {
-      reportError("AI 프롬프트를 입력하세요.");
+      reportError(t(lang, "gen.aiPromptRequired"));
       return;
     }
     setBusy(true);
@@ -1211,10 +1262,14 @@ export function App(): React.ReactElement {
           : prev,
       );
       await syncSelectedToApplied(state);
-      reportOk(`Cloudflare AI 생성·적용 완료 — 백엔드: ${state.backend_used ?? "unknown"}`);
+      reportOk(
+        t(lang, "gen.cloudflareDone", {
+          backend: state.backend_used ?? t(lang, "common.unknown"),
+        }),
+      );
       await refreshStatus();
     } catch (err) {
-      reportError(`Cloudflare AI 생성 실패 (기존 배경 유지): ${formatErr(err)}`);
+      reportError(t(lang, "gen.cloudflareFailed", { err: formatErr(err) }));
     } finally {
       setBusy(false);
     }
@@ -1222,7 +1277,7 @@ export function App(): React.ReactElement {
 
   const handleApply = async () => {
     if (!selected) {
-      reportError("적용할 이미지를 먼저 선택하세요.");
+      reportError(t(lang, "common.selectFirst"));
       return;
     }
     setBusy(true);
@@ -1245,9 +1300,13 @@ export function App(): React.ReactElement {
           : prev,
       );
       await syncSelectedToApplied(state);
-      reportOk(`적용 완료 — 백엔드: ${state.backend_used ?? "unknown"}`);
+      reportOk(
+        t(lang, "common.applyDone", {
+          backend: state.backend_used ?? t(lang, "common.unknown"),
+        }),
+      );
     } catch (err) {
-      reportError(`적용 실패: ${formatErr(err)}`);
+      reportError(t(lang, "common.applyFailed", { err: formatErr(err) }));
     } finally {
       setBusy(false);
     }
@@ -1263,7 +1322,7 @@ export function App(): React.ReactElement {
     const path = typeof target === "string" ? target : target.path;
     const name = typeof target === "string" ? path : target.file_name;
     if (!path) {
-      reportError("삭제할 파일 경로가 없습니다.");
+      reportError(t(lang, "common.noPath"));
       return;
     }
     setBusy(true);
@@ -1275,9 +1334,9 @@ export function App(): React.ReactElement {
       if (selected && selected.path === path) {
         setSelected(next.length > 0 ? next[0] : null);
       }
-      reportOk(`삭제 완료 — ${name}`);
+      reportOk(t(lang, "common.deleteDone", { name }));
     } catch (err) {
-      reportError(`삭제 실패: ${formatErr(err)}`);
+      reportError(t(lang, "common.deleteFailed", { err: formatErr(err) }));
     } finally {
       setBusy(false);
     }
@@ -1301,9 +1360,13 @@ export function App(): React.ReactElement {
             }
           : prev,
       );
-      reportOk(`복원 완료 — 백엔드: ${state.backend_used ?? "unknown"}`);
+      reportOk(
+        t(lang, "common.restoreDone", {
+          backend: state.backend_used ?? t(lang, "common.unknown"),
+        }),
+      );
     } catch (err) {
-      reportError(`복원 실패: ${formatErr(err)}`);
+      reportError(t(lang, "common.restoreFailed", { err: formatErr(err) }));
     } finally {
       setBusy(false);
     }
@@ -1312,7 +1375,7 @@ export function App(): React.ReactElement {
   const handleSaveScenario = async () => {
     const minutes = Number.parseInt(scInterval, 10);
     if (!Number.isFinite(minutes) || minutes < 5) {
-      reportError("주기는 5분 이상 숫자로 입력하세요.");
+      reportError(t(lang, "scenario.intervalInvalid"));
       return;
     }
     const urls = scUrls
@@ -1328,7 +1391,7 @@ export function App(): React.ReactElement {
     // Puter는 WebView 전용 SDK라 백엔드 ImageProvider("pollinations"|"cloudflare-workers-ai"|"openai")로
     // 역직렬화할 수 없다 — 그대로 저장하면 scenario.json 로드 시 실패한다. 저장을 명시적으로 차단한다.
     if (scProvider === "puter") {
-      reportError("Puter는 WebView 전용 생성 경로라 시나리오 공급자로 저장할 수 없습니다. Pollinations/검색(Search)/Cloudflare/OpenAI 중 선택 후 저장하세요.");
+      reportError(t(lang, "scenario.puterNotSavable"));
       return;
     }
     // 위 puter 가드에서 early return했으므로 Exclude<ProviderId, "puter">로 좁혀진다.
@@ -1336,7 +1399,7 @@ export function App(): React.ReactElement {
     // Off 공급자를 대표 공급자로 저장하면 시나리오 자동 실행 후보가 비어 버린다 — 명시적으로 막는다.
     if (!scProviderEnabled[provider]) {
       reportError(
-        `선택한 공급자(${providerLabel(provider)})가 Off(비활성)입니다 — 우선순위 목록에서 On 으로 바꾼 뒤 저장하세요.`,
+        t(lang, "scenario.providerOffNotSavable", { provider: providerLabel(provider) }),
       );
       return;
     }
@@ -1405,7 +1468,11 @@ export function App(): React.ReactElement {
         },
       });
       setScInfo(
-        `저장됨 · 다음 #${saved.next_index} · ${saved.enabled ? "ON" : "OFF"} · ${saved.interval_minutes}분`,
+        t(lang, "scenario.savedInfo", {
+          next: saved.next_index,
+          onoff: saved.enabled ? t(lang, "scenario.onShort") : t(lang, "scenario.off"),
+          minutes: saved.interval_minutes,
+        }),
       );
       const deletedToken = scClearToken && scCfToken.trim() === "";
       const deletedKey = scClearKey && scOpenaiKey.trim() === "";
@@ -1414,14 +1481,14 @@ export function App(): React.ReactElement {
       if (deletedToken || deletedKey) {
         if (deletedToken) setScCfToken("");
         if (deletedKey) setScOpenaiKey("");
-        reportOk("시나리오 저장 완료 — 저장된 API 토큰/키를 삭제했습니다");
+        reportOk(t(lang, "scenario.savedCleared"));
       } else {
         // scClearToken 체크 + 새 토큰 동시 입력 시 백엔드는 새 토큰을 저장하므로
         // 입력값을 비우지 않고 일반 저장 메시지를 표시한다.
-        reportOk("시나리오 저장 완료");
+        reportOk(t(lang, "scenario.savedPlain"));
       }
     } catch (err) {
-      reportError(`시나리오 저장 실패: ${formatErr(err)}`);
+      reportError(t(lang, "scenario.saveFailed", { err: formatErr(err) }));
     } finally {
       setBusy(false);
     }
@@ -1442,7 +1509,7 @@ export function App(): React.ReactElement {
   const handleGeneratePriority = async () => {
     const aiPrompt = prompt.trim();
     if (!aiPrompt) {
-      reportError("AI 프롬프트를 입력하세요.");
+      reportError(t(lang, "gen.aiPromptRequired"));
       return;
     }
     const monitor = monitorId.trim() ? monitorId.trim() : null;
@@ -1457,7 +1524,7 @@ export function App(): React.ReactElement {
       const enabledOrder = scProviderOrder.filter((id) => scProviderEnabled[id]);
       if (!scProviderEnabled[scProvider]) {
         throw new Error(
-          `선택한 공급자(${providerLabel(scProvider)})가 Off(비활성)입니다 — 우선순위 목록에서 On 으로 바꾸거나 다른 공급자를 선택하세요.`,
+          t(lang, "gen.providerOff", { provider: providerLabel(scProvider) }),
         );
       }
       const order = scAllowFallback
@@ -1478,16 +1545,20 @@ export function App(): React.ReactElement {
             if (scProvider !== "puter") {
               const auth = window.puter?.auth;
               if (!auth || !auth.isSignedIn) {
-                lastErr = new Error("Puter.js SDK 미로드");
-                failedBefore.push(`${providerLabel(id)}: SDK 미로드 — 건너뜀`);
+                lastErr = new Error(t(lang, "gen.sdkNotLoaded"));
+                failedBefore.push(
+                  t(lang, "gen.skippedSdk", { provider: providerLabel(id) }),
+                );
                 continue;
               }
               const signedIn = await puterIsSignedIn(() =>
                 auth.isSignedIn ? auth.isSignedIn() : false,
               );
               if (!signedIn) {
-                lastErr = new Error("Puter 로그인 상태 아님");
-                failedBefore.push(`${providerLabel(id)}: 로그인 상태 아님 — 건너뜀`);
+                lastErr = new Error(t(lang, "gen.notSignedIn"));
+                failedBefore.push(
+                  t(lang, "gen.skippedSignedOut", { provider: providerLabel(id) }),
+                );
                 continue;
               }
             }
@@ -1512,16 +1583,24 @@ export function App(): React.ReactElement {
           break;
         } catch (err) {
           lastErr = err;
-          failedBefore.push(`${providerLabel(id)}: ${formatErr(err)}`);
+          failedBefore.push(
+            t(lang, "gen.providerFailed", {
+              provider: providerLabel(id),
+              err: formatErr(err),
+            }),
+          );
         }
       }
       if (!state || !usedProvider) {
         if (!scAllowFallback) {
           throw new Error(
-            `선택한 공급자(${providerLabel(scProvider)}) 실패: ${formatErr(lastErr)} — 자동 폴백 비활성`,
+            t(lang, "gen.strictFailed", {
+              provider: providerLabel(scProvider),
+              err: formatErr(lastErr),
+            }),
           );
         }
-        throw lastErr ?? new Error("시도 가능한 이미지 공급자가 없습니다.");
+        throw lastErr ?? new Error(t(lang, "gen.noProvider"));
       }
       const applied = state;
       setStatus((prev) =>
@@ -1536,24 +1615,36 @@ export function App(): React.ReactElement {
             }
           : prev,
       );
+      // 동적 값(공급자·경로·건너뜀 사유)은 자리표시자로만 전달한다 — 상태 메시지에
+      // 한글 리터럴이 남으면 영어 선택 시 한국어가 노출된다(검수 지적 [medium]).
       const skippedNote =
-        failedBefore.length > 0 ? ` · 앞선 실패: ${failedBefore.join(" / ")}` : "";
+        failedBefore.length > 0
+          ? t(lang, "gen.failedBefore", { list: failedBefore.join(" / ") })
+          : "";
       // 검수 지적 [low](2): 신규 생성 결과(응답 applied)와 state.json 저장값(fresh)을
       // 같은 메시지에 나란히 노출한다. "생성 정보" 패널은 현재 배경 기준이므로,
       // 둘이 다르면 사용자가 "왜 Puter 로 표시되지?"라고 혼동하던 지점이 즉시 드러난다.
       await refreshStatus();
       const fresh = await invoke<AppStatus>("get_app_status");
       const savedNote = fresh.provider
-        ? ` · state.json: ${providerLabel(fresh.provider as ProviderId)}${fresh.source ? ` — ${fresh.source}` : ""}`
-        : " · state.json: 생성 정보 없음";
+        ? t(lang, "gen.stateJsonNote", {
+            provider: providerLabel(fresh.provider as ProviderId),
+            source: fresh.source ? ` — ${fresh.source}` : "",
+          })
+        : t(lang, "gen.stateJsonNone");
       await syncSelectedToApplied(applied);
       reportOk(
-        `우선순위 생성·적용 완료 — 선택: ${providerLabel(scProvider)} → 실제: ${providerLabel(usedProvider)} · 응답 provider: ${
-          applied.provider ?? "없음"
-        }${savedNote} · 백엔드: ${applied.backend_used ?? "unknown"}${skippedNote}`,
+        t(lang, "gen.priorityDoneDetail", {
+          selected: providerLabel(scProvider),
+          used: providerLabel(usedProvider),
+          responseProvider: applied.provider ?? t(lang, "common.none"),
+          savedNote,
+          backend: applied.backend_used ?? t(lang, "common.unknown"),
+          skippedNote,
+        }),
       );
     } catch (err) {
-      reportError(`우선순위 생성 실패 (기존 배경 유지): ${formatErr(err)}`);
+      reportError(t(lang, "gen.priorityFailed", { err: formatErr(err) }));
     } finally {
       setBusy(false);
     }
@@ -1577,11 +1668,11 @@ export function App(): React.ReactElement {
     setBusy(true);
     try {
       await ensurePuterSession();
-      reportOk("Puter 세션 연결 완료 — 이제 이미지 생성을 사용할 수 있습니다");
+      reportOk(t(lang, "scenario.puterSignedIn"));
       void handleRefreshPuterUsage();
     } catch (err) {
       console.error("Puter 로그인 원본 에러:", (() => { try { return JSON.stringify(err, Object.getOwnPropertyNames(err as object)); } catch { return String(err); } })());
-      reportError(`Puter 로그인 실패: ${formatErr(err)}`);
+      reportError(t(lang, "scenario.puterSignInFailed", { err: formatErr(err) }));
     } finally {
       setBusy(false);
     }
@@ -1605,14 +1696,18 @@ export function App(): React.ReactElement {
             : prev,
         );
         await syncSelectedToApplied(applied);
-        reportOk(`시나리오 적용 — 백엔드: ${applied.backend_used ?? "unknown"}`);
+        reportOk(
+          t(lang, "scenario.runApplied", {
+            backend: applied.backend_used ?? t(lang, "common.unknown"),
+          }),
+        );
       } else {
-        reportOk("시나리오: 아직 주기가 안 됐거나 OFF/소스 없음");
+        reportOk(t(lang, "scenario.tickSkipped"));
       }
       await refreshScenario();
       await refreshStatus();
     } catch (err) {
-      reportError(`시나리오 실행 실패: ${formatErr(err)}`);
+      reportError(t(lang, "scenario.runFailed", { err: formatErr(err) }));
     } finally {
       setBusy(false);
     }
@@ -1676,7 +1771,7 @@ export function App(): React.ReactElement {
             >
               {PROVIDERS.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.label}
+                  {t(lang, p.labelKey)}
                 </option>
               ))}
             </select>
@@ -1952,7 +2047,7 @@ export function App(): React.ReactElement {
               value={position}
               onChange={(e) => setPosition(e.target.value as WallpaperPosition)}
             >
-              {(Object.keys(POSITION_LABELS) as WallpaperPosition[]).map((p) => (
+              {POSITION_IDS.map((p) => (
                 <option key={p} value={p}>
                   {t(lang, `position.${p}`)}
                 </option>
@@ -2113,7 +2208,7 @@ export function App(): React.ReactElement {
               >
                 {PROVIDERS.map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.label}
+                    {t(lang, p.labelKey)}
                   </option>
                 ))}
               </select>
@@ -2276,7 +2371,7 @@ export function App(): React.ReactElement {
                   >
                     {PUTER_IMAGE_MODELS.map((m) => (
                       <option key={m.id} value={m.id}>
-                        {m.label}
+                        {m.labelKey ? t(lang, m.labelKey) : (m.label ?? m.id)}
                       </option>
                     ))}
                   </select>
@@ -2290,15 +2385,41 @@ export function App(): React.ReactElement {
                     {puterUsageBusy
                       ? t(lang, "scenario.creditBusy")
                       : puterUsage
-                        ? `남은 크레딧: ${formatUsage(puterUsage.summary.remaining, puterUsage.summary.unit)}${usageUnitLabel(puterUsage.summary.unit)}${
+                        ? `${t(lang, "scenario.creditSummary", {
+                            remaining: formatUsage(
+                              puterUsage.summary.remaining,
+                              puterUsage.summary.unit,
+                            ),
+                            unit: usageUnitLabel(puterUsage.summary.unit),
+                          })}${
                             puterUsage.summary.allowance !== null
-                              ? ` / 월 한도 ${formatUsage(puterUsage.summary.allowance, puterUsage.summary.unit)}`
+                              ? t(lang, "scenario.creditAllowance", {
+                                  allowance: formatUsage(
+                                    puterUsage.summary.allowance,
+                                    puterUsage.summary.unit,
+                                  ),
+                                })
                               : ""
                           }${
                             puterUsage.summary.spent !== null
-                              ? ` · 사용 ${formatUsage(puterUsage.summary.spent, puterUsage.summary.unit)}`
+                              ? t(lang, "scenario.creditSpent", {
+                                  spent: formatUsage(
+                                    puterUsage.summary.spent,
+                                    puterUsage.summary.unit,
+                                  ),
+                                })
                               : ""
-                          } · 단위: ${puterUsage.summary.unit ?? "미표기"}(${puterUsage.summary.unitPath ?? "?"}) · 경로: 남음 ${puterUsage.summary.remainingPath ?? "없음"} / 한도 ${puterUsage.summary.allowancePath ?? "없음"} / 사용 ${puterUsage.summary.spentPath ?? "없음"}`
+                          }${t(lang, "scenario.creditUnitPath", {
+                            unit:
+                              puterUsage.summary.unit ??
+                              t(lang, "scenario.creditUnitUnspecified"),
+                            path: puterUsage.summary.unitPath ?? "?",
+                            remainingPath:
+                              puterUsage.summary.remainingPath ?? t(lang, "common.none"),
+                            allowancePath:
+                              puterUsage.summary.allowancePath ?? t(lang, "common.none"),
+                            spentPath: puterUsage.summary.spentPath ?? t(lang, "common.none"),
+                          })}`
                         : t(lang, "scenario.creditIdle")}
                   </div>
                   {puterUsage && (
@@ -2347,7 +2468,7 @@ export function App(): React.ReactElement {
               </>
             )}
             <div className="detail" style={{ marginBottom: "8px" }}>
-              {scInfo}
+              {scInfo || t(lang, "scenario.notLoaded")}
               {scAutoFail > 0 ? ` · ${t(lang, "scenario.autoFail", { n: scAutoFail })}` : ""}
             </div>
             <button
@@ -2430,10 +2551,16 @@ export function App(): React.ReactElement {
             <h2>{t(lang, "about.heading")}</h2>
             <div className="detail" id="appMeta">
               <div>
-                {t(lang, "about.version")}: <b>{appMeta?.version ?? "(미조회)"}</b>
+                {t(lang, "about.version")}:{" "}
+                <b>
+                  {appMeta?.version_display ??
+                    appMeta?.version ??
+                    t(lang, "about.notLoaded")}
+                </b>
               </div>
               <div>
-                {t(lang, "about.author")}: <b>{appMeta?.author ?? "(미조회)"}</b>
+                {t(lang, "about.author")}:{" "}
+                <b>{appMeta?.author ?? t(lang, "about.notLoaded")}</b>
               </div>
             </div>
           </section>
@@ -2455,7 +2582,7 @@ export function App(): React.ReactElement {
             : t(lang, "footer.noneGenerated")}
         </span>
         <span className={`msg ${statusKind === "error" ? "error" : statusKind === "ok" ? "ok" : ""}`}>
-          {busy ? t(lang, "common.busy") : statusMsg}
+          {busy ? t(lang, "common.busy") : statusMsg || t(lang, "common.ready")}
         </span>
       </footer>
 
@@ -2495,7 +2622,7 @@ export function App(): React.ReactElement {
             </p>
             <div className="modal-actions">
               <button type="button" className="block" onClick={() => setPuterPromptUrl(null)}>
-                닫기
+                {t(lang, "modal.close")}
               </button>
             </div>
           </div>

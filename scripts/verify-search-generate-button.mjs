@@ -27,6 +27,8 @@ const gitRev = gitArg ? gitArg.slice("--git=".length) : null;
 const app = gitRev
   ? execFileSync("git", ["show", `${gitRev}:${APP}`], { encoding: "utf8" })
   : fs.readFileSync(APP, "utf8");
+/// 안내 문구는 i18n 사전으로 이관되었다 — 사전 키 실재까지 함께 검사한다.
+const i18n = fs.readFileSync("src-ui/i18n.ts", "utf8");
 
 console.log(`검사 대상: ${gitRev ? `${gitRev}:` : ""}${APP}`);
 
@@ -189,9 +191,13 @@ check("① 검색 [검색] 핸들러는 키워드(query)를 그대로 백엔드�
 // 숫자 삭제). 계약은 "검색 영역의 [검색] 버튼으로 안내"라는 의미이므로 번호 없이 매칭한다.
 check("handleGenerate 는 검색 공급자에서 검색 영역으로 안내하고 종료한다", () => {
   const body = sliceFn(app, "handleGenerate");
+  // 안내 문구는 사전(gen.searchOnly)으로 이관되었다 — 리터럴 대신 키를 쓰고,
+  // 그 키의 ko 값이 "검색 영역의 [검색] 버튼" 안내를 담고 있는지 사전에서 확인한다.
   return (
     /scProvider === "search"/.test(body) &&
-    /검색 영역의 \[검색\] 버튼/.test(body) &&
+    /reportError\(t\(lang, "gen\.searchOnly"\)\)/.test(body) &&
+    /"gen\.searchOnly":/.test(i18n) &&
+    /검색 영역의 \[검색\] 버튼/.test(i18n) &&
     !/generate_library_wallpaper_with_provider[\s\S]{0,200}provider:\s*"search"/.test(body)
   );
 });

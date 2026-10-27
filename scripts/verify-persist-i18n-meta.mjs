@@ -259,6 +259,62 @@ check("섹션 제목이 모두 t() 를 거친다(하드코딩 한글 제목 0)",
   return { ok: hard.length === 0, detail: hard.length ? hard.join(",") : "" };
 });
 
+// ── 검수 지적 [medium] 1: 동적 상태 메시지 전량 i18n 이관 고정 ──────────
+// reportOk/reportError/setScInfo/setPuterCopyMsg 로 전달되는 인자에 한글 리터럴이 남으면
+// 영어를 선택해도 상태바·모달에 한국어가 노출된다. 호출식의 괄호 깊이를 따라 인자 전체를
+// 모아 검사한다(여러 줄 템플릿 리터럴도 포함).
+check("동적 상태 메시지(reportOk/reportError/setScInfo/setPuterCopyMsg) 인자에 한글 리터럴 0건", () => {
+  const lines = ui.split("\n");
+  const bad = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!/^(reportOk|reportError|reportInfo|setScInfo|setPuterCopyMsg)\(/.test(lines[i].trim())) {
+      continue;
+    }
+    let depth = 0;
+    let seg = "";
+    for (let j = i; j < lines.length; j += 1) {
+      seg += lines[j] + "\n";
+      for (const ch of lines[j]) {
+        if (ch === "(") depth += 1;
+        else if (ch === ")") depth -= 1;
+      }
+      if (depth <= 0) break;
+    }
+    if (/[가-힣]/.test(seg)) bad.push(i + 1);
+  }
+  return { ok: bad.length === 0, detail: bad.length ? "한글 리터럴 호출 라인: " + bad.join(",") : "" };
+});
+
+// 모듈 스코프(컴포넌트 밖) 헬퍼가 던지는 사용자 노출 오류도 사전을 거쳐야 한다.
+check("throw new Error(...) 인자에 한글 리터럴 0건 (모듈 스코프 오류도 i18n)", () => {
+  const lines = ui.split("\n");
+  const bad = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!/throw new Error\(/.test(lines[i])) continue;
+    let depth = 0;
+    let seg = "";
+    for (let j = i; j < lines.length; j += 1) {
+      seg += lines[j] + "\n";
+      for (const ch of lines[j]) {
+        if (ch === "(") depth += 1;
+        else if (ch === ")") depth -= 1;
+      }
+      if (depth <= 0) break;
+    }
+    if (/[가-힣]/.test(seg)) bad.push(i + 1);
+  }
+  return { ok: bad.length === 0, detail: bad.length ? "한글 리터럴 throw 라인: " + bad.join(",") : "" };
+});
+
+// ── 검수 지적 [low] 2: 화면 표시 버전은 semver 원본에서 파생(1.0.0 → 1.0) ──
+check("표시용 버전은 후행 패치 .0 을 생략한다(store::display_version)", () =>
+  /pub fn display_version\(/.test(store) &&
+  /version_display: display_version\(&version\)/.test(store),
+);
+check("UI 가 version_display 를 표시한다(원본 version 은 폴백)", () =>
+  /version_display/.test(ui) && /appMeta\?\.version_display/.test(ui),
+);
+
 // ── i18n 순수 모듈 실행 검증(문자열 검사가 아니라 실제 호출) ──
 const failed = results.filter((r) => !r.ok).length;
 

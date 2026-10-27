@@ -132,7 +132,8 @@ check("남은 크레딧을 단위에 맞는 표시 문자열로 변환한다", (
     /export function formatUsage/.test(usage) &&
     /unit === "credits"/.test(usage) &&
     /formatMicrocents\(value\)/.test(usage) &&
-    /formatUsage\(puterUsage\.summary\.remaining, puterUsage\.summary\.unit\)/.test(app)
+    // i18n 이관으로 호출이 여러 줄로 포맷될 수 있다 — 인자 사이 공백/줄바꿈을 허용한다.
+    /formatUsage\(\s*puterUsage\.summary\.remaining,\s*puterUsage\.summary\.unit,?\s*\)/.test(app)
   );
 });
 
@@ -162,7 +163,7 @@ check("크레딧 미확인(null)과 0 을 구분해 표시한다", () => {
   const nullIsUnknown = /value === null\) return "알 수 없음"/.test(usage);
   const zeroIsZero = /value === 0\) return "\$0\.00"/.test(usage);
   const appPassesThrough =
-    /formatUsage\(puterUsage\.summary\.remaining, puterUsage\.summary\.unit\)/.test(app);
+    /formatUsage\(\s*puterUsage\.summary\.remaining,\s*puterUsage\.summary\.unit,?\s*\)/.test(app);
   return nullIsUnknown && zeroIsZero && appPassesThrough;
 });
 
@@ -187,8 +188,13 @@ check("Puter 섹션에 잔여 크레딧 UI(조회 버튼 + 표시)가 있다", (
   if (enclosing === undefined) return { ok: false, detail: "Puter 분기 밖에서 렌더됨" };
   const nextBranch = app.indexOf('{scProvider === "', anchor);
   const body = app.slice(enclosing, nextBranch < 0 ? app.length : nextBranch);
+  // 표시 문구는 사전(scenario.creditSummary)으로 이관되었다 — 리터럴 대신
+  // "정규화 결과(puterUsage)를 사전 키로 렌더하고 조회 버튼이 있는가"를 본다.
   return {
-    ok: /puterUsage/.test(body) && /잔여 크레딧|남은 크레딧/.test(body) && /handleRefreshPuterUsage/.test(body),
+    ok:
+      /puterUsage/.test(body) &&
+      /t\(lang, "scenario\.creditSummary"/.test(body) &&
+      /handleRefreshPuterUsage/.test(body),
     detail: `enclosing=${enclosing} anchor=${anchor} len=${body.length}`,
   };
 });

@@ -135,19 +135,25 @@ ok(
   /const order = scAllowFallback\s*\?[\s\S]{0,200}:\s*\[scProvider\];/.test(body),
 );
 
+// 메시지는 다국어 사전 키로 이관되었다 — 계약(원인 노출·선택/실제 명시·
+// 건너뜀 사유 누적)은 유지되고 문구 위치만 사전으로 옮겨졌다.
 ok(
   "폴백 비활성 시 선택 공급자 실패 원인을 노출하고 다른 공급자로 넘어가지 않는다",
-  /선택한 공급자\(\$\{providerLabel\(scProvider\)\}\) 실패: .*자동 폴백 비활성/.test(body),
+  /throw new Error\(\s*t\(lang, "gen\.strictFailed"/.test(body) &&
+    /provider: providerLabel\(scProvider\)/.test(body),
 );
 
 ok(
   "결과 메시지에 선택·실제 공급자를 명시한다",
-  /선택: \$\{providerLabel\(scProvider\)\} → 실제: \$\{providerLabel\(usedProvider\)\}/.test(body),
+  /t\(lang, "gen\.priorityDoneDetail"/.test(body) &&
+    /selected: providerLabel\(scProvider\)/.test(body) &&
+    /used: providerLabel\(usedProvider\)/.test(body),
 );
 
 ok(
   "건너뛴 사유가 failedBefore 에 누적된다 (무음 스킵 금지)",
-  /failedBefore\.push\(`\$\{providerLabel\(id\)\}: 로그인 상태 아님 — 건너뜀`\)/.test(body),
+  /failedBefore\.push\(\s*t\(lang, "gen\.skippedSignedOut"/.test(body) &&
+    /provider: providerLabel\(id\)/.test(body),
 );
 
 ok(
@@ -157,7 +163,10 @@ ok(
 
 ok(
   "성공 시에도 앞선 실패·스킵 사유를 메시지에 포함한다",
-  /failedBefore\.length > 0 \? ` · 앞선 실패: \$\{failedBefore\.join\(" \/ "\)\}`/.test(body),
+  // 문구는 사전(gen.failedBefore)으로 이관되었고, 계약의 본질은
+  // "failedBefore 가 비어 있지 않을 때 그 목록을 메시지에 넣는가"이다.
+  /failedBefore\.length > 0/.test(body) &&
+    /t\(lang, "gen\.failedBefore", \{ list: failedBefore\.join\(" \/ "\) \}\)/.test(body),
 );
 
 console.log("");

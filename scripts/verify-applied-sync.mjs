@@ -102,22 +102,25 @@ check("동기화 실패를 무음 처리하지 않는다 (console.warn)", () => 
   return !!body && /console\.warn/.test(body[0]);
 });
 
+// 상태 메시지는 다국어(i18n) 사전 키로 이관되었다(검수 지적 [medium] 1).
+// 계약의 본질은 "각 적용 경로가 성공 메시지를 내기 직전에 syncSelectedToApplied 를
+// 호출하는가"이므로, 리터럴이 아니라 **사전 키 + reportOk** 를 앵커로 삼는다.
 const callSites = [
-  ["Puter 생성", /reportOk\(`Puter 생성·적용 완료/],
-  ["OpenAI 생성", /reportOk\(`OpenAI 생성·적용 완료/],
-  ["Cloudflare 생성", /reportOk\(`Cloudflare AI 생성·적용 완료/],
-  ["수동 적용", /reportOk\(`적용 완료 — 백엔드/],
-  ["우선순위 생성", /우선순위 생성·적용 완료/],
-  ["시나리오 적용", /reportOk\(`시나리오 적용 — 백엔드/],
+  ["Puter 생성", "gen.puterDone"],
+  ["OpenAI 생성", "gen.openaiDone"],
+  ["Cloudflare 생성", "gen.cloudflareDone"],
+  ["수동 적용", "common.applyDone"],
+  ["우선순위 생성", "gen.priorityDoneDetail"],
+  ["시나리오 적용", "scenario.runApplied"],
 ];
-for (const [label, re] of callSites) {
+for (const [label, key] of callSites) {
   check(`${label} 경로가 적용 후 미리보기를 동기화한다`, () => {
-    const m = app.match(re);
-    if (!m) return false;
-    // 해당 reportOk 앞 400자 안에 syncSelectedToApplied 호출이 있어야 한다.
-    const start = Math.max(0, m.index - 400);
-    const window = app.slice(start, m.index);
-    return /syncSelectedToApplied\(/.test(window);
+    const at = app.indexOf(`"${key}"`);
+    if (at < 0) return false;
+    // 해당 메시지 앞 400자 안에 reportOk 와 syncSelectedToApplied 가 모두 있어야 한다.
+    const start = Math.max(0, at - 400);
+    const window = app.slice(start, at);
+    return /reportOk\(/.test(window) && /syncSelectedToApplied\(/.test(window);
   });
 }
 
