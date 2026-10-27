@@ -139,7 +139,7 @@ check("모델 select 옵션 라벨에 1회당 크레딧이 붙는다", () => {
   const block = at >= 0 && close > at ? appSrc.slice(at, close) : "";
   return (
     /PUTER_IMAGE_MODELS\.map/.test(block) &&
-    /formatCreditsPerImage\(creditForModel\(m\.id\)\)/.test(block)
+    /formatCreditsPerImage\(creditForModel\(m\.id,\s*puterModelCredits\)\)/.test(block)
   );
 });
 
@@ -149,11 +149,44 @@ check("선택 모델 1회당 크레딧 + 남은 크레딧 기준 생성 가능 �
   /estimateImagesForCredits\(/.test(appSrc) &&
   /puterImagesPossible/.test(appSrc));
 
-check("모델 전체 단가 표(PUTER_MODEL_CREDITS)를 UI 에서 렌더한다", () =>
-  /PUTER_MODEL_CREDITS\.map/.test(appSrc));
+check("모델 전체 단가 표(런타임 병합 목록 puterModelCredits)를 UI 에서 렌더한다", () =>
+  /puterModelCredits\.map/.test(appSrc));
 
 check("모델 미선택 시 기본 모델(PUTER_DEFAULT_MODEL_ID) 단가로 폴백한다", () =>
   /scPuterModel\.trim\(\)\s*\?\s*scPuterModel\.trim\(\)\s*:\s*PUTER_DEFAULT_MODEL_ID/.test(appSrc));
+
+// ── 런타임 카탈로그 배선 (지적 high: 모듈만 있고 App 에 배선되지 않아 14개 모델이 '정보 없음') ──
+// 이 4개 항목은 수정 전 App.tsx 에서 **실패해야** 한다 (모듈 함수가 UI 에 연결되지 않은 상태).
+check("Window.puter 타입 선언에 drivers.call 이 있다 (카탈로그 조회 진입점)", () =>
+  /drivers\?:\s*\{[\s\S]{0,200}?call\?:/.test(appSrc));
+
+check("런타임 카탈로그 조회는 drivers.call('puter-image-generation','models') 를 쓴다", () =>
+  /drivers\.call\(\s*"puter-image-generation"\s*,\s*"models"/.test(appSrc));
+
+check("App 이 카탈로그 응답을 parseModelCatalogCredits → mergeModelCredits 로 병합한다", () =>
+  /parseModelCatalogCredits\(/.test(appSrc) && /mergeModelCredits\(/.test(appSrc));
+
+check("모델 select 라벨과 단가 표가 런타임 병합 목록(puterModelCredits)을 쓴다", () => {
+  const at = appSrc.indexOf('id="scPuterModel"');
+  const close = at >= 0 ? appSrc.indexOf("</select>", at) : -1;
+  const block = at >= 0 && close > at ? appSrc.slice(at, close) : "";
+  const selOk = /formatCreditsPerImage\(creditForModel\(m\.id,\s*puterModelCredits\)\)/.test(block);
+  const tableOk = /puterModelCredits\.map/.test(appSrc);
+  const pickOk = /creditForModel\(selectedPuterModelId,\s*puterModelCredits\)/.test(appSrc);
+  return selOk && tableOk && pickOk
+    ? true
+    : `select=${selOk} table=${tableOk} pick=${pickOk}`;
+});
+
+check("카탈로그 조회 실패를 '정보 없음'으로 위장하지 않고 사유를 남긴다", () =>
+  /setPuterCatalogErr\(formatErr\(err\)\)/.test(appSrc) && /puterCatalogErr/.test(appSrc));
+
+check("정적 표(PUTER_MODEL_CREDITS)는 런타임 병합의 기반으로 남아 있다(미조회 시 폴백)", () =>
+  /useState<PuterModelCredit\[\]>\(PUTER_MODEL_CREDITS\)/.test(appSrc));
+
+check("카탈로그 조회도 세션을 보장한다 (미로그인 시 명시적 오류)", () =>
+  /fetchPuterModelCredits/.test(appSrc) &&
+  /Puter 로그인이 필요합니다 — \[Puter 로그인\] 후 \[모델 단가 조회\]/.test(appSrc));
 
 const failed = results.filter((r) => !r.ok).length;
 console.log(
