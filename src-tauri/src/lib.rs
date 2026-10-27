@@ -205,7 +205,10 @@ pub fn apply_generated_image_impl(
     // 파일명 접두어를 'puter_' 고정에서 'generated_' 로 바꾼다 (검수 지적 [medium]).
     // 접두어가 공급자와 무관하게 puter 로 고정되면 파일 경로
     // (active_puter_puter_primary.bmp)만 보고 사용자가 생성 경로를 오판한다.
-    let path = dir.join(format!("generated_{safe}.png"));
+    // 저장 경로는 반드시 `unique_output_path` 를 거친다 — 이전에는 같은 라벨로 다시
+    // 생성/적용하면 같은 파일을 덮어써 앞서 만든 결과물이 사라졌다
+    // (검수 지적: 파일 덮어쓰기 방지 — 고유 파일명 생성).
+    let path = wallmagic_core::unique_output_path(&dir.join(format!("generated_{safe}.png")));
     std::fs::write(&path, &bytes).map_err(|e| format!("write generated image failed: {e}"))?;
 
     // 생성 정보 기록: WebView(Puter.js)가 만든 이미지도 `state.json` 에
@@ -303,7 +306,10 @@ pub fn generate_library_wallpaper_with_provider_impl(
             "generate_library_wallpaper_with_provider: 프롬프트가 필요합니다".to_string(),
         );
     }
-    let dest = wallmagic_core::library_output_path(trimmed_prompt).map_err(err_to_string)?;
+    // 같은 프롬프트로 다시 생성해도 앞선 결과물을 덮어쓰지 않는다 — 베이스 이름에
+    // 타임스탬프·nonce 를 붙인 고유 경로를 쓴다(파일 덮어쓰기 방지 계약).
+    let base = wallmagic_core::library_output_path(trimmed_prompt).map_err(err_to_string)?;
+    let dest = wallmagic_core::unique_output_path(&base);
     // 공급자별 생성 경로를 명시적 match 로 분기한다 (미구현 공급자를 조용히 폴스루하지 않는다).
     let detail = match provider {
         "pollinations" => {
@@ -438,14 +444,18 @@ pub fn save_generated_image_impl(
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .take(24)
         .collect();
-    // 같은 이미지 = 같은 파일명(FNV-1a) — 재생성 시 라이브러리에 중복 파일이 쌓이지 않는다.
     // 접두어는 라벨에서 파생한다(파일 경로만 보고 공급자를 오판하지 않도록).
+    // 해시는 "어떤 이미지인지"를 이름에 남기는 용도로만 쓰고, 저장 경로는 반드시
+    // `unique_output_path` 를 거쳐 timestamp·nonce 가 붙은 **고유 경로**를 쓴다.
+    // 이전에는 같은 이미지 = 같은 파일명이라 재생성 시 앞서 만든 결과물을 덮어썼다
+    // (검수 지적: 파일 덮어쓰기 방지 — 고유 파일명 생성).
     let mut hash: u32 = 2166136261;
     for b in &bytes {
         hash ^= *b as u32;
         hash = hash.wrapping_mul(16777619);
     }
-    let path = library.join(format!("generated_{safe}_{hash:08x}.png"));
+    let path =
+        wallmagic_core::unique_output_path(&library.join(format!("generated_{safe}_{hash:08x}.png")));
     std::fs::write(&path, &bytes).map_err(|e| format!("write generated image failed: {e}"))?;
     // 상세 문구도 라벨에 종속시킨다 (puter 가 아닌 라벨에 "Puter.js txt2img" 기록 금지).
     let detail = match (label == "puter", model.map(str::trim).filter(|m| !m.is_empty())) {
@@ -507,9 +517,13 @@ pub fn generate_wallpaper_ai_impl(
     } else {
         api_token.to_string()
     };
-    let dest = wallmagic_core::app_data_dir()
-        .join("online_cache")
-        .join("cf_manual.jpg");
+    // 생성 산출물은 절대 덮어쓰지 않는다 — 수동 Cloudflare 생성도 앞서 만든 결과물을 보존한다.
+    // (이전에는 cf_manual.jpg 고정 이름이라 두 번째 생성이 첫 결과물을 파괴했다.)
+    let dest = wallmagic_core::unique_output_path(
+        &wallmagic_core::app_data_dir()
+            .join("online_cache")
+            .join("cf_manual.jpg"),
+    );
     let generated = wallmagic_core::generate_cloudflare_wallpaper(
         account_id,
         &effective_token,
@@ -567,9 +581,12 @@ pub fn generate_wallpaper_openai_impl(
     } else {
         api_key.to_string()
     };
-    let dest = wallmagic_core::app_data_dir()
-        .join("online_cache")
-        .join("openai_manual.jpg");
+    // 생성 산출물은 절대 덮어쓰지 않는다 — 수동 OpenAI 생성도 기존 결과물을 보존한다.
+    let dest = wallmagic_core::unique_output_path(
+        &wallmagic_core::app_data_dir()
+            .join("online_cache")
+            .join("openai_manual.jpg"),
+    );
     let generated =
         wallmagic_core::generate_openai_wallpaper(&effective_key, model, prompt, &dest)
             .map_err(err_to_string)?;
@@ -620,9 +637,12 @@ pub fn generate_wallpaper_priority_impl(
     if let Some(order) = provider_order {
         gen.provider_order = order;
     }
-    let dest = wallmagic_core::app_data_dir()
-        .join("online_cache")
-        .join("priority_manual.jpg");
+    // 생성 산출물은 절대 덮어쓰지 않는다 — 우선순위 폴백 생성도 기존 결과물을 보존한다.
+    let dest = wallmagic_core::unique_output_path(
+        &wallmagic_core::app_data_dir()
+            .join("online_cache")
+            .join("priority_manual.jpg"),
+    );
     // 3-튜플 판(`_query`)을 쓴다 — 폴백에서 **실제로 성공한 공급자**와 **실제로 사용된
     // 질의문**을 함께 받아 기록한다. 2-튜플 판 + `search_query_for` 재호출은
     // 순차(next_index)/랜덤(seed) 순환에서 다른 검색어를 만들어 UI 표기와 어긋난다
@@ -1239,6 +1259,60 @@ mod tests {
         assert!(
             names.iter().any(|n| n.starts_with("generated_pollinations_")),
             "저장 파일명 접두어는 라벨에서 파생되어야 한다(puter_ 고정 금지): {names:?}"
+        );
+    }
+
+    /// 회귀 테스트 (파일 덮어쓰기 방지 — 완료 기준 ①).
+    ///
+    /// 같은 이미지 바이트를 두 번 저장해도 앞서 만든 결과물을 **덮어쓰지 않고** 서로 다른
+    /// 파일명으로 남아야 한다. 호출부(`save_generated_image_impl`) 수준에서
+    /// `unique_output_path` 가 실제로 쓰이는지를 고정한다 — 코어 단위 테스트만으로는
+    /// "고유화 함수는 맞지만 저장 지점이 그 함수를 안 쓴다"를 잡을 수 없다.
+    #[test]
+    fn test_save_generated_image_never_overwrites_previous_output() {
+        let _guard = DataDirGuard::new("save_noclobber");
+        let fixture_dir = wallmagic_core::app_data_dir().join("fixture");
+        std::fs::create_dir_all(&fixture_dir).expect("create fixture dir");
+        // 두 번째 인자는 **파일 경로**다 — 디렉터리를 넘기면 확장자가 없어
+        // image 크레이트의 포맷 추론이 실패한다(ImageDecode(Unsupported(Unknown))).
+        let sample = wallmagic_core::generate_sample_wallpaper(
+            "unique name fixture",
+            &fixture_dir.join("fixture.png"),
+        )
+        .expect("generate fixture image");
+        let bytes = std::fs::read(&sample).expect("read fixture bytes");
+
+        use base64::Engine as _;
+        let payload = base64::engine::general_purpose::STANDARD.encode(&bytes);
+
+        let first = save_generated_image_impl(&payload, Some("pollinations"), Some("flux"))
+            .expect("first save must succeed");
+        let second = save_generated_image_impl(&payload, Some("pollinations"), Some("flux"))
+            .expect("second save must succeed");
+
+        assert_ne!(
+            first.path, second.path,
+            "같은 이미지를 재저장하면 반드시 다른 파일명이어야 한다(덮어쓰기 금지)"
+        );
+        assert!(
+            Path::new(&first.path).exists(),
+            "첫 결과물이 두 번째 저장으로 사라지면 안 된다: {}",
+            first.path
+        );
+        assert!(
+            Path::new(&second.path).exists(),
+            "두 번째 결과물이 남아야 한다: {}",
+            second.path
+        );
+        // 입력 바이트가 같으므로 내용은 동일하되, 파일은 별개다.
+        assert_eq!(
+            std::fs::read(&first.path).unwrap(),
+            std::fs::read(&second.path).unwrap(),
+            "동일 입력이므로 바이트는 같아야 한다"
+        );
+        assert_ne!(
+            first.file_name, second.file_name,
+            "후보 메타데이터의 파일명도 서로 달라야 한다"
         );
     }
 

@@ -425,9 +425,13 @@ pub fn merge_search_results(local: SearchResult, online: Option<SearchResult>) -
 /// 프롬프트 기반으로 배경화면을 생성(Pollinations 무료 이미지 API, 키 불필요)해
 /// 앱 라이브러리(`app_data_dir()/library`)에 저장하고,
 /// GUI가 바로 선택·적용할 수 있는 `WallpaperCandidate`(썸네일 포함)로 반환한다.
-/// 프롬프트 기반 생성 결과를 저장할 라이브러리 파일 경로를 만든다.
+/// 프롬프트 기반 생성 결과를 저장할 라이브러리 파일 경로의 **베이스 이름**을 만든다.
 ///
-/// 파일명: 프롬프트 슬러그 + FNV-1a 해시 8자리 (같은 프롬프트 = 같은 파일, 재생성 시 덮어씀).
+/// 파일명: 프롬프트 슬러그 + FNV-1a 해시 8자리 (같은 프롬프트 = 같은 베이스 이름).
+///
+/// ⚠ 이 경로를 그대로 저장에 쓰지 말 것 — 실제 저장은 반드시 [`unique_output_path`] 를 거쳐
+/// timestamp·nonce 가 붙은 고유 경로를 써야 한다. 이전에는 같은 프롬프트로 재생성하면 같은
+/// 파일을 덮어써 사용자가 앞서 만든 결과물을 잃었다(검수 지적: 파일 덮어쓰기 방지).
 /// 공급자별 생성 경로(Pollinations/Cloudflare/OpenAI)가 **같은 이름 규칙**을 공유하도록
 /// 별도 함수로 분리했다 — 규칙이 갈라지면 같은 프롬프트로 공급자를 바꿔 생성할 때
 /// 라이브러리에 중복 파일이 쌓인다.
@@ -448,8 +452,55 @@ pub fn library_output_path(prompt: &str) -> Result<PathBuf, WallpaperError> {
     Ok(library.join(format!("generated_{slug}_{hash:08x}.jpg")))
 }
 
+/// 프로세스 전역 단조 증가 nonce — 같은 밀리초에 여러 번 생성해도 파일명이 겹치지 않게 한다.
+static UNIQUE_OUTPUT_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// [`library_output_path`] 가 만든 **베이스 경로**를 "절대 덮어쓰지 않는 고유 경로"로 바꾼다.
+///
+/// 같은 프롬프트로 두 번 생성해도 앞서 만든 결과물을 잃지 않아야 하므로, 밀리초 타임스탬프와
+/// 프로세스 nonce 를 덧붙인 새 파일명을 만든다. 반환 경로는 **호출 시점에 존재하지 않음**이
+/// 보장되고, 디렉터리·확장자는 원본 그대로 보존된다.
+///
+/// 저장 지점은 [`library_output_path`] 를 그대로 쓰지 말고 반드시 이 함수를 거쳐야 한다
+/// (이전에는 같은 프롬프트 재생성 시 같은 파일을 덮어써 사용자 결과물이 사라졌다).
+pub fn unique_output_path(base: &Path) -> PathBuf {
+    let parent = base.parent().map(Path::to_path_buf).unwrap_or_default();
+    let stem = base
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("generated");
+    let ext = base.extension().and_then(|e| e.to_str());
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    let mut nonce = UNIQUE_OUTPUT_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // 프로세스 id 도 이름에 넣는다 — nonce 는 프로세스마다 0 에서 시작하므로,
+    // 두 인스턴스가 같은 밀리초에 생성하면 timestamp+nonce 만으로는 이름이 겹쳐
+    // 한쪽이 다른 쪽 결과물을 덮어쓸 수 있다. pid 를 붙이면 프로세스 간 충돌도 배제된다.
+    let pid = std::process::id();
+    for _ in 0..10_000 {
+        let name = match ext {
+            Some(ext) => format!("{stem}_{ts}_{pid:08x}_{nonce:06x}.{ext}"),
+            None => format!("{stem}_{ts}_{pid:08x}_{nonce:06x}"),
+        };
+        let candidate = parent.join(name);
+        // 이미 점유된 이름이면 nonce 를 올려 접미사가 달라진다(덮어쓰기 금지).
+        if !candidate.exists() {
+            return candidate;
+        }
+        nonce = nonce.wrapping_add(1);
+    }
+    let fallback = format!("{stem}_{ts}_{nonce:06x}_{:08x}", std::process::id());
+    match ext {
+        Some(ext) => parent.join(format!("{fallback}.{ext}")),
+        None => parent.join(fallback),
+    }
+}
+
 pub fn generate_library_wallpaper(prompt: &str) -> Result<WallpaperCandidate, WallpaperError> {
-    let out_path = library_output_path(prompt)?;
+    let out_path = unique_output_path(&library_output_path(prompt)?);
 
     generate_online_wallpaper(prompt, &out_path)?;
 

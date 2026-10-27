@@ -30,7 +30,7 @@ pub use scenario::{
 pub use search::{
     generate_library_wallpaper, generate_search_wallpaper, library_output_path, load_candidate,
     merge_search_results, online_cache_file_name, search_wallpapers, search_wallpapers_with,
-    should_search_online, WallpaperCandidate, SearchResult, SUPPORTED_EXTENSIONS,
+    should_search_online, unique_output_path, WallpaperCandidate, SearchResult, SUPPORTED_EXTENSIONS,
 };
 pub use wallpaper::{
     app_data_dir, generate_online_wallpaper, generate_online_wallpaper_with_seed,
