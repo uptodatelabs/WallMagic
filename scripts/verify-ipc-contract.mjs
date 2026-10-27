@@ -12,12 +12,31 @@
 //   · `// comment` 로 시작하는 세그먼트에서 키 추출이 실패해 키가 조용히 누락되고(거짓 통과),
 //   · 주석 안의 `{` `}` 가 깊이 계산을 깨뜨린다.
 // (실측: save_generated_image 호출부의 `label` 이 주석에 가려 누락된 채 'ok' 로 통과했다)
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const ui = readFileSync(resolve(root, "src-ui/App.tsx"), "utf8");
+
+/**
+ * `src-ui` 아래 모든 소스(.ts/.tsx)를 합쳐 읽는다.
+ *
+ * 히스토리는 메인 패널에서 **전용 창**(`HistoryWindow.tsx`)으로 분리됐다. App.tsx 만
+ * 스캔하면 그 창의 `invoke("clear_history")` / `invoke("delete_history_entry")` 를
+ * 보지 못해 Rust 에는 있는데 UI 는 안 쓴다고 오판한다(실측: unused_in_rust 에 두 명령이
+ * 잡혀 거짓 MISMATCH). 화면 파일이 늘어나도 계약이 유지되도록 디렉터리 전체를 스캔한다.
+ */
+function readUiSources(dir) {
+  const chunks = [];
+  for (const ent of readdirSync(dir, { withFileTypes: true })) {
+    const p = resolve(dir, ent.name);
+    if (ent.isDirectory()) chunks.push(readUiSources(p));
+    else if (/\.(ts|tsx)$/.test(ent.name)) chunks.push(readFileSync(p, "utf8"));
+  }
+  return chunks.join("\n");
+}
+
+const ui = readUiSources(resolve(root, "src-ui"));
 const rs = readFileSync(resolve(root, "src-tauri/src/lib.rs"), "utf8");
 
 const invocations = [...ui.matchAll(/invoke(?:<[^>]*>)?\(\s*["']([a-z_]+)["']/g)].map((m) => m[1]);

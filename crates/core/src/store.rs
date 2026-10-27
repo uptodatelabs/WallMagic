@@ -231,6 +231,48 @@ pub fn clear_history() -> Result<Vec<HistoryEntry>, WallpaperError> {
     Ok(store.entries)
 }
 
+/// 히스토리에서 1건(`kind` + `text`)을 제거한 **새 목록**을 만든다(순수).
+///
+/// 중복 판정 키(`push_history`)와 **같은 규칙**을 쓴다 — 종류 + 공백 무시 텍스트이므로
+/// 삭제하면 같은 항목이 다시 나타나지 않는다. 빈 텍스트는 아무것도 지우지 않는다.
+pub fn remove_history(
+    entries: &[HistoryEntry],
+    kind: HistoryKind,
+    text: &str,
+) -> Vec<HistoryEntry> {
+    let key = text.trim();
+    if key.is_empty() {
+        return entries.to_vec();
+    }
+    entries
+        .iter()
+        .filter(|e| !(e.kind == kind && e.text.trim() == key))
+        .cloned()
+        .collect()
+}
+
+/// 최신순 정렬(순수) — `at` 내림차순, 같으면 기존 순서를 유지한다(stable).
+///
+/// `push_history` 는 새 항목을 맨 앞에 넣지만, 손으로 편집된 `history.json` 이나
+/// 구버전 파일은 순서가 보장되지 않는다. 히스토리 창은 항상 최신순으로 보여야 하므로
+/// **읽기 경로에서 정렬**한다(파일 자체의 순서에 의존하지 않는다).
+pub fn sort_history_newest_first(entries: &[HistoryEntry]) -> Vec<HistoryEntry> {
+    let mut out = entries.to_vec();
+    out.sort_by(|a, b| b.at.cmp(&a.at));
+    out
+}
+
+/// 히스토리 1건 삭제 → 갱신된 전체 목록(최신순) 반환.
+pub fn delete_history(
+    kind: HistoryKind,
+    text: &str,
+) -> Result<Vec<HistoryEntry>, WallpaperError> {
+    let mut store = load_history()?;
+    store.entries = sort_history_newest_first(&remove_history(&store.entries, kind, text));
+    save_history(&store)?;
+    Ok(store.entries)
+}
+
 pub fn load_library_index() -> Result<LibraryIndex, WallpaperError> {
     let path = library_index_file_path();
     if !path.exists() {
@@ -455,6 +497,41 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// 개별 삭제는 "종류 + 공백 무시 텍스트" 키로만 지우고, 다른 항목은 보존한다.
+    #[test]
+    fn test_remove_history_deletes_only_matching_entry() {
+        let list = vec![
+            entry(HistoryKind::Prompt, "aurora", 3),
+            entry(HistoryKind::Search, "aurora", 2),
+            entry(HistoryKind::Prompt, "sunset", 1),
+        ];
+        // 종류가 다르면 같은 텍스트라도 남는다.
+        let after = remove_history(&list, HistoryKind::Prompt, "  aurora  ");
+        assert_eq!(after.len(), 2, "프롬프트 aurora 1건만 지워져야 한다");
+        assert_eq!(after[0].kind, HistoryKind::Search);
+        assert_eq!(after[1].text, "sunset");
+        // 빈 텍스트는 아무것도 지우지 않는다.
+        assert_eq!(remove_history(&list, HistoryKind::Prompt, "   ").len(), 3);
+        // 없는 항목 삭제는 목록을 그대로 둔다.
+        assert_eq!(remove_history(&list, HistoryKind::Prompt, "nope").len(), 3);
+    }
+
+    /// 히스토리 창은 최신순으로 보여야 한다 — `at` 내림차순 정렬.
+    #[test]
+    fn test_sort_history_newest_first_orders_by_at_desc() {
+        let list = vec![
+            entry(HistoryKind::Prompt, "old", 10),
+            entry(HistoryKind::Search, "newest", 30),
+            entry(HistoryKind::Prompt, "mid", 20),
+        ];
+        let sorted = sort_history_newest_first(&list);
+        assert_eq!(
+            sorted.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(),
+            vec!["newest", "mid", "old"],
+            "최신순(at 내림차순)으로 정렬돼야 한다"
+        );
+    }
+
     /// 버전/제작자는 Cargo 메타데이터에서 온다(하드코딩 중복 정의 금지).
     #[test]
     fn test_app_meta_reads_cargo_metadata() {
@@ -482,5 +559,30 @@ mod tests {
         // 형식이 3분절이 아니면 손대지 않는다.
         assert_eq!(display_version("1.0"), "1.0");
         assert_eq!(display_version(""), "");
+    }
+
+    /// 히스토리 창은 항상 최신순 — 파일 순서가 뒤섞여 있어도 `at` 내림차순으로 정렬한다.
+    ///
+    /// 삭제 계약(`test_remove_history_deletes_only_matching_entry`)과 짝을 이룬다:
+    /// 정렬은 "읽기 경로"에서 보정하므로 손으로 편집된 `history.json` 순서에도 안전하다.
+    #[test]
+    fn test_sort_history_newest_first_orders_by_at() {
+        let list = vec![
+            entry(HistoryKind::Prompt, "old", 1),
+            entry(HistoryKind::Prompt, "new", 9),
+            entry(HistoryKind::Search, "mid", 5),
+        ];
+        let sorted = sort_history_newest_first(&list);
+        assert_eq!(sorted[0].text, "new");
+        assert_eq!(sorted[1].text, "mid");
+        assert_eq!(sorted[2].text, "old");
+        // stable: 같은 at 이면 기존 순서를 유지한다.
+        let same = vec![
+            entry(HistoryKind::Prompt, "a", 7),
+            entry(HistoryKind::Search, "b", 7),
+        ];
+        let kept = sort_history_newest_first(&same);
+        assert_eq!(kept[0].text, "a");
+        assert_eq!(kept[1].text, "b");
     }
 }

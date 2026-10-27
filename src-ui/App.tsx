@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   formatUsage,
   usageUnitLabel,
@@ -704,16 +705,46 @@ export function App(): React.ReactElement {
     }
   };
 
-  /** 히스토리 전체 삭제 — 성공 시 목록을 비운다. */
-  const handleClearHistory = async () => {
+  /** 히스토리 전용 창 열기 — 목록·생성 일시·삭제는 그 창(라벨 `history`)에서 관리한다.
+      메인 좌측 패널(300px)에 중첩하면 폭이 부족해 레이아웃이 깨졌다(사용자 지적). */
+  const handleOpenHistoryWindow = async () => {
     try {
-      const list = await invoke<HistoryEntry[]>("clear_history");
-      setHistory(list);
-      reportOk(t(lang, "history.cleared"));
+      await invoke("open_history_window");
     } catch (err) {
-      reportError(t(lang, "history.clearFailed", { err: formatErr(err) }));
+      reportError(t(lang, "history.openFailed", { err: formatErr(err) }));
     }
   };
+
+  /** 히스토리 창에서 "메인에 넣기"를 누르면 `history://reuse` 이벤트로 입력란을 복원한다.
+      창이 분리되어도 재사용(요구 ①)이 끊기지 않도록 이벤트로 연결한다. */
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      try {
+        unlisten = await listen<{ kind: "prompt" | "search"; text: string }>(
+          "history://reuse",
+          (ev) => {
+            const h = ev.payload;
+            if (!h || !h.text) return;
+            if (h.kind === "search") {
+              setQuery(h.text);
+              setScProvider("search");
+              reportOk(t(lang, "history.reusedSearch", { text: h.text }));
+            } else {
+              setPrompt(h.text);
+              if (scProvider === "search") setScProvider("pollinations");
+              reportOk(t(lang, "history.reusedPrompt", { text: h.text }));
+            }
+          },
+        );
+      } catch (err) {
+        console.warn(`히스토리 창 이벤트 등록 실패: ${formatErr(err)}`);
+      }
+    })();
+    return () => {
+      unlisten?.();
+    };
+  }, [lang, scProvider]);
 
   // 팝업 차단 안내 모달 등록 — 모듈 스코프 openPuterLoginFallback()은 React 상태에 접근할 수
   // 없으므로, 컴포넌트 마운트 시 setState를 여기에 등록하고 언마운트 시 해제한다.
@@ -2490,58 +2521,24 @@ export function App(): React.ReactElement {
             </button>
           </section>
 
-          {/* ── 히스토리 (프롬프트 / 검색어) ──
-              재시동 후에도 남아야 하므로 디스크(`history.json`)에서 읽어온 목록을
-              그대로 그린다. 항목을 누르면 해당 입력란에 값이 되살아나 재사용할 수 있다
-              (요구 ①: "전에 사용했던 배경화면을 다시 쓰기 위해 프롬프트·검색 히스토리를
-              남기고 선택할 수 있게"). */}
+          {/* ── 히스토리 — 전용 창으로 분리했다.
+              이전에는 이 300px 좌측 패널 안에 리스트를 중첩해 폭이 부족했고,
+              날짜·텍스트·버튼이 겹쳐 레이아웃이 깨졌다(사용자 지적).
+              목록·일시·개별 삭제는 라벨 `history` 창(HistoryWindow.tsx)이 담당하고,
+              메인 창에는 **여는 버튼과 요약만** 둔다.
+              창에서 "메인에서 사용"을 누르면 `history://reuse` 이벤트로 입력란에 복원된다. */}
           <section id="history-section">
             <h2>{t(lang, "history.heading")}</h2>
-            {history.length === 0 ? (
-              <div className="empty">{t(lang, "history.empty")}</div>
-            ) : (
-              <ul className="history-list">
-                {history.map((h, i) => (
-                  <li key={`${h.kind}-${h.text}-${i}`} className="history-item">
-                    <span className={`history-kind ${h.kind}`}>
-                      {h.kind === "search"
-                        ? t(lang, "history.search")
-                        : t(lang, "history.prompt")}
-                    </span>
-                    <span className="history-text" title={h.text}>
-                      {h.text}
-                    </span>
-                    <button
-                      type="button"
-                      className="history-reuse"
-                      disabled={busy}
-                      onClick={() => {
-                        if (h.kind === "search") {
-                          setQuery(h.text);
-                          setScProvider("search");
-                          reportOk(t(lang, "history.reusedSearch", { text: h.text }));
-                        } else {
-                          setPrompt(h.text);
-                          if (scProvider === "search") setScProvider("pollinations");
-                          reportOk(t(lang, "history.reusedPrompt", { text: h.text }));
-                        }
-                      }}
-                    >
-                      {h.kind === "search"
-                        ? t(lang, "history.reuseSearch")
-                        : t(lang, "history.reusePrompt")}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
+            <div className="detail" style={{ marginBottom: "8px" }}>
+              {t(lang, "history.summary", { n: history.length })}
+            </div>
             <button
               type="button"
-              className="block"
-              disabled={busy || history.length === 0}
-              onClick={() => void handleClearHistory()}
+              className="primary block"
+              disabled={busy}
+              onClick={() => void handleOpenHistoryWindow()}
             >
-              {t(lang, "history.clear")}
+              {t(lang, "history.openWindow")}
             </button>
           </section>
 

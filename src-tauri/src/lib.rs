@@ -990,8 +990,10 @@ fn get_app_meta() -> wallmagic_core::store::AppMeta {
 /// IPC #19: 프롬프트·검색 히스토리 조회(재시동 후 복원).
 #[tauri::command]
 fn get_history() -> Result<Vec<wallmagic_core::store::HistoryEntry>, String> {
+    // 읽기 경로에서 최신순으로 정렬한다 — 손으로 편집된 `history.json` 이나 구버전 파일은
+    // 파일 순서가 보장되지 않지만, 히스토리 창은 항상 생성 일시 최신순으로 보여야 한다.
     wallmagic_core::store::load_history()
-        .map(|s| s.entries)
+        .map(|s| wallmagic_core::store::sort_history_newest_first(&s.entries))
         .map_err(err_to_string)
 }
 
@@ -1029,6 +1031,57 @@ fn record_history_entry(
 #[tauri::command]
 fn clear_history() -> Result<Vec<wallmagic_core::store::HistoryEntry>, String> {
     wallmagic_core::store::clear_history().map_err(err_to_string)
+}
+
+/// IPC #24: 히스토리 1건 삭제 — 갱신된 전체 목록(최신순)을 돌려줘 창이 즉시 다시 그린다.
+///
+/// `kind` 는 `prompt` | `search` 만 허용한다. 알 수 없는 값은 조용히 프롬프트로
+/// 둔갑시키지 않고 명시적 오류로 실패한다(`record_history_entry` 와 같은 정책).
+#[tauri::command]
+fn delete_history_entry(
+    kind: String,
+    text: String,
+) -> Result<Vec<wallmagic_core::store::HistoryEntry>, String> {
+    let kind = match kind.trim().to_ascii_lowercase().as_str() {
+        "prompt" => wallmagic_core::store::HistoryKind::Prompt,
+        "search" => wallmagic_core::store::HistoryKind::Search,
+        other => {
+            return Err(format!(
+                "delete_history_entry: unknown kind '{other}' (expected: prompt|search)"
+            ))
+        }
+    };
+    wallmagic_core::store::delete_history(kind, &text).map_err(err_to_string)
+}
+
+/// 히스토리 창(라벨 `history`)을 열거나, 이미 열려 있으면 앞으로 가져온다.
+///
+/// 창을 `tauri.conf.json` 에 정적으로 선언하지 않고 **코드로 만드는** 이유: 히스토리는
+/// 필요할 때만 여는 보조 창이므로 시작 시 함께 뜨면 안 되고, 라벨 기반 라우팅
+/// (`main.tsx`)으로 같은 `index.html` 을 다른 화면으로 재사용하기 위해서다.
+fn open_history_window_impl(app: &tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    if let Some(win) = app.get_webview_window("history") {
+        let _ = win.unminimize();
+        return win
+            .set_focus()
+            .map_err(|e| format!("open_history_window: focus failed: {e}"));
+    }
+    tauri::WebviewWindowBuilder::new(app, "history", tauri::WebviewUrl::App("index.html".into()))
+        .title("WallMagic — History")
+        // 좌측 300px 패널에서 깨지던 문제를 없애기 위해 넓은 기본 폭을 준다.
+        .inner_size(880.0, 620.0)
+        .min_inner_size(640.0, 420.0)
+        .resizable(true)
+        .build()
+        .map_err(|e| format!("open_history_window: build failed: {e}"))?;
+    Ok(())
+}
+
+/// IPC #25: 히스토리 전용 창 열기.
+#[tauri::command]
+fn open_history_window(app: tauri::AppHandle) -> Result<(), String> {
+    open_history_window_impl(&app)
 }
 
 /// IPC #22: 생성 이미지 인덱스 기록(경로·공급자·상세).
@@ -1154,6 +1207,8 @@ pub fn run() {
             get_history,
             record_history_entry,
             clear_history,
+            delete_history_entry,
+            open_history_window,
             record_library_entry,
             restore_library_candidates,
         ])

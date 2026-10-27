@@ -232,12 +232,46 @@ export const STRINGS: Record<string, Entry> = {
   "history.search": { ko: "검색어", en: "Keyword" },
   "history.empty": { ko: "아직 기록이 없습니다.", en: "Nothing recorded yet." },
   "history.clear": { ko: "히스토리 지우기", en: "Clear history" },
-  "history.reusePrompt": { ko: "이 프롬프트 사용", en: "Use this prompt" },
-  "history.reuseSearch": { ko: "이 검색어 사용", en: "Use this keyword" },
+  "history.summary": {
+    ko: "전용 창에서 목록·생성 일시를 확인하고 개별 삭제할 수 있습니다. (현재 {n}건)",
+    en: "Open the dedicated window to view entries with timestamps and delete them individually. ({n} now)",
+  },
   "history.cleared": { ko: "히스토리를 지웠습니다", en: "History cleared" },
   "history.clearFailed": {
     ko: "히스토리 삭제 실패: {err}",
     en: "Failed to clear history: {err}",
+  },
+  /* 히스토리 전용 창 — 목록·생성 일시·개별 삭제 */
+  "history.openWindow": { ko: "히스토리 창 열기", en: "Open history window" },
+  "history.openFailed": {
+    ko: "히스토리 창을 열지 못했습니다: {err}",
+    en: "Failed to open the history window: {err}",
+  },
+  "history.count": { ko: "{n}건", en: "{n} entries" },
+  "history.createdAt": { ko: "생성 일시", en: "Created" },
+  "history.createdAtHint": {
+    ko: "최신순으로 정렬됩니다",
+    en: "Sorted newest first",
+  },
+  "history.refresh": { ko: "새로고침", en: "Refresh" },
+  "history.loadFailed": {
+    ko: "히스토리를 불러오지 못했습니다: {err}",
+    en: "Failed to load history: {err}",
+  },
+  "history.delete": { ko: "삭제", en: "Delete" },
+  "history.deleted": { ko: "1건을 삭제했습니다", en: "Deleted one entry" },
+  "history.deleteFailed": {
+    ko: "삭제하지 못했습니다: {err}",
+    en: "Failed to delete: {err}",
+  },
+  "history.useInMain": { ko: "메인에 넣기", en: "Send to main" },
+  "history.sentToMain": {
+    ko: "메인 창 입력란으로 보냈습니다: \"{text}\"",
+    en: "Sent to the main window: \"{text}\"",
+  },
+  "history.sendFailed": {
+    ko: "메인 창으로 보내지 못했습니다: {err}",
+    en: "Failed to send to the main window: {err}",
   },
 
   /* 시나리오 */

@@ -40,6 +40,11 @@ const store = read("crates/core/src/store.rs");
 const coreLib = read("crates/core/src/lib.rs");
 const appLib = read("src-tauri/src/lib.rs");
 const ui = read("src-ui/App.tsx");
+// 히스토리는 메인 패널에서 **전용 창**(HistoryWindow.tsx)으로 분리됐다 — 삭제·일시 표시·
+// 개별 삭제는 그 창이 담당하므로, 계약 검사도 두 파일을 함께 본다(App.tsx 만 보면
+// "전체 삭제 경로가 없다"고 오판한다 — 실측).
+const historyWin = read("src-ui/HistoryWindow.tsx");
+const uiAndHistory = ui + "\n" + historyWin;
 const i18n = read("src-ui/i18n.ts");
 const wsCargo = read("Cargo.toml");
 const tauriConf = read("src-tauri/tauri.conf.json");
@@ -110,8 +115,58 @@ check(
 );
 check("히스토리 항목을 눌러 입력란에 되살릴 수 있다(재사용)", () =>
   /setPrompt\(h\.text\)/.test(ui) && /setQuery\(h\.text\)/.test(ui));
+// 히스토리 목록·삭제는 메인 패널에서 **전용 창**(`HistoryWindow.tsx`)으로 분리됐다.
+// App.tsx 만 검사하면 "전체 삭제 경로 없음"으로 오판한다(실측: 이동 후 FAIL).
 check("히스토리 전체 삭제 경로가 있다", () =>
-  /invoke<HistoryEntry\[\]>\("clear_history"\)/.test(ui));
+  /invoke<HistoryEntry\[\]>\("clear_history"\)/.test(historyWin));
+check("히스토리 개별 삭제 경로가 있다(창)", () =>
+  /invoke<HistoryEntry\[\]>\("delete_history_entry"/.test(historyWin) &&
+  /kind: entry\.kind/.test(historyWin) &&
+  /text: entry\.text/.test(historyWin));
+check("히스토리 창은 생성 일시를 표시한다", () =>
+  /formatCreatedAt\(h\.at\)/.test(historyWin) && /history\.createdAt/.test(i18n));
+check("히스토리 창은 최신순 정렬을 보장한다(창·백엔드 양쪽)", () =>
+  /sortNewestFirst\(list\)/.test(historyWin) &&
+  /sort_history_newest_first/.test(store) &&
+  /delete_history\(/.test(store));
+check("메인 창은 히스토리 창 열기 버튼만 둔다(중첩 리스트 제거)", () => {
+  const i = ui.indexOf('id="history-section"');
+  if (i < 0) return false;
+  const body = ui.slice(i, i + 900);
+  return (
+    /handleOpenHistoryWindow/.test(body) &&
+    !/history-item/.test(body) &&
+    !/history-list/.test(body)
+  );
+});
+check("IPC open_history_window 가 등록되고 UI 가 호출한다", () => {
+  const m = /generate_handler!\[([\s\S]*?)\]/.exec(appLib);
+  return (
+    Boolean(m) &&
+    /(^|\s)open_history_window\s*,/.test(m[1]) &&
+    /invoke\("open_history_window"\)/.test(ui) &&
+    /get_webview_window\("history"\)/.test(appLib)
+  );
+});
+check("히스토리 창 라벨이 main.tsx 라우팅과 일치한다", () => {
+  const mainTsx = read("src-ui/main.tsx");
+  return (
+    /getCurrentWindow\(\)\.label/.test(mainTsx) &&
+    /=== "history"/.test(mainTsx) &&
+    /<HistoryWindow \/>/.test(mainTsx)
+  );
+});
+check("히스토리 창 라벨이 capabilities 에 허용된다", () => {
+  const caps = JSON.parse(read("src-tauri/capabilities/default.json"));
+  return Array.isArray(caps.windows) && caps.windows.includes("main") && caps.windows.includes("history");
+});
+check("메인 창은 history://reuse 이벤트로 입력란을 복원한다", () =>
+  /listen<\{ kind: "prompt" \| "search"; text: string \}>/.test(ui) &&
+  /"history:\/\/reuse"/.test(ui) &&
+  /setQuery\(h\.text\)/.test(ui) &&
+  /setPrompt\(h\.text\)/.test(ui));
+check("히스토리 창은 메인에 이벤트를 보낸다(emitTo main)", () =>
+  /emitTo\("main", "history:\/\/reuse"/.test(historyWin));
 
 // ─────────────────────────────────────────────────────────────
 // ② 재시동 후 생성 이미지 목록 복원
