@@ -8,13 +8,11 @@
 
 ### Added
 
-- 릴리스 준비 자동화 — `npm run release:build`(Tauri 번들 빌드) · `npm run release:check`(버전 정합 + 산출물 확인)
-- `scripts/verify-release.mjs` — 버전 3곳 정합 · CHANGELOG 릴리스 섹션 · 릴리스 스크립트 존재 · 번들 활성화 · 산출물 파일명 검증
-- 저장소 위생 검사기 `scripts/verify-repo-hygiene.mjs` — 비밀정보 · 빌드 산출물 · 로컬 절대경로 추적 차단
+- (아직 없음 — 릴리스 후 추가되는 변경을 여기에 적는다)
 
 ### Changed
 
-- `README.md` 를 한국어 / 영어 1:1 대응 구조로 재작성 (배지 · 언어 토글 · Quick Start 하위 섹션 · 요약 표)
+- (아직 없음)
 
 ### 예정 (Planned)
 
@@ -87,8 +85,12 @@
 - Pollinations 무료 한도(HTTP 402 `FREE_LIMIT`) 별도 분류 및 재시도 시각 안내
 - `content-type` 검증으로 오류 페이지를 이미지로 오인하지 않음
 
-**검증 인프라**
-- 계약 검증 스크립트 26종 (`scripts/verify-*.mjs`) 및 일괄 러너
+**릴리스 · 검증 인프라**
+- `npm run release:build` — Tauri 번들 빌드(NSIS · MSI). Rust 릴리스 컴파일이 길어 `beforeBuildCommand` 가 웹 번들을 먼저 만든다
+- `npm run release:check` — 버전 3곳 정합 · CHANGELOG 릴리스 섹션 · 산출물 실재 + **파일명 버전 포함**까지 검증
+- `scripts/verify-release.mjs` — 릴리스 계약 검사기 (계약 모드 / `--require-artifacts` 산출물 모드)
+- 저장소 위생 검사기 `scripts/verify-repo-hygiene.mjs` — 비밀정보 · 빌드 산출물 · 로컬 절대경로 추적 차단
+- 계약 검증 스크립트 29종 (`scripts/verify-*.mjs`) 및 일괄 러너 `node scripts/run-all-verify.mjs`
 - IPC 이름 + 인자 키 ↔ Rust 시그니처 대조, i18n 키 계약, seed 정책, 미리보기 모드, 창 생성 async 규칙, 메타데이터 단일 소스 검증
 - Windows 편의 배치 파일 (인스톨러 빌드 · 실행 · 종료 · 검사)
 

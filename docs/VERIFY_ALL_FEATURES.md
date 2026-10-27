@@ -6,7 +6,7 @@
 > **측정 기준**: §6 의 명령을 이번 측정에서 실행한 출력. 커밋 해시는 본문에 인용하지 않는다(§7 참조)
 > **플랫폼**: Windows (로컬 실측)
 
-> **v1.0.0 공개 준비 개정**: 이전 판은 IPC 17종 / 스크립트 23종 시점의 기록이었다. 히스토리·메타데이터·원본 미리보기·창 관리 커맨드 9개가 추가되어, 본 개정에서 IPC **26종** / 계약 검증 스크립트 **28종** / 코어 **85 passed** / 앱 **21 passed** 로 **전 수치를 재측정**해 반영했다. 공개 준비 과정에서 저장소 위생(비밀정보·개인 경로) 검사 1종(`verify-repo-hygiene`)이 추가되어 27 → 28종이 되었다. §3.1 에 추가된 9개(`get_app_meta` `get_history` `record_history_entry` `clear_history` `delete_history_entry` `open_history_window` `record_library_entry` `load_preview_image` `restore_library_candidates`)의 검증 근거도 같은 표에 명시했다.
+> **v1.0.0 공개 준비 개정**: 이전 판은 IPC 17종 / 스크립트 23종 시점의 기록이었다. 히스토리·메타데이터·원본 미리보기·창 관리 커맨드 9개가 추가되어, 본 개정에서 IPC **26종** / 계약 검증 스크립트 **29종** / 코어 **85 passed** / 앱 **21 passed** 로 **전 수치를 재측정**해 반영했다. 공개 준비 과정에서 저장소 위생(비밀정보·개인 경로) 검사 1종(`verify-repo-hygiene`)이 추가되어 27 → 28종, 이어 릴리스 계약 검사기(`verify-release`)가 추가되어 28 → 29종이 되었다. §3.1 에 추가된 9개(`get_app_meta` `get_history` `record_history_entry` `clear_history` `delete_history_entry` `open_history_window` `record_library_entry` `load_preview_image` `restore_library_candidates`)의 검증 근거도 같은 표에 명시했다.
 
 ---
 
@@ -105,10 +105,10 @@
 | 2 | `cargo test -p wallmagic-app --lib -- --test-threads=4` | IPC 래퍼 계약 22 테스트(21 passed / 1 ignored) |
 | 3 | `npx tsc --noEmit` | 프론트 타입 |
 | 4 | `npm run build` | `tsc && vite build` 프로덕션 번들 |
-| 5 | `node scripts/run-all-verify.mjs` | 계약 검증 스크립트 **28종** 일괄 |
+| 5 | `node scripts/run-all-verify.mjs` | 계약 검증 스크립트 **29종** 일괄 |
 | 6 | `git log` / `git status` / `grep` | 상태·구조 실측 |
 
-`run-all-verify.mjs` 가 구동한 28종: `app-meta`, `applied-query`, `applied-sync`, `apply-label`, `delete-file`, `file-geninfo`, `format-err`, `free-port`, `generation-info`, `ipc-contract`, `persist-i18n-meta`, `popup-allow`, `popup-fallback`, `port-e2e`, `preview-fit-size`, `preview-viewer`, `provider-routing`, `provider-toggle-credit`, `puter-image`, `puter-priority`, `puter-signin`, `puter-usage-normalize`, `repo-hygiene`, `search-generate-button`, `search-provider`, `seed`, `ui-consistency`, `window-builder-async`.
+`run-all-verify.mjs` 가 구동한 29종: `app-meta`, `applied-query`, `applied-sync`, `apply-label`, `delete-file`, `file-geninfo`, `format-err`, `free-port`, `generation-info`, `ipc-contract`, `persist-i18n-meta`, `popup-allow`, `popup-fallback`, `port-e2e`, `preview-fit-size`, `preview-viewer`, `provider-routing`, `provider-toggle-credit`, `puter-image`, `puter-priority`, `puter-signin`, `puter-usage-normalize`, `release`, `repo-hygiene`, `search-generate-button`, `search-provider`, `seed`, `ui-consistency`, `window-builder-async`.
 
 ---
 
@@ -237,7 +237,7 @@ npm run build                      → exit=0 (39 modules, wallmagic@1.0.0)
 
 | 항목 | 사유 | 대체 증거 |
 |---|---|---|
-| GUI 5화면 렌더·클릭 | 에이전트가 Tauri 창을 조작할 수 없음 | `verify-*` 28종의 계약 검증 + `grep <h2>` 구조 실측 |
+| GUI 5화면 렌더·클릭 | 에이전트가 Tauri 창을 조작할 수 없음 | `verify-*` 29종의 계약 검증 + `grep <h2>` 구조 실측 |
 | 실 API 호출(Pollinations/Cloudflare/OpenAI/Puter/Wikimedia) | 네트워크 의존·과금·레이트리밋 | 요청 조립 단위 테스트(`test_pollinations_url_carries_seed`, `test_openai_request_body_has_no_seed`, `cf_parse_*`) |
 | 실 OS 배경 적용·원복 | 사용자 데스크톱 변경 | 사이드카 복원·스냅샷 보존 단위 테스트 |
 | `tauri build` 패키징(NSIS/MSI) | 이번 측정 미실행 | — (**미검증**) |
@@ -387,6 +387,6 @@ exit=0
 2. **실네트워크 0회** — Pollinations 이미지 생성, Wikimedia 검색, Cloudflare/OpenAI/Puter API 호출을 실행하지 않았다. 따라서 "실제로 이미지가 생성되는가"는 이 보고서로 증명되지 않는다(§5.2 의 ignored 4건).
 3. **실 OS 배경 변경 0회** — 적용·원복·모니터별 지정은 OS 상태를 바꾸므로 실행하지 않았다. `list_monitors` 는 검증 수단 자체가 없다(§5.1-1).
 4. **`tauri build` 패키징 미실행** — 상용 배포 산출물(NSIS/MSI)은 이번 측정 범위 밖이다.
-5. **계약 검증의 한계** — `verify-*` 28종은 소스 문자열·구조를 검사하는 스크립트다. "함수가 의도대로 호출된다"는 사실은 검증하나, "호출 결과가 사용자에게 옳게 보인다"는 검증하지 않는다. 후자는 GUI 실기동이 필요하다.
+5. **계약 검증의 한계** — `verify-*` 29종은 소스 문자열·구조를 검사하는 스크립트다. "함수가 의도대로 호출된다"는 사실은 검증하나, "호출 결과가 사용자에게 옳게 보인다"는 검증하지 않는다. 후자는 GUI 실기동이 필요하다.
 6. **설정 항목 12종의 필드명** — 이번 측정에서 `scenario.rs` 를 다시 읽지 않고 테스트·스크립트 이름에서 역추적한 항목이 일부 있다(`source.local_dir` 등). 필드명 자체의 최신 확인은 별도 read 가 필요하다.
 7. **`scripts/run-all-verify.mjs`** 는 `scripts/verify-*.mjs` 를 **자동 수집**해 일괄 실행한다(목록을 파일에 하드코딩하지 않으므로 스크립트 추가 시 자동 편입). 파일 헤더의 "임시 — 실행 후 삭제" 주석은 공개 준비 과정에서 **정식 러너로 정정**했다. 다만 러너 자체의 실행 시간·병렬화는 이번에 측정하지 않았다(현재 `spawnSync` 순차 실행).

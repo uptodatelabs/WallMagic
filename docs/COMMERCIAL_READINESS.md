@@ -49,7 +49,7 @@
 | `glob .github/**` | **일치 없음** → CI/CD 워크플로 없음 |
 | `glob LICENSE*` | **일치 없음** → 라이선스 파일 없음 (Cargo.toml 은 MIT 선언) |
 | `glob docs/*` | `ARCHITECTURE.md` `CLOUDFLARE_SCENARIO.md` `development-plan.md` `USER_MANUAL.md` `VERIFY_ALL_FEATURES.md` `VERIFY_M1.md` |
-| `glob scripts/*.mjs` | **32개** — `verify-*` 26개 + `run-all-verify` + `free-port` + `gen-icons` + CDP 프로브 3개(`cdp-puter-generate` `cdp-puter-probe` `test-puter-gesture`) |
+| `glob scripts/*` | **35개** — `verify-*` **29개** + `run-all-verify` + `free-port` + `gen-icons` + CDP 프로브 3개(`cdp-puter-generate` `cdp-puter-probe` `test-puter-gesture`) `[검증]` |
 
 ---
 
@@ -164,17 +164,17 @@ connect-src ipc: http://ipc.localhost
 
 ---
 
-### P1-2. CI가 없고 28개 검증 스크립트가 로컬 전용
+### P1-2. CI가 없고 29개 검증 스크립트가 로컬 전용
 
-**근거** `[실측]` `glob .github/**` → 일치 없음. `scripts/` 에 `verify-*` **26개** + `run-all-verify.mjs` 러너가 있으나 자동 실행 지점이 없다.
-또한 `run-all-verify.mjs` 는 소스 주석에 "임시" 성격이 남아 있다 `[이전턴]`.
+**근거** `[실측]` `glob .github/**` → 일치 없음. `scripts/` 에 `verify-*` **29개** + `run-all-verify.mjs` 러너가 있으나 자동 실행 지점이 없다. 러너는 `verify-*.mjs` 를 디렉터리에서 자동 발견하므로 스크립트를 추가하면 자동 편입되어 목록이 stale 해질 수 없다.
+`run-all-verify.mjs` 는 `scripts/verify-*.mjs` 를 **디렉터리에서 자동 발견**해 순차 실행하고, 실패가 1건이라도 있으면 `process.exit(1)` 로 종료하는 **정식 러너**다 — 헤더의 "임시 — 실행 후 삭제" 주석은 공개 준비 과정에서 정정되었다 `[검증: scripts/run-all-verify.mjs]`.
 
-**영향** 저장소 품질 게이트(검증 28종·`tsc`·`cargo test`·`build`)가 개발자 습관에만 의존한다. `package.json` scripts 에 `test`·`ci` 항목이 없다 `[실측]`.
+**영향** 저장소 품질 게이트(검증 29종·`tsc`·`cargo test`·`build`)가 개발자 습관에만 의존한다. `package.json` scripts 에 `test`·`ci` 항목이 없다 `[실측]`.
 
 **권장 조치**
 1. `package.json` 에 `"verify": "node scripts/run-all-verify.mjs"`, `"ci": "npm run verify && npm run build && cargo test --workspace"` 추가
 2. GitHub Actions: `windows-latest` 에서 `cargo test` + `npm run build` + verify 실행, PR 필수 체크로 등록
-3. `run-all-verify.mjs` 를 정식 러너로 승격(주석의 "임시" 문구 제거, 실패 시 exit≠0 보장 확인)
+3. ~~`run-all-verify.mjs` 를 정식 러너로 승격~~ — **완료**: "임시" 주석 제거, 실패 시 exit≠0 보장 확인 `[검증: scripts/run-all-verify.mjs]`. 남은 과제는 자동 실행 지점(1·2번)뿐이다
 
 **규모** S
 
@@ -349,7 +349,7 @@ in_handler_not_attr=
 | P0-4 | **P0** | LICENSE·제3자 고지·개인정보 고지 부재 | `glob LICENSE*` 0건 / `docs/*` 목록 | LICENSE·NOTICES·PRIVACY | S |
 | P0-5 | **P0** | API 키 평문 저장 | 마스킹 테스트만 존재 / keyring·DPAPI 부재 | DPAPI 암호화 저장 | M |
 | P1-1 | P1 | 로그·크래시 수집 부재 | core `tracing::` 10곳 / subscriber 없음 | subscriber + 파일 로그 + panic 훅 | S |
-| P1-2 | P1 | CI 부재, 검증 28종 로컬 전용 | `glob .github/**` 0건 / `package.json` scripts 4개 | Actions + `npm run ci` | S |
+| P1-2 | P1 | CI 부재, 검증 29종 로컬 전용 | `glob .github/**` 0건 / `package.json` scripts 4개 | Actions + `npm run ci` | S |
 | P1-3 | P1 | 프론트 테스트 프레임워크 없음 | `package.json` devDeps에 vitest 없음 | Vitest + 핵심 단위/스모크 | M |
 | P1-4 | P1 | 취소·진행률·경과시간 없음 | `grep cancel` 3건 전부 뷰어 | 취소 플래그 + 진행 표시 | M |
 | P1-5 | P1 | 단일 인스턴스 미보장 | workspace deps에 single-instance 없음 | 플러그인 도입 | S |
