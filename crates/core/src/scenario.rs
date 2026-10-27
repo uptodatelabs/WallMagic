@@ -1258,6 +1258,12 @@ pub fn tick_scenario(now_secs: u64) -> Result<Option<WallpaperState>, WallpaperE
     if !settings.prompt.trim().is_empty() {
         let order = effective_provider_order(&settings);
         if order.iter().any(|pr| provider_is_configured(&settings, *pr)) {
+            // 시나리오 틱의 임시 파일은 **고정 이름**을 의도적으로 쓴다 — 사용자 결과물이 아니라
+            // 적용 직전 임시 파일이므로, 틱마다 같은 경로를 덮어써 `online_cache` 가 무한히
+            // 누적되는 것을 막는다. 사용자에게 남는 산출물(library/Pictures)은 반드시
+            // `search::unique_output_path` 를 거쳐 고유화한다(같은 프롬프트 재생성 시 덮어쓰기 금지).
+            // 후속 과제(검수 권고): 틱 임시 파일은 URL 개수·고정명으로 상한이 있으나, 검색 캐시
+            // `online_{hash}_{idx}.jpg` 는 쿼리별로 누적된다 — 상한·pruning 정책은 별도 이슈로 관리한다.
             let tmp = app_data_dir().join("online_cache").join("scenario_ai.jpg");
             let prompt_owned = settings.prompt.clone();
             // 3-튜플 판(`_query`)을 쓴다 — 실제로 사용된 질의문을 그대로 받아 기록해야
@@ -1319,6 +1325,8 @@ pub fn tick_scenario(now_secs: u64) -> Result<Option<WallpaperState>, WallpaperE
     {
         let query_count = valid_search_queries(&settings).len();
         if let Some(query) = search_query_for(&settings, now_secs) {
+            // 검색 틱도 같은 이유로 고정 이름 임시 파일을 재사용한다(누적 방지).
+            // 사용자 산출물 고유화는 `unique_output_path` 담당이다.
             let tmp = app_data_dir()
                 .join("online_cache")
                 .join("scenario_search.jpg");
@@ -1366,6 +1374,8 @@ pub fn tick_scenario(now_secs: u64) -> Result<Option<WallpaperState>, WallpaperE
             ScenarioOrder::Random => (now_secs as usize) % len,
         };
         let url = settings.source.urls[idx].clone();
+        // URL 순환 틱도 고정 이름(`scenario_{idx}.jpg`)을 재사용한다 — URL 개수만큼만
+        // 캐시 파일이 존재하므로 누적 상한이 자연히 제한된다(사용자 산출물 아님).
         let tmp = app_data_dir()
             .join("online_cache")
             .join(format!("scenario_{idx}.jpg"));
