@@ -8,7 +8,8 @@
 
 ### Added
 
-- (아직 없음)
+- 릴리스 노트 한/영 병기 — [`docs/RELEASE_NOTES_v1.0.0.md`](docs/RELEASE_NOTES_v1.0.0.md), `verify-release` 가 절·불릿 수 1:1 대조
+- `docs/README.md` 인덱스에 릴리스 노트 행 추가
 
 ### Changed
 
@@ -42,6 +43,8 @@
 ## [1.0.0] — 2026-10-28
 
 첫 공개 릴리스. Windows 바탕화면 **검색 · 생성 · 적용 · 복원** 전체 흐름을 하나의 앱으로 제공합니다.
+
+> 전체 릴리스 노트(한국어 · English 병기): [`docs/RELEASE_NOTES_v1.0.0.md`](docs/RELEASE_NOTES_v1.0.0.md)
 
 ### Added
 

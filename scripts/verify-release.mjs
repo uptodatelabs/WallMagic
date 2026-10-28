@@ -293,6 +293,74 @@ for (const root of roots) {
   }
 }
 
+// ── ⑦ 릴리스 노트 한/영 병기 ───────────────────────────────────────────────
+// 릴리스 노트는 한국어 원문과 English 번역을 **같은 구조**로 담는다.
+// 구조가 어긋나면 한쪽만 갱신되어 해외 사용자가 낡은 정보를 읽는다 — 번역 누락은
+// 번역 실력의 문제가 아니라 **갱신 누락**의 문제이고, 그건 검사로만 막을 수 있다.
+//
+// 비교하는 것은 **구조**이지 문장이 아니다. 언어가 다르면 문장은 당연히 다르므로
+// 절 제목 수 · 불릿 수 · 코드블록 수 · 표 행 수만 대조한다.
+const notesPath = `docs/RELEASE_NOTES_v${version}.md`;
+
+if (!existsSync(notesPath)) {
+  bad(`릴리스 노트가 없다 — ${notesPath} (한국어 + English 병기 문서가 필요하다)`);
+} else {
+  const notes = readFileSync(notesPath, "utf8");
+  const splitAt = notes.search(/^## English\s*$/m);
+
+  if (splitAt < 0) {
+    bad(`${notesPath} 에 \`## English\` 섹션이 없다`);
+  } else {
+    // 두 언어가 **공유하는 머리말**(릴리스일 · 태그 · 저장소 3줄)이 있다.
+    // 한국어 슬라이스를 0 에서 시작하면 그 3줄이 한국어 쪽에만 계상되어,
+    // 본문이 완전히 일치해도 불릿 수가 3 만큼 어긋난다(실측 62 vs 59 — 절 단위
+    // 계측으로는 ko=59 / en=59 로 완전 일치했다). 그래서 한국어 슬라이스도
+    // `## 한국어` 제목부터 시작한다. 제목 줄은 불릿·표·코드블록이 아니므로
+    // 구조 계측값에 영향을 주지 않는다.
+    const koAt = notes.search(/^## 한국어/m);
+    const koHalf = koAt < 0 ? "" : notes.slice(koAt, splitAt);
+    const enHalf = notes.slice(splitAt);
+
+    if (!/^## 한국어/m.test(koHalf)) {
+      bad(`${notesPath} 에 \`## 한국어\` 섹션이 없다`);
+    } else {
+      ok(`릴리스 노트에 한국어 · English 두 섹션이 있다 — ${notesPath}`);
+    }
+
+    const shapeOf = (text) => ({
+      h3: (text.match(/^### /gm) || []).length,
+      bullets: (text.match(/^- /gm) || []).length,
+      fences: (text.match(/^```/gm) || []).length,
+      tablerows: (text.match(/^\|/gm) || []).length,
+    });
+
+    const koShape = shapeOf(koHalf);
+    const enShape = shapeOf(enHalf);
+    const labels = {
+      h3: "절(###) 제목",
+      bullets: "불릿(-)",
+      fences: "코드블록",
+      tablerows: "표 행",
+    };
+
+    let parity = true;
+    for (const key of Object.keys(labels)) {
+      if (koShape[key] === enShape[key]) continue;
+      parity = false;
+      bad(
+        `릴리스 노트 ${labels[key]} 수 불일치 — 한국어 ${koShape[key]} / English ${enShape[key]}` +
+          " (번역 누락 또는 원문만 갱신됨)"
+      );
+    }
+    if (parity) {
+      ok(
+        `릴리스 노트 구조 1:1 일치 — 절 ${koShape.h3} · 불릿 ${koShape.bullets}` +
+          ` · 코드블록 ${koShape.fences} · 표 행 ${koShape.tablerows}`
+      );
+    }
+  }
+}
+
 // ── 결과 ──────────────────────────────────────────────────────────────────
 if (fail > 0) {
   console.log(`\nFAIL: 릴리스 계약 위반 ${fail}건`);

@@ -13,6 +13,7 @@
 | [market-competitor-analysis.md](./market-competitor-analysis.md) | **시장 판정** — 대중 매력도·경쟁 포화도·가격 경쟁력, 경쟁 제품 19종 가격표, $0.99~$2.99 정량 비교, GO/NO-GO | 의사결정자 | 분석 보고서 |
 | [market-verdict-summary.md](./market-verdict-summary.md) | 위 보고서의 **1페이지 의사결정 카드** | 의사결정자 | 요약 |
 | [market/04-open-source-donation-feasibility.md](./market/04-open-source-donation-feasibility.md) | **"GitHub 공개 + 기부" 경로 타당성** — 기부 기저율·전환율 근거, 제품 적합도 스코어카드(34/100), 시나리오별 월 수익 × 확률 매트릭스, 4안 비교(A·B·C·D), GO/NO-GO | 의사결정자 | 분석 보고서 |
+| [RELEASE_NOTES_v1.0.0.md](./RELEASE_NOTES_v1.0.0.md) | **v1.0.0 릴리스 노트** — 한국어 원문 + English 번역을 1:1 구조로 병기 (GitHub Release 본문과 동일) | 최종 사용자·기여자 | 릴리스 문서 |
 | [COMMERCIAL_READINESS.md](./COMMERCIAL_READINESS.md) | **상용화 준비도 감사** — P0/P1/P2 22건, 각 항목 근거(file:line)와 권장 조치 | 개발자·릴리스 담당 | 감사 보고서 |
 | [CLOUDFLARE_SCENARIO.md](./CLOUDFLARE_SCENARIO.md) | Cloudflare Workers AI 도입안 + **시나리오(자동 업데이트) 설정** 설계 | 개발자 | 설계 문서 |
 | [USER_MANUAL.md](./USER_MANUAL.md) | **사용 매뉴얼** — 설치, 화면별 사용법, FAQ, 문제 해결 | 최종 사용자 | 사용자 문서 |
