@@ -11,7 +11,7 @@ members = [
 #   → IPC `get_app_meta` → UI About/설정 표시
 # tauri.conf.json / package.json / LICENSE 도 같은 값을 유지해야 한다
 # (scripts/verify-app-meta.mjs 가 검증).
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 rust-version = "1.82"
 license = "MIT"

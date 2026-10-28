@@ -8,12 +8,7 @@
 
 ### Added
 
-- **[`PRIVACY.md`](PRIVACY.md)** — 개인정보 처리 안내(수집하지 않는 항목 · 로컬 저장 파일 · 제3자 전송 시점 · 평문 키 한계 · 삭제 방법). 감사 P0-4 대응
-- **[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)** — Rust 483개 · npm 133개 라이선스 집계(MPL-2.0 5 · Unicode-3.0 18 · CDLA-Permissive-2.0 2 등 주의 항목 별도 정리) + 재집계 명령. 감사 P0-4 대응
-- **[`.gitattributes`](.gitattributes)** — `*.cmd`/`*.bat` CRLF 고정, 이미지·설치본 바이너리 지정. `LF → CRLF` 경고 제거
-- `scripts/verify-app-meta.mjs` — 공개 필수 문서 목록에 `PRIVACY.md` · `THIRD_PARTY_NOTICES.md` 편입(누락 시 실패)
-- 릴리스 노트 한/영 병기 — [`docs/RELEASE_NOTES_v1.0.0.md`](docs/RELEASE_NOTES_v1.0.0.md), `verify-release` 가 절·불릿 수 1:1 대조
-- `docs/README.md` 인덱스에 릴리스 노트 행 추가
+- (아직 없음)
 
 ### Changed
 
@@ -44,11 +39,45 @@
 
 ---
 
+## [1.0.1] — 2026-10-28
+
+**크리티컬 수정** — 자동 업데이트가 같은 이미지에 고정되던 결함. v1.0.0 설치본 사용자는 이 버전으로 갱신해야 자동 전환이 실제로 화면을 바꾼다.
+
+> 전체 릴리스 노트(한국어 · English 병기): [`docs/RELEASE_NOTES_v1.0.1.md`](docs/RELEASE_NOTES_v1.0.1.md)
+
+### Fixed
+
+- **(크리티컬) 자동 업데이트가 같은 이미지에 고정** — `generate_search_wallpaper` 가 검색 후보 중 **항상 0번**(`candidates.first()`)만 사용했다. 검색어가 같으면 온라인 캐시 파일명(`online_<hash>_0.jpg`)도 같아져, 60분 간격으로 실행해도 매번 같은 파일을 재사용해 화면이 바뀌지 않았다. `pick_candidate_index`(순수 함수) + `next_search_variant`(프로세스 단조 nonce) 로 후보를 순환 선택하도록 교체(커밋 `cf774d7`). 네트워크 절약을 위한 캐시 재사용 설계는 유지했다.
+- 회귀 방지 테스트 3건 추가 — `pick_candidate_index_rotates_and_wraps` · `pick_candidate_index_visits_every_candidate` · `next_search_variant_is_monotonic` (core 101 → 104 passed)
+
+### Added
+
+- [`docs/RELEASE_NOTES_v1.0.1.md`](docs/RELEASE_NOTES_v1.0.1.md) — 한국어 · English 1:1 병기 릴리스 노트
+- `docs/README.md` 인덱스에 v1.0.1 릴리스 노트 행 추가
+
+### Changed
+
+- 버전 3곳 동기화 — `Cargo.toml` `[workspace.package].version` · `package.json` · `src-tauri/tauri.conf.json` → `1.0.1` (`Cargo.toml` 이 단일 소스)
+- README 인스톨러 파일명 4곳을 `_1.0.1_` 로 갱신 (한국어 2 · English 2)
+
+---
+
 ## [1.0.0] — 2026-10-28
 
 첫 공개 릴리스. Windows 바탕화면 **검색 · 생성 · 적용 · 복원** 전체 흐름을 하나의 앱으로 제공합니다.
 
 > 전체 릴리스 노트(한국어 · English 병기): [`docs/RELEASE_NOTES_v1.0.0.md`](docs/RELEASE_NOTES_v1.0.0.md)
+
+### Added — 공개 정합 (v1.0.0 트리에 포함)
+
+> 아래 항목은 **v1.0.0 태그 트리(`25c668e`)에 이미 포함**되어 있으나, 승격 시점에 `[Unreleased]` 에 남아 있었다. 1.0.0 이력의 정확성을 위해 이 절로 옮긴다.
+
+- **[`PRIVACY.md`](PRIVACY.md)** — 개인정보 처리 안내(수집하지 않는 항목 · 로컬 저장 파일 · 제3자 전송 시점 · 평문 키 한계 · 삭제 방법). 감사 P0-4 대응
+- **[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)** — Rust 483개 · npm 133개 라이선스 집계(MPL-2.0 5 · Unicode-3.0 18 · CDLA-Permissive-2.0 2 등 주의 항목 별도 정리) + 재집계 명령. 감사 P0-4 대응
+- **[`.gitattributes`](.gitattributes)** — `*.cmd`/`*.bat` CRLF 고정, 이미지·설치본 바이너리 지정. `LF → CRLF` 경고 제거
+- `scripts/verify-app-meta.mjs` — 공개 필수 문서 목록에 `PRIVACY.md` · `THIRD_PARTY_NOTICES.md` 편입(누락 시 실패)
+- 릴리스 노트 한/영 병기 — [`docs/RELEASE_NOTES_v1.0.0.md`](docs/RELEASE_NOTES_v1.0.0.md), `verify-release` 가 절·불릿 수 1:1 대조
+- `docs/README.md` 인덱스에 릴리스 노트 행 추가
 
 ### Added
 

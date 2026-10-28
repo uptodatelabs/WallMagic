@@ -14,6 +14,7 @@
 | [market-verdict-summary.md](./market-verdict-summary.md) | 위 보고서의 **1페이지 의사결정 카드** | 의사결정자 | 요약 |
 | [market/04-open-source-donation-feasibility.md](./market/04-open-source-donation-feasibility.md) | **"GitHub 공개 + 기부" 경로 타당성** — 기부 기저율·전환율 근거, 제품 적합도 스코어카드(34/100), 시나리오별 월 수익 × 확률 매트릭스, 4안 비교(A·B·C·D), GO/NO-GO | 의사결정자 | 분석 보고서 |
 | [RELEASE_NOTES_v1.0.0.md](./RELEASE_NOTES_v1.0.0.md) | **v1.0.0 릴리스 노트** — 한국어 원문 + English 번역을 1:1 구조로 병기 (GitHub Release 본문과 동일) | 최종 사용자·기여자 | 릴리스 문서 |
+| [RELEASE_NOTES_v1.0.1.md](./RELEASE_NOTES_v1.0.1.md) | **v1.0.1 릴리스 노트** — 크리티컬 수정(자동 업데이트가 같은 이미지에 고정되던 검색 후보 선택 결함, `cf774d7`) 한/영 병기 | 최종 사용자·기여자 | 릴리스 문서 |
 | [COMMERCIAL_READINESS.md](./COMMERCIAL_READINESS.md) | **상용화 준비도 감사** — P0/P1/P2 22건, 각 항목 근거(file:line)와 권장 조치 | 개발자·릴리스 담당 | 감사 보고서 |
 | [CLOUDFLARE_SCENARIO.md](./CLOUDFLARE_SCENARIO.md) | Cloudflare Workers AI 도입안 + **시나리오(자동 업데이트) 설정** 설계 | 개발자 | 설계 문서 |
 | [USER_MANUAL.md](./USER_MANUAL.md) | **사용 매뉴얼** — 설치, 화면별 사용법, FAQ, 문제 해결 | 최종 사용자 | 사용자 문서 |
