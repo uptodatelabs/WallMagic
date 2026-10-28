@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "WallMagic 창들의 기본 IPC 권한 (코어 액션은 자체 #[tauri::command]이므로 core:default만 요구). 히스토리는 별도 창('history')에서 관리하므로 두 라벨을 모두 허용한다.",
+  "description": "WallMagic 창들의 기본 IPC 권한 (코어 액션은 자체 #[tauri::command]이므로 core:default만 요구). 히스토리는 별도 창('history')에서 관리하므로 두 라벨을 모두 허용한다. autostart:* 는 로그인 자동 시작 토글(enable/disable/isEnabled)에 필요하다.",
   "windows": ["main", "history"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "autostart:default"]
 }

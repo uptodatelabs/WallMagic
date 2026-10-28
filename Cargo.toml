@@ -37,13 +37,23 @@ thiserror = "2.0"
 tracing = "0.1"
 ureq = { version = "2", default-features = false, features = ["tls"] }
 urlencoding = "2"
-tauri = { version = "2", features = [] }
+# `tray-icon`: 트레이 상주(창 닫기 → 숨김) 구현에 필수인 Tauri 기능 플래그.
+# 기본 features 가 비어 있으면 `TrayIconBuilder` 심볼 자체가 컴파일되지 않는다.
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-build = { version = "2", features = [] }
 tauri-plugin-opener = { version = "2", features = [] }
+# 로그인 자동 시작 — OS 등록(레지스트리 Run 키 / LaunchAgent)을 플러그인에 위임한다.
+tauri-plugin-autostart = { version = "2", features = [] }
+# 단일 인스턴스 — 두 번째 실행을 새 프로세스로 띄우지 않고 기존 창을 앞으로 가져온다.
+tauri-plugin-single-instance = { version = "2", features = [] }
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_System_Com",
+    # `GetLocalTime` — 시나리오 자동 전환의 시간대 트리거 판정에 필요하다.
+    # windows 0.62 실측: `GetLocalTime` 은 `Win32::System::Time` 이 아니라
+    # `Win32::System::SystemInformation` 에 있고, 그 모듈은 이 feature 로 게이팅된다.
+    "Win32_System_SystemInformation",
     "Win32_UI_Shell",
     "Win32_UI_Shell_Common",
     "Win32_UI_WindowsAndMessaging",

@@ -441,6 +441,42 @@ function formatBytes(bytes: number): string {
   return `${bytes} B`;
 }
 
+/* ── 자동 전환 규칙 엔진 타입 (crates/core/src/auto_switch.rs 와 1:1) ──
+   serde 규약: **payload 내부 필드는 snake_case 그대로**이고, `TriggerKind` 만
+   `#[serde(rename_all = "snake_case")]` 로 소문자다. camelCase 는 Tauri 가
+   IPC 커맨드 인자 이름에서만 변환한다(`profile_id` → `profileId`).
+   여기서 이름을 바꾸면 deserialize 가 조용히 기본값으로 떨어져
+   "규칙을 저장했는데 트리거가 전부 0시" 같은 오작동이 된다. */
+type AutoTriggerKind = "time_window" | "app_start" | "rotation";
+
+type AutoTrigger = {
+  kind: AutoTriggerKind;
+  start_hour: number;
+  end_hour: number;
+  weekdays: number[];
+  rotate_minutes: number;
+};
+
+type AutoSwitchRule = {
+  id: string;
+  enabled: boolean;
+  trigger: AutoTrigger;
+  target_profile: string;
+  debounce_secs: number;
+  cooldown_secs: number;
+};
+
+type AutoSwitchWorkspace = {
+  profiles: { id: string; name: string; settings: ScenarioSettings }[];
+  active_profile: string | null;
+  rules: AutoSwitchRule[];
+  last_switch_at: number | null;
+  last_auto_profile: string | null;
+  pending: { rule_id: string; since: number }[];
+};
+
+type AutoSwitchOutcome = { rule_id: string; profile_id: string };
+
 export function App(): React.ReactElement {
   // 검색/생성 패널
   const [query, setQuery] = useState<string>("");
@@ -539,6 +575,20 @@ export function App(): React.ReactElement {
   const [scAutoFail, setScAutoFail] = useState<number>(0);
   // 저장 시 커서·시각 보존용 원본 스냅샷 (지적 #2: 하드코딩 방지)
   const [scPrev, setScPrev] = useState<ScenarioSettings | null>(null);
+
+  /* ── ⑥ 자동 전환 규칙 엔진 (scenario_profiles.json) ──
+     프로필 목록·규칙·디바운스 상태의 **진실의 원천은 디스크**다. UI 는 조회 결과를
+     그대로 보관하고, 저장 시 통째로 되돌려 보낸다(코어가 pending/last_switch_at 은
+     디스크 값을 유지하므로 UI 가 낡은 값을 보내도 디바운스가 되감기지 않는다). */
+  const [autoWs, setAutoWs] = useState<AutoSwitchWorkspace | null>(null);
+  const [autoErr, setAutoErr] = useState<string>("");
+  const [autoInfo, setAutoInfo] = useState<string>("");
+  const [autoBusy, setAutoBusy] = useState<boolean>(false);
+  const [autoNewProfile, setAutoNewProfile] = useState<string>("");
+  // 로그인 자동 시작 — 내부 플래그가 아니라 **OS 등록 상태**를 그대로 표시한다.
+  const [autostart, setAutostart] = useState<boolean>(false);
+  // 트레이 "시나리오 수동 선택"이 보낸 `tray://select-scenario` 수신 시 프로필 목록을 연다.
+  const [autoSelectOpen, setAutoSelectOpen] = useState<boolean>(false);
 
   // 상태
   const [status, setStatus] = useState<AppStatus | null>(null);
@@ -914,11 +964,53 @@ export function App(): React.ReactElement {
     }
   }, []);
 
+  /* ── ⑥ 자동 전환 규칙 엔진 핸들러 ──
+     프로필·규칙의 진실의 원천은 `scenario_profiles.json` 이다. UI 는 조회 결과를
+     통째로 보관하고 저장 시 그대로 되돌려 보낸다(코어가 pending/last_switch_at 은
+     디스크 값을 유지하므로 낡은 값이 디바운스를 되감지 않는다).
+     이 두 useCallback 은 초기 로드 useEffect 보다 **먼저** 선언되어야 한다 —
+     뒤에 두면 TS2448/TS2454 ("used before its declaration") 로 `npm run build` 가 실패한다. */
+  const refreshAutoSwitch = useCallback(async () => {
+    try {
+      const ws = await invoke<AutoSwitchWorkspace>("get_auto_switch_workspace");
+      setAutoWs(ws);
+      setAutoErr("");
+      setAutoInfo(
+        t(langRef.current, "auto.info", {
+          profiles: ws.profiles.length,
+          rules: ws.rules.length,
+          active: ws.active_profile ?? t(langRef.current, "auto.none"),
+        }),
+      );
+    } catch (err) {
+      setAutoErr(
+        t(langRef.current, "auto.loadFailed", { err: formatErr(err) }),
+      );
+    }
+  }, []);
+
+  // 로그인 자동 시작 — 내부 플래그가 아니라 OS 등록 상태를 그대로 읽는다(단일 진실).
+  const refreshAutostart = useCallback(async () => {
+    try {
+      setAutostart(await invoke<boolean>("get_autostart_enabled"));
+    } catch (err) {
+      console.warn(`자동 시작 상태 조회 실패: ${formatErr(err)}`);
+    }
+  }, []);
+
   useEffect(() => {
     void refreshStatus();
     void refreshMonitors();
     void refreshScenario();
-  }, [refreshStatus, refreshMonitors, refreshScenario]);
+    void refreshAutoSwitch();
+    void refreshAutostart();
+  }, [
+    refreshStatus,
+    refreshMonitors,
+    refreshScenario,
+    refreshAutoSwitch,
+    refreshAutostart,
+  ]);
 
   // 시작 시 복원 — 재시동 후에도 ① 프롬프트/검색 히스토리 ② 앱 메타데이터(버전·제작자)
   // ③ 이전에 생성한 이미지 목록이 보여야 한다. 이전 구현은 셋 다 메모리에만 있어
@@ -1769,6 +1861,180 @@ export function App(): React.ReactElement {
     }
   };
 
+  const handleToggleAutostart = async (next: boolean) => {
+    setAutoBusy(true);
+    try {
+      // 반환값은 **적용 후 실제 OS 상태**다 — enable() 성공만 믿고 켜짐으로 그리지 않는다.
+      const applied = await invoke<boolean>("set_autostart_enabled", { enabled: next });
+      setAutostart(applied);
+      reportOk(t(lang, applied ? "auto.autostartOn" : "auto.autostartOff"));
+    } catch (err) {
+      reportError(t(lang, "auto.autostartFailed", { err: formatErr(err) }));
+    } finally {
+      setAutoBusy(false);
+    }
+  };
+
+  const handleEvaluateAutoSwitch = async () => {
+    setAutoBusy(true);
+    try {
+      const outcome = await invoke<AutoSwitchOutcome | null>("evaluate_auto_switch");
+      if (outcome) {
+        reportOk(
+          t(lang, "auto.switched", {
+            rule: outcome.rule_id,
+            profile: outcome.profile_id,
+          }),
+        );
+      } else {
+        reportOk(t(lang, "auto.noSwitch"));
+      }
+      await refreshAutoSwitch();
+      await refreshScenario();
+      await refreshStatus();
+    } catch (err) {
+      reportError(t(lang, "auto.evaluateFailed", { err: formatErr(err) }));
+    } finally {
+      setAutoBusy(false);
+    }
+  };
+
+  const handleSaveAutoSwitch = async () => {
+    if (!autoWs) return;
+    setAutoBusy(true);
+    try {
+      const saved = await invoke<AutoSwitchWorkspace>("save_auto_switch_workspace", {
+        workspace: autoWs,
+      });
+      setAutoWs(saved);
+      setAutoErr("");
+      reportOk(t(lang, "auto.saved"));
+      await refreshAutoSwitch();
+    } catch (err) {
+      reportError(t(lang, "auto.saveFailed", { err: formatErr(err) }));
+    } finally {
+      setAutoBusy(false);
+    }
+  };
+
+  const handleApplyProfile = async (profileId: string) => {
+    setAutoBusy(true);
+    try {
+      await invoke<ScenarioSettings>("apply_scenario_profile", { profileId });
+      reportOk(t(lang, "auto.applied", { profile: profileId }));
+      setAutoSelectOpen(false);
+      await refreshAutoSwitch();
+      await refreshScenario();
+      await refreshStatus();
+    } catch (err) {
+      reportError(t(lang, "auto.applyFailed", { err: formatErr(err) }));
+    } finally {
+      setAutoBusy(false);
+    }
+  };
+
+  /** 현재 시나리오 설정(scPrev)을 새 프로필로 승격한다. 이름→id 는 슬러그로 만든다. */
+  const handleAddProfileFromCurrent = () => {
+    const name = autoNewProfile.trim();
+    if (!name) {
+      reportError(t(lang, "auto.needProfileName"));
+      return;
+    }
+    if (!scPrev) {
+      reportError(t(lang, "auto.needScenario"));
+      return;
+    }
+    if (!autoWs) return;
+    const slug =
+      name
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, "-")
+        .replace(/^-+|-+$/g, "") || `p${Date.now().toString(36)}`;
+    const id = autoWs.profiles.some((p) => p.id === slug) ? `${slug}-${Date.now().toString(36)}` : slug;
+    setAutoWs({
+      ...autoWs,
+      profiles: [...autoWs.profiles, { id, name, settings: scPrev }],
+      active_profile: autoWs.active_profile ?? id,
+    });
+    setAutoNewProfile("");
+  };
+
+  const handleRemoveProfile = (profileId: string) => {
+    if (!autoWs) return;
+    setAutoWs({
+      ...autoWs,
+      profiles: autoWs.profiles.filter((p) => p.id !== profileId),
+      // 규칙이 사라진 프로필을 가리키면 코어가 조용히 무시하지만, UI 에서도 정리한다.
+      rules: autoWs.rules.filter((r) => r.target_profile !== profileId),
+      active_profile: autoWs.active_profile === profileId ? null : autoWs.active_profile,
+    });
+  };
+
+  const handleAddRule = () => {
+    if (!autoWs || autoWs.profiles.length === 0) {
+      reportError(t(lang, "auto.needScenario"));
+      return;
+    }
+    const rule: AutoSwitchRule = {
+      id: `rule-${Date.now().toString(36)}`,
+      enabled: true,
+      trigger: {
+        kind: "time_window",
+        start_hour: 6,
+        end_hour: 12,
+        weekdays: [],
+        rotate_minutes: 240,
+      },
+      target_profile: autoWs.profiles[0].id,
+      debounce_secs: 30,
+      cooldown_secs: 600,
+    };
+    setAutoWs({ ...autoWs, rules: [...autoWs.rules, rule] });
+  };
+
+  const updateRule = (index: number, patch: Partial<AutoSwitchRule>) => {
+    if (!autoWs) return;
+    setAutoWs({
+      ...autoWs,
+      rules: autoWs.rules.map((r, i) => (i === index ? { ...r, ...patch } : r)),
+    });
+  };
+
+  const updateTrigger = (index: number, patch: Partial<AutoTrigger>) => {
+    if (!autoWs) return;
+    setAutoWs({
+      ...autoWs,
+      rules: autoWs.rules.map((r, i) =>
+        i === index ? { ...r, trigger: { ...r.trigger, ...patch } } : r,
+      ),
+    });
+  };
+
+  const handleRemoveRule = (index: number) => {
+    if (!autoWs) return;
+    setAutoWs({ ...autoWs, rules: autoWs.rules.filter((_, i) => i !== index) });
+  };
+
+  // 트레이 메뉴 "시나리오 수동 선택" → 메인 창을 앞으로 가져오고 프로필 목록을 연다.
+  // 프로필 목록을 트레이 메뉴에 직접 캡처하지 않는 이유: 진실의 원천이 파일이라
+  // 앱 시작 시점에 고정하면 추가·개명한 프로필이 메뉴에 반영되지 않는다.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      try {
+        unlisten = await listen("tray://select-scenario", () => {
+          setAutoSelectOpen(true);
+          void refreshAutoSwitch();
+        });
+      } catch (err) {
+        console.warn(`트레이 이벤트 구독 실패: ${formatErr(err)}`);
+      }
+    })();
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [refreshAutoSwitch]);
+
   return (
     <div className="app">
       <header className="app-header">
@@ -2561,6 +2827,318 @@ export function App(): React.ReactElement {
               disabled={busy}
             >
               {t(lang, "scenario.runNow")}
+            </button>
+          </section>
+
+          {/* ── ⑥ 자동 전환 규칙 엔진 (scenario_profiles.json) ──
+              프로필 = `scenario.json` 전체의 이름 붙은 사본이고, 규칙이 조건(시간대·앱 시작·
+              순환 주기)을 만족하면 코어가 `scenario.json` 을 그 프로필로 덮어쓴다.
+              창을 닫아도 트레이에 상주하며 60초 폴링 틱에서 계속 평가된다.
+              여기 화면은 **편집기**이고, 진실의 원천은 디스크 파일이다 — 저장 시 통째로 되돌려
+              보내고 응답(정규화된 값)을 그대로 다시 그린다. */}
+          <section id="auto-section">
+            <h2>{t(lang, "auto.heading")}</h2>
+            <div className="detail" style={{ marginBottom: "8px" }}>
+              {t(lang, "auto.hint")}
+            </div>
+            <div className="detail" id="autoInfo" style={{ marginBottom: "8px" }}>
+              {autoInfo || t(lang, "auto.notLoaded")}
+            </div>
+            {autoErr && (
+              <div className="detail" style={{ color: "#c0392b", marginBottom: "8px" }}>
+                {autoErr}
+              </div>
+            )}
+
+            {/* 로그인 자동 시작 — 내부 플래그를 두지 않고 OS 등록 상태(is_enabled)를
+                그대로 반영한다. 레지스트리 Run 키를 사용자가 직접 지워도 UI 가 어긋나지 않는다. */}
+            <div className="field">
+              <label htmlFor="autoAutostart">{t(lang, "auto.autostart")}</label>
+              <input
+                id="autoAutostart"
+                type="checkbox"
+                checked={autostart}
+                disabled={autoBusy}
+                onChange={(e) => void handleToggleAutostart(e.target.checked)}
+              />
+            </div>
+
+            {/* 트레이 "시나리오 수동 선택"이 `tray://select-scenario` 를 보내면 이 선택기가 열린다.
+                프로필 목록을 트레이 메뉴에 미리 캡처하지 않는 이유: 파일이 진실의 원천이라
+                앱 시작 시점에 고정하면 추가·개명한 프로필이 메뉴에 반영되지 않는다. */}
+            {autoSelectOpen && autoWs && autoWs.profiles.length > 0 && (
+              <div className="field">
+                <label htmlFor="autoQuickSelect">{t(lang, "auto.applyProfile")}</label>
+                <select
+                  id="autoQuickSelect"
+                  value={autoWs.active_profile ?? ""}
+                  disabled={autoBusy}
+                  onChange={(e) => {
+                    if (e.target.value) void handleApplyProfile(e.target.value);
+                  }}
+                >
+                  {autoWs.profiles.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name || p.id}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {/* 프로필 목록 — [적용]은 수동 전환이라 쿨다운 타이머를 소모하지 않는다. */}
+            <div className="field">
+              <label>{t(lang, "auto.profiles")}</label>
+            </div>
+            {autoWs && autoWs.profiles.length > 0 ? (
+              <ul className="detail" style={{ margin: "0 0 8px", paddingLeft: "18px" }}>
+                {autoWs.profiles.map((p) => (
+                  <li key={p.id} style={{ marginBottom: "6px" }}>
+                    <b>{p.name || p.id}</b>
+                    {autoWs.active_profile === p.id
+                      ? ` — ${t(lang, "auto.activeProfile")}`
+                      : ""}
+                    <div style={{ marginTop: "4px" }}>
+                      <button
+                        type="button"
+                        className="block"
+                        disabled={autoBusy}
+                        onClick={() => void handleApplyProfile(p.id)}
+                      >
+                        {t(lang, "auto.applyProfile")}
+                      </button>{" "}
+                      <button
+                        type="button"
+                        className="block"
+                        disabled={autoBusy}
+                        onClick={() => handleRemoveProfile(p.id)}
+                      >
+                        {t(lang, "auto.remove")}
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div className="detail" style={{ marginBottom: "8px" }}>
+                {t(lang, "auto.none")}
+              </div>
+            )}
+
+            <div className="field">
+              <label htmlFor="autoNewProfile"> {t(lang, "auto.newProfilePlaceholder")}</label>
+              <input
+                id="autoNewProfile"
+                type="text"
+                value={autoNewProfile}
+                onChange={(e) => setAutoNewProfile(e.target.value)}
+                disabled={autoBusy}
+              />
+            </div>
+            <button
+              type="button"
+              className="block"
+              disabled={autoBusy}
+              onClick={handleAddProfileFromCurrent}
+              style={{ marginBottom: "12px" }}
+            >
+              {t(lang, "auto.addProfile")}
+            </button>
+
+            {/* 규칙 편집 — 종류별로 의미 있는 필드만 보여준다(시간대가 아닌 규칙에
+                시작/종료 시를 노출하면 "설정했는데 동작이 다르다"는 혼동이 생긴다). */}
+            <div className="field">
+              <label>{t(lang, "auto.rules")}</label>
+            </div>
+            {autoWs && autoWs.rules.length > 0 ? (
+              autoWs.rules.map((r, i) => (
+                <div
+                  key={r.id}
+                  className="detail"
+                  style={{
+                    border: "1px solid #ddd",
+                    borderRadius: "6px",
+                    padding: "8px",
+                    marginBottom: "8px",
+                  }}
+                >
+                  <div className="field">
+                    <label htmlFor={`autoRuleEnabled${i}`}>{t(lang, "auto.on")}</label>
+                    <input
+                      id={`autoRuleEnabled${i}`}
+                      type="checkbox"
+                      checked={r.enabled}
+                      disabled={autoBusy}
+                      onChange={(e) => updateRule(i, { enabled: e.target.checked })}
+                    />
+                  </div>
+                  <div className="field">
+                    <label htmlFor={`autoRuleKind${i}`}>{t(lang, "auto.ruleKind")}</label>
+                    <select
+                      id={`autoRuleKind${i}`}
+                      value={r.trigger.kind}
+                      disabled={autoBusy}
+                      onChange={(e) =>
+                        updateTrigger(i, { kind: e.target.value as AutoTriggerKind })
+                      }
+                    >
+                      <option value="time_window">{t(lang, "auto.kindTimeWindow")}</option>
+                      <option value="app_start">{t(lang, "auto.kindAppStart")}</option>
+                      <option value="rotation">{t(lang, "auto.kindRotation")}</option>
+                    </select>
+                  </div>
+                  {r.trigger.kind === "time_window" && (
+                    <>
+                      <div className="field">
+                        <label htmlFor={`autoRuleStart${i}`}>{t(lang, "auto.startHour")}</label>
+                        <input
+                          id={`autoRuleStart${i}`}
+                          type="number"
+                          min={0}
+                          max={23}
+                          value={r.trigger.start_hour}
+                          disabled={autoBusy}
+                          onChange={(e) =>
+                            updateTrigger(i, { start_hour: Number(e.target.value) || 0 })
+                          }
+                        />
+                      </div>
+                      <div className="field">
+                        <label htmlFor={`autoRuleEnd${i}`}>{t(lang, "auto.endHour")}</label>
+                        <input
+                          id={`autoRuleEnd${i}`}
+                          type="number"
+                          min={1}
+                          max={24}
+                          value={r.trigger.end_hour}
+                          disabled={autoBusy}
+                          onChange={(e) =>
+                            updateTrigger(i, { end_hour: Number(e.target.value) || 24 })
+                          }
+                        />
+                      </div>
+                      <div className="field">
+                        <label htmlFor={`autoRuleWeekdays${i}`}>{t(lang, "auto.weekdays")}</label>
+                        <input
+                          id={`autoRuleWeekdays${i}`}
+                          type="text"
+                          value={r.trigger.weekdays.join(",")}
+                          placeholder="1,2,3,4,5"
+                          disabled={autoBusy}
+                          onChange={(e) =>
+                            // 빈 값 = 요일 무관. 숫자 외 문자는 무시하고 0~6 만 남긴다
+                            // (코어 규약: 0=일 … 6=토, 빈 배열 = 매일).
+                            updateTrigger(i, {
+                              weekdays: e.target.value
+                                .split(",")
+                                .map((v) => Number(v.trim()))
+                                .filter((v) => Number.isInteger(v) && v >= 0 && v <= 6),
+                            })
+                          }
+                        />
+                        <div className="detail">{t(lang, "auto.weekdaysHint")}</div>
+                      </div>
+                    </>
+                  )}
+                  {r.trigger.kind === "rotation" && (
+                    <div className="field">
+                      <label htmlFor={`autoRuleRotate${i}`}>{t(lang, "auto.rotateMinutes")}</label>
+                      <input
+                        id={`autoRuleRotate${i}`}
+                        type="number"
+                        min={1}
+                        value={r.trigger.rotate_minutes}
+                        disabled={autoBusy}
+                        onChange={(e) =>
+                          updateTrigger(i, { rotate_minutes: Number(e.target.value) || 1 })
+                        }
+                      />
+                    </div>
+                  )}
+                  {r.trigger.kind !== "rotation" && (
+                    <div className="field">
+                      <label htmlFor={`autoRuleTarget${i}`}>{t(lang, "auto.targetProfile")}</label>
+                      <select
+                        id={`autoRuleTarget${i}`}
+                        value={r.target_profile}
+                        disabled={autoBusy || !autoWs}
+                        onChange={(e) => updateRule(i, { target_profile: e.target.value })}
+                      >
+                        {(autoWs?.profiles ?? []).map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name || p.id}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  <div className="field">
+                    <label htmlFor={`autoRuleDebounce${i}`}>{t(lang, "auto.debounce")}</label>
+                    <input
+                      id={`autoRuleDebounce${i}`}
+                      type="number"
+                      min={0}
+                      value={r.debounce_secs}
+                      disabled={autoBusy}
+                      onChange={(e) =>
+                        updateRule(i, { debounce_secs: Number(e.target.value) || 0 })
+                      }
+                    />
+                  </div>
+                  <div className="field">
+                    <label htmlFor={`autoRuleCooldown${i}`}>{t(lang, "auto.cooldown")}</label>
+                    <input
+                      id={`autoRuleCooldown${i}`}
+                      type="number"
+                      min={0}
+                      value={r.cooldown_secs}
+                      disabled={autoBusy}
+                      onChange={(e) =>
+                        updateRule(i, { cooldown_secs: Number(e.target.value) || 0 })
+                      }
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    className="block"
+                    disabled={autoBusy}
+                    onClick={() => handleRemoveRule(i)}
+                  >
+                    {t(lang, "auto.remove")}
+                  </button>
+                </div>
+              ))
+            ) : (
+              <div className="detail" style={{ marginBottom: "8px" }}>
+                {t(lang, "auto.none")}
+              </div>
+            )}
+
+            <button
+              type="button"
+              className="block"
+              disabled={autoBusy}
+              onClick={handleAddRule}
+              style={{ marginBottom: "8px" }}
+            >
+              {t(lang, "auto.addRule")}
+            </button>
+            <button
+              type="button"
+              className="block"
+              disabled={autoBusy}
+              onClick={() => void handleEvaluateAutoSwitch()}
+              style={{ marginBottom: "8px" }}
+            >
+              {t(lang, "auto.evaluate")}
+            </button>
+            <button
+              type="button"
+              className="primary block"
+              disabled={autoBusy || !autoWs}
+              onClick={() => void handleSaveAutoSwitch()}
+            >
+              {t(lang, "auto.save")}
             </button>
           </section>
 

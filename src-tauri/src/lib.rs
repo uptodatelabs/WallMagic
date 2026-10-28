@@ -970,9 +970,23 @@ pub fn save_scenario_impl(mut settings: ScenarioSettings) -> Result<ScenarioSett
 }
 
 /// IPC #9: 시나리오 스케줄러 틱 (주기 도래 시 다음 이미지 적용).
+///
+/// **자동 전환 규칙을 먼저 평가한다**(트레이 상주 중 주기 실행의 유일한 경로).
+/// 이전 구현은 앱 시작 시 1회 + 수동 버튼에서만 규칙을 평가해, 창을 닫고 트레이에
+/// 상주하는 동안에는 시간대 트리거가 발동하지 않았다 — "아침 6시에 어두운 프로필로
+/// 바뀐다"는 규칙이 앱을 다시 열 때까지 실행되지 않는 결함이다.
+///
+/// 순서가 중요하다: 규칙이 전환되면 코어가 `scenario.json` 을 새 프로필로 덮어쓰므로,
+/// 이어지는 `tick_scenario` 는 **전환된 설정**으로 실행된다(반대 순서면 한 주기 지연).
+///
+/// 규칙 평가 실패는 틱 자체를 막지 않는다 — `scenario_profiles.json` 이 손상돼도
+/// 배경화면 자동 갱신은 계속돼야 한다. 대신 사유를 stderr 로 남긴다(무음 실패 금지).
 #[tauri::command]
 fn tick_scenario_now() -> Result<Option<WallpaperState>, String> {
     let now = wallmagic_core::now_unix_secs();
+    if let Err(err) = evaluate_auto_switch_impl(now) {
+        eprintln!("auto-switch evaluation failed during tick: {err}");
+    }
     wallmagic_core::tick_scenario(now).map_err(err_to_string)
 }
 
@@ -1228,9 +1242,247 @@ fn restore_library_candidates() -> Result<Vec<WallpaperCandidate>, String> {
     restore_library_candidates_impl()
 }
 
+// ---------------------------------------------------------------------------
+// 자동 전환 규칙 엔진 IPC + 트레이 상주 + 로그인 자동 시작 (상용화 1단계)
+// ---------------------------------------------------------------------------
+
+/// 이 프로세스가 시작된 UNIX 초 — `AppStart` 트리거 판정에 쓴다.
+///
+/// `OnceLock` 으로 첫 호출 시각을 고정한다. 매 호출마다 `now` 를 쓰면
+/// "세션 시작 후 120초 이내" 조건이 영원히 참이 되어 AppStart 규칙이 무한 발동한다.
+fn session_start_secs() -> u64 {
+    static START: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *START.get_or_init(wallmagic_core::now_unix_secs)
+}
+
+/// 자동 전환 규칙을 **지금** 평가하고, 결정이 나면 `scenario.json` 을 덮어쓴다.
+///
+/// 반환값은 전환이 실제로 일어난 경우에만 `Some` 이다. 평가 자체가 실패하면
+/// (규칙 파일 손상 등) `Err` 를 그대로 올린다 — 조용한 폴스루 없음.
+/// 단, 앱 시작 경로(`setup`)는 이 오류를 **무시**한다. 규칙 파일이 깨져도 창은 떠야 한다.
+pub fn evaluate_auto_switch_impl(
+    now_secs: u64,
+) -> Result<Option<wallmagic_core::AutoSwitchOutcome>, String> {
+    let mut workspace = wallmagic_core::load_workspace().map_err(err_to_string)?;
+    // 프로필이 하나도 없으면 현재 scenario.json 을 '기본' 프로필로 승격한다.
+    // 이게 없으면 규칙의 target_profile 이 전부 "존재하지 않는 프로필"로 무시된다.
+    if wallmagic_core::ensure_seeded(&mut workspace) {
+        wallmagic_core::save_workspace(&workspace).map_err(err_to_string)?;
+    }
+    let (hour, weekday) = wallmagic_core::local_hour_weekday();
+    let clock = wallmagic_core::Clock {
+        now_secs,
+        hour,
+        weekday,
+        session_start_secs: session_start_secs(),
+    };
+    let outcome = wallmagic_core::evaluate(&mut workspace, &clock);
+    match outcome {
+        Some(ref decision) => {
+            // `switch_to_profile` 이 scenario.json 저장 → 워크스페이스 저장 순으로 처리한다.
+            // scenario.json 저장이 실패하면 active_profile 도 바뀌지 않아
+            // "표시는 바뀌었는데 실제 설정은 그대로"인 불일치가 생기지 않는다.
+            wallmagic_core::switch_to_profile(
+                &mut workspace,
+                &decision.profile_id,
+                Some(now_secs),
+            )
+            .map_err(err_to_string)?;
+        }
+        None => {
+            // 전환이 없어도 pending(디바운스 진행 상태)은 영속화한다 —
+            // 앱을 재시작할 때마다 디바운스가 0부터 다시 시작되면
+            // 자주 껐다 켜는 사용자에게 규칙이 영원히 발동하지 않는다.
+            wallmagic_core::save_workspace(&workspace).map_err(err_to_string)?;
+        }
+    }
+    Ok(outcome)
+}
+
+/// IPC: 자동 전환 워크스페이스(프로필 + 규칙 + 디바운스 상태) 조회.
+#[tauri::command]
+fn get_auto_switch_workspace() -> Result<wallmagic_core::ScenarioWorkspace, String> {
+    let mut workspace = wallmagic_core::load_workspace().map_err(err_to_string)?;
+    if wallmagic_core::ensure_seeded(&mut workspace) {
+        wallmagic_core::save_workspace(&workspace).map_err(err_to_string)?;
+    }
+    Ok(workspace)
+}
+
+/// IPC: 자동 전환 워크스페이스 저장 — 정규화된 값을 되돌려 UI 가 즉시 다시 그린다.
+///
+/// `pending`·`last_switch_at` 은 **서버(코어)가 소유**한다. UI 가 낡은 값을 보내
+/// 디바운스 상태를 되감으면 방금 시작된 계측이 사라지므로, 저장 시 pending 은
+/// 디스크의 현재 값을 유지하고 프로필·규칙만 교체한다.
+#[tauri::command]
+fn save_auto_switch_workspace(
+    workspace: wallmagic_core::ScenarioWorkspace,
+) -> Result<wallmagic_core::ScenarioWorkspace, String> {
+    let mut next = workspace;
+    if let Ok(current) = wallmagic_core::load_workspace() {
+        next.pending = current.pending;
+        if next.last_switch_at.is_none() {
+            next.last_switch_at = current.last_switch_at;
+        }
+    }
+    wallmagic_core::ensure_seeded(&mut next);
+    wallmagic_core::save_workspace(&next).map_err(err_to_string)?;
+    Ok(next)
+}
+
+/// IPC: 규칙을 지금 1회 평가한다(수동 "지금 확인"). 전환이 일어나면 그 결정을 돌려준다.
+#[tauri::command]
+fn evaluate_auto_switch() -> Result<Option<wallmagic_core::AutoSwitchOutcome>, String> {
+    evaluate_auto_switch_impl(wallmagic_core::now_unix_secs())
+}
+
+/// IPC: 프로필을 **수동**으로 적용한다(트레이 메뉴 "시나리오 수동 선택" 경로).
+///
+/// `now_secs = None` 을 넘겨 쿨다운 타이머를 건드리지 않는다 — 수동 조작이
+/// 자동 규칙의 쿨다운을 소모하면 사용자가 의도한 시각 전환이 밀린다.
+#[tauri::command]
+fn apply_scenario_profile(profile_id: String) -> Result<ScenarioSettings, String> {
+    let mut workspace = wallmagic_core::load_workspace().map_err(err_to_string)?;
+    wallmagic_core::ensure_seeded(&mut workspace);
+    wallmagic_core::switch_to_profile(&mut workspace, &profile_id, None).map_err(err_to_string)
+}
+
+/// IPC: 로그인 자동 시작이 현재 OS 에 등록돼 있는지 조회한다.
+///
+/// `UiPrefs` 같은 내부 플래그를 따로 두지 않고 **OS 등록 상태를 진실의 원천**으로 쓴다.
+/// 두 곳에 저장하면 사용자가 레지스트리/Run 키를 직접 지웠을 때 UI 와 실제가 어긋난다.
+#[tauri::command]
+fn get_autostart_enabled(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch()
+        .is_enabled()
+        .map_err(|e| format!("autostart is_enabled failed: {e}"))
+}
+
+/// IPC: 로그인 자동 시작을 켜거나 끈다. 반환값은 **적용 후 실제 상태**다.
+///
+/// `enable()` 성공만 믿고 `true` 를 돌려주지 않는다 — OS 등록이 부분적으로 실패하면
+/// UI 는 켜짐으로 표시되는데 실제로는 등록이 없는 상태가 된다. 그래서 등록 후
+/// `is_enabled()` 로 재확인한 값을 반환한다.
+#[tauri::command]
+fn set_autostart_enabled(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let manager = app.autolaunch();
+    if enabled {
+        manager
+            .enable()
+            .map_err(|e| format!("autostart enable failed: {e}"))?;
+    } else {
+        manager
+            .disable()
+            .map_err(|e| format!("autostart disable failed: {e}"))?;
+    }
+    manager
+        .is_enabled()
+        .map_err(|e| format!("autostart is_enabled failed: {e}"))
+}
+
+/// 메인 창을 앞으로 가져온다(트레이 "열기" · 두 번째 실행 · 시나리오 수동 선택).
+///
+/// 숨김 상태에서 `show()` 만 하면 최소화 상태가 남아 화면에 나타나지 않는다.
+/// `unminimize()` → `show()` → `set_focus()` 순으로 호출한다.
+fn show_main_window(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+}
+
+/// 트레이 아이콘 + 메뉴 구성 — 열기 / 숨기기 / 시나리오 수동 선택 / 자동 시작 토글 / 종료.
+///
+/// 창 닫기(X)는 `CloseRequested` 에서 `prevent_close()` + `hide()` 로 가로채므로,
+/// 프로세스를 끝내는 유일한 경로가 이 메뉴의 "종료"다. 그래서 "종료"가 없으면
+/// 트레이 상주 앱을 종료할 방법이 사라진다(작업 관리자 강제 종료만 남는다).
+fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+    use tauri::tray::TrayIconBuilder;
+
+    let open_item = MenuItem::with_id(app, "tray_open", "열기", true, None::<&str>)?;
+    let hide_item = MenuItem::with_id(app, "tray_hide", "숨기기", true, None::<&str>)?;
+    let scenario_item =
+        MenuItem::with_id(app, "tray_scenario", "시나리오 수동 선택", true, None::<&str>)?;
+    let autostart_item =
+        MenuItem::with_id(app, "tray_autostart", "자동 시작 켜기/끄기", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "tray_quit", "종료", true, None::<&str>)?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &open_item,
+            &hide_item,
+            &scenario_item,
+            &autostart_item,
+            &separator,
+            &quit_item,
+        ],
+    )?;
+
+    let mut builder = TrayIconBuilder::with_id("wallmagic-tray")
+        .tooltip("WallMagic")
+        .menu(&menu)
+        .show_menu_on_left_click(true)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "tray_open" => show_main_window(app),
+            "tray_hide" => {
+                use tauri::Manager;
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.hide();
+                }
+            }
+            "tray_scenario" => {
+                // 창을 띄운 뒤 프론트에 "수동 선택 UI 를 열어라" 이벤트를 보낸다.
+                // 트레이 메뉴에서 프로필을 직접 나열하지 않는 이유: 프로필 목록은
+                // scenario_profiles.json 이 진실의 원천이라, 메뉴를 앱 시작 시점에
+                // 캡처하면 사용자가 프로필을 추가/이름 변경한 뒤에도 낡은 목록이 남는다.
+                use tauri::Emitter;
+                show_main_window(app);
+                let _ = app.emit("tray://select-scenario", ());
+            }
+            "tray_autostart" => {
+                use tauri_plugin_autostart::ManagerExt;
+                let manager = app.autolaunch();
+                if let Ok(enabled) = manager.is_enabled() {
+                    let _ = if enabled {
+                        manager.disable()
+                    } else {
+                        manager.enable()
+                    };
+                }
+            }
+            "tray_quit" => app.exit(0),
+            _ => {}
+        });
+
+    // 아이콘이 없는 빌드(테스트 등)에서도 트레이 구성이 실패하지 않게 조건부로 붙인다.
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    builder.build(app)?;
+    Ok(())
+}
+
 /// Tauri v2 애플리케이션 진입 — 메인 창을 띄우고 IPC 커맨드를 배선한다.
 pub fn run() {
     tauri::Builder::default()
+        // 단일 인스턴스는 **가장 먼저** 등록한다(플러그인 문서 권고). 두 번째 실행은
+        // 새 프로세스를 만들지 않고 이 콜백만 호출되므로, 기존 창을 앞으로 가져온다.
+        // 이게 없으면 설정·history 를 두 프로세스가 동시에 쓰고 시나리오 틱이 2배로 돈다.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            show_main_window(app);
+        }))
+        // 로그인 자동 시작 — OS 등록(Windows Run 키)을 플러그인에 위임한다.
+        // `MacosLauncher` 는 비-Windows 에서만 쓰이지만 인자로는 항상 요구된다.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .invoke_handler(tauri::generate_handler![
             search_wallpapers,
             generate_wallpaper_ai,
@@ -1258,6 +1510,12 @@ pub fn run() {
             record_library_entry,
             restore_library_candidates,
             load_preview_image,
+            get_auto_switch_workspace,
+            save_auto_switch_workspace,
+            evaluate_auto_switch,
+            apply_scenario_profile,
+            get_autostart_enabled,
+            set_autostart_enabled,
         ])
         .setup(|app| {
             // 팝업 차단의 구조적 원인 해소: `tauri.conf.json` 의 `app.windows` 로 자동 생성된
@@ -1298,17 +1556,26 @@ pub fn run() {
                 let handle = app.handle().clone();
                 if let Some(main_window) = app.get_webview_window("main") {
                     main_window.on_window_event(move |event| {
-                        if let tauri::WindowEvent::CloseRequested { .. } = event {
-                            for (label, win) in handle.webview_windows() {
-                                if label != "main" {
-                                    let _ = win.destroy();
-                                }
+                        // 창 닫기(X) = **트레이 상주**. 프로세스를 종료하지 않고 숨긴다
+                        // (상용화 1단계: 상시 대기형 유틸 — 자동 변경이 계속 돈다).
+                        // 진짜 종료는 트레이 메뉴의 "종료"뿐이다.
+                        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                            api.prevent_close();
+                            if let Some(win) = handle.get_webview_window("main") {
+                                let _ = win.hide();
                             }
-                            handle.exit(0);
                         }
                     });
                 }
             }
+
+            // ── 트레이 아이콘 상주 ──
+            setup_tray(app.handle())?;
+
+            // 시작 직후 자동 전환 규칙을 1회 평가한다(AppStart 트리거·시간대 진입 처리).
+            // 실패해도 앱 시작을 막지 않는다 — 규칙 파일이 손상돼도 창은 떠야 한다.
+            let _ = evaluate_auto_switch_impl(wallmagic_core::now_unix_secs());
+
             Ok(())
         })
         .run(tauri::generate_context!())

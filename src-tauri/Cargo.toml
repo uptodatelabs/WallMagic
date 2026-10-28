@@ -23,3 +23,5 @@ wallmagic-core = { path = "../crates/core" }
 base64.workspace = true
 serde.workspace = true
 tauri.workspace = true
+tauri-plugin-autostart.workspace = true
+tauri-plugin-single-instance.workspace = true

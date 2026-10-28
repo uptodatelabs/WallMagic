@@ -7,6 +7,7 @@
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+pub mod auto_switch;
 pub mod scenario;
 pub mod search;
 pub mod store;
@@ -14,6 +15,12 @@ pub mod wallpaper;
 
 // Public facade: the canonical implementation lives in the `wallpaper` / `search` modules.
 // Types and functions are re-exported here so downstream crates keep a stable import path.
+pub use auto_switch::{
+    ensure_seeded, evaluate, load_workspace, local_hour_weekday, next_profile_after,
+    save_workspace, set_active_profile, switch_to_profile, trigger_matches, workspace_file_path,
+    AutoSwitchOutcome, AutoSwitchRule, Clock, PendingRule, ScenarioProfile, ScenarioWorkspace,
+    Trigger, TriggerKind,
+};
 pub use scenario::{
     advance_seed, cloudflare_accepts_seed, cloudflare_ai_url, default_cf_model,
     default_openai_model, default_provider_order, effective_provider_order,
