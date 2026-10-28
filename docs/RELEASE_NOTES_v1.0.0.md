@@ -4,12 +4,14 @@
 - 태그 / Tag: [`v1.0.0`](https://github.com/uptodatelabs/WallMagic/releases/tag/v1.0.0)
 - 저장소 / Repository: <https://github.com/uptodatelabs/WallMagic>
 
-[한국어](#한국어-korean) · [English](#english)
+[한국어](#ko) · [English](#en)
 
 > 이 문서는 **한국어 원문 + English 번역을 1:1 구조로 병기**한다. 절·불릿·코드블록 수가 어긋나면
 > `node scripts/verify-release.mjs` 가 실패한다. GitHub Release `v1.0.0` 본문과 같은 내용이다.
 
 ---
+
+<a id="ko"></a>
 
 ## 한국어 (Korean)
 
@@ -116,6 +118,8 @@
 - 배포 산출물은 서명되지 않아 Windows SmartScreen 경고가 표시된다
 
 ---
+
+<a id="en"></a>
 
 ## English
 

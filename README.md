@@ -2,9 +2,11 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![Windows 10 | 11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6)](#요구-사항) [![Tauri v2](https://img.shields.io/badge/Tauri-v2-24C8DB)](https://tauri.app) [![Rust 1.82+](https://img.shields.io/badge/Rust-1.82%2B-000000)](https://www.rust-lang.org) [![React 19](https://img.shields.io/badge/React-19-61DAFB)](https://react.dev)
 
-**한국어** | [English](#english)
+**한국어** | [English](#en)
 
 ---
+
+<a id="ko"></a>
 
 ## WallMagic이란?
 
@@ -394,9 +396,11 @@ WallMagic이 유용하다면 프로젝트를 후원해 주세요. 후원금은 �
 
 ---
 
+<a id="en"></a>
+
 ## English
 
-**English** | [한국어](#wallmagic이란)
+**English** | [한국어](#ko)
 
 > Full English translation of every section above — same structure, same tables, same code blocks.
 

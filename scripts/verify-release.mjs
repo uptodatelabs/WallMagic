@@ -361,6 +361,56 @@ if (!existsSync(notesPath)) {
   }
 }
 
+// ── ⑧ 문서 내부 앵커 링크 ─────────────────────────────────────────────────
+// 언어 전환 바로가기([한국어] · [English])가 눌러도 반응하지 않는 결함이 있었다.
+// 원인은 GitHub 이 헤딩에서 만드는 slug 와 손으로 쓴 href 의 불일치다 —
+// `## 한국어 (Korean)` 은 괄호를 지우면 공백이 두 개 남아 실제 slug 가
+// `한국어--korean` 인데 링크는 `#한국어-korean` 이었다. 화면에서는 구분되지 않는다.
+//
+// 그래서 slug 규칙을 신뢰하지 않고, 문서가 **명시적 id**(<a id="...">)를 두고
+// 링크가 그 id 를 가리키는지까지 함께 검사한다. 규칙 추종보다 계약이 명확하고
+// 뷰어(GitHub · 로컬 프리뷰) 차이에도 강하다.
+const slugOf = (heading) =>
+  heading
+    .replace(/<[^>]*>/g, "") // 헤딩 안의 인라인 HTML 은 slug 에 들어가지 않는다
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s_-]/gu, "") // 문자·숫자·공백·_·- 외 제거
+    .replace(/\s/g, "-"); // 공백 하나당 하이픈 하나 — 연속 공백은 연속 하이픈이 된다
+
+const stripFences = (text) => text.replace(/^```[\s\S]*?^```[^\n]*$/gm, "");
+const decodeAnchor = (s) => {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+};
+
+for (const docPath of ["README.md", notesPath]) {
+  if (!existsSync(docPath)) continue;
+  const doc = stripFences(readFileSync(docPath, "utf8"));
+
+  const explicit = new Set([...doc.matchAll(/<a\s+id="([^"]+)"/g)].map((m) => m[1]));
+  const headings = new Set([...doc.matchAll(/^#{1,6}\s+(.+)$/gm)].map((m) => slugOf(m[1])));
+  const anchors = new Set([...explicit, ...headings]);
+
+  const links = [...doc.matchAll(/\]\(#([^)\s]+)\)/g)].map((m) => decodeAnchor(m[1]));
+  const dead = [...new Set(links.filter((a) => !anchors.has(a)))];
+
+  if (dead.length > 0) {
+    bad(
+      `${docPath} 내부 앵커 링크 ${dead.length}건이 어떤 헤딩·id 와도 대응하지 않는다 — ` +
+        dead.map((a) => `#${a}`).join(", ")
+    );
+  } else {
+    ok(
+      `${docPath} 내부 앵커 링크 ${links.length}건 전부 실재 — ` +
+        `헤딩 ${headings.size} · 명시 id ${explicit.size}`
+    );
+  }
+}
+
 // ── 결과 ──────────────────────────────────────────────────────────────────
 if (fail > 0) {
   console.log(`\nFAIL: 릴리스 계약 위반 ${fail}건`);
