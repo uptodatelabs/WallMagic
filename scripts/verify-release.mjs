@@ -194,6 +194,105 @@ if (staleArtifacts.length > 0) {
   );
 }
 
+// ── ⑥ 릴리스 바이너리 경로 잔존 ─────────────────────────────────────────────
+// Rust 는 panic 위치(Location)와 file!() 문자열에 **소스 절대경로를 그대로 넣는다.**
+// `--remap-path-prefix` 없이 빌드하면 .exe 안에 `C:\Users\<계정>\.cargo\registry\...` 가
+// 남는다(리맵 전 실측: 541건). 이 상태로 배포하면 **git 히스토리를 재작성해도
+// 다운로드한 설치본에서 계정명이 그대로 보인다.**
+//
+// NSIS/MSI 는 압축(LZMA/cab)이라 문자열 스캔에 잡히지 않는다. 그래서 실질 계약은
+// **압축 이전의 exe** 이고, 인스톨러는 보조 검사로만 본다(설치하면 동일 exe 가 풀린다).
+// "인스톨러 스캔 0건"을 깨끗함의 증거로 쓰지 않는다.
+//
+// 계정명을 **문자로 쓰지 않는다.** 이 스크립트는 추적 대상이므로 여기에 개인 계정명을
+// 적으면 히스토리 재작성이 무의미해진다. 허용 이름(리맵 결과·Windows 기본 계정·CI 러너)
+// 외의 이름이 나오면 실패로 본다.
+const ALLOWED_PROFILE_NAMES = new Set([
+  "anonymous", // --remap-path-prefix 결과
+  "public",
+  "default",
+  "wdagutilityaccount",
+  "runneradmin", // GitHub Actions 러너
+  "user", // 문서의 <user> 마스킹 표기
+]);
+
+// 바이너리에서 `\Users\<이름>` 형태를 모두 뽑는다. latin1 은 바이트를 1:1 로 보존하므로
+// ASCII 경로 문자열이 변형 없이 잡힌다.
+const profileHits = (text) => {
+  const found = new Map();
+  const re = /[\\/]Users[\\/]([A-Za-z0-9._-]+)/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const name = m[1];
+    found.set(name, (found.get(name) ?? 0) + 1);
+  }
+  return found;
+};
+
+const leaksOf = (found) =>
+  [...found.entries()].filter(([name]) => !ALLOWED_PROFILE_NAMES.has(name.toLowerCase()));
+
+const releaseExes = [];
+for (const dir of ["target/release", "src-tauri/target/release"]) {
+  if (!existsSync(dir)) continue;
+  for (const file of readdirSync(dir)) {
+    if (file.toLowerCase().endsWith(".exe")) releaseExes.push(`${dir}/${file}`);
+  }
+}
+
+const checkoutPath = process.cwd().replace(/\//g, "\\");
+
+if (releaseExes.length === 0) {
+  const message =
+    "릴리스 exe 가 없다 — `scripts/release-build.cmd`(경로 리맵 포함) 로 빌드해야 한다";
+  if (requireArtifacts) bad(message);
+  else console.log("info " + message + " (바이너리 검사 생략)");
+} else {
+  for (const file of releaseExes) {
+    const text = readFileSync(file).toString("latin1");
+    const leaks = leaksOf(profileHits(text));
+
+    if (leaks.length === 0) {
+      ok(`바이너리에 프로필 경로 없음 — ${file}`);
+    } else {
+      for (const [name, count] of leaks) {
+        bad(
+          `바이너리에 프로필 경로 잔존 — ${file} 의 Users\\${name} ${count}건 ` +
+            "(--remap-path-prefix 로 재빌드해야 한다)"
+        );
+      }
+    }
+
+    if (text.includes(checkoutPath)) {
+      bad(`바이너리에 체크아웃 절대경로 잔존 — ${file} 에 ${checkoutPath}`);
+    } else {
+      ok(`바이너리에 체크아웃 절대경로 없음 — ${file}`);
+    }
+  }
+}
+
+// 인스톨러 보조 검사 — 압축이라 0건은 증명이 아니지만, 잔존하면 확실한 실패다.
+for (const root of roots) {
+  for (const kind of ["nsis", "msi"]) {
+    const dir = `${root}/${kind}`;
+    if (!existsSync(dir)) continue;
+    for (const file of readdirSync(dir)) {
+      if (versionInName(file) !== version) continue;
+      if (!file.endsWith(".exe") && !file.endsWith(".msi")) continue;
+
+      const path = `${dir}/${file}`;
+      const leaks = leaksOf(profileHits(readFileSync(path).toString("latin1")));
+      if (leaks.length > 0) {
+        for (const [name, count] of leaks) {
+          bad(`인스톨러에 프로필 경로 잔존 — ${path} 의 Users\\${name} ${count}건`);
+        }
+      } else {
+        console.log(`info 인스톨러 문자열 스캔 0건 — ${path} (압축이라 위 exe 검사가 실질 계약)`);
+      }
+    }
+  }
+}
+
 // ── 결과 ──────────────────────────────────────────────────────────────────
 if (fail > 0) {
   console.log(`\nFAIL: 릴리스 계약 위반 ${fail}건`);
