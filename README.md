@@ -35,7 +35,7 @@ WallMagic은 Windows 데스크톱의 바탕화면을 **찾고 · 만들고 · �
 | **시나리오** | 공급자 우선순위 · 자동 실행 간격 · 검색어 순환 · On/Off 토글 |
 | **다국어** | 한국어 / 영어 완전 지원(모든 사용자 노출 문자열이 사전 경유) |
 
-> IPC 커맨드 **26개**, 화면 **5개** + 히스토리 창 1개. 상세 인벤토리는 [`docs/VERIFY_ALL_FEATURES.md`](docs/VERIFY_ALL_FEATURES.md) 참조.
+> IPC 커맨드 **32개**, 화면 **5개** + 히스토리 창 1개. 상세 인벤토리는 [`docs/VERIFY_ALL_FEATURES.md`](docs/VERIFY_ALL_FEATURES.md) 참조.
 
 ---
 
@@ -363,7 +363,9 @@ seed 모드가 `fixed` 인지 확인하세요. `random` 이면 매 요청에 새
 - 자동 업데이트 경로 없음
 - CSP `null` (Tauri 기본값)
 - 공급자 API 키가 `scenario.json` 에 **평문 저장** — 값은 IPC 응답에서 마스킹되지만 파일 자체는 암호화되지 않습니다
-- 단일 인스턴스 미보장
+
+수집 · 전송 항목은 [`PRIVACY.md`](PRIVACY.md), 제3자 라이선스는 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) 에 정리했습니다.
+단일 인스턴스 · 트레이 상주 · 로그인 자동 시작 · 자동 전환 규칙 · 시나리오 백그라운드 스케줄러는 **구현되어 있습니다** (`src-tauri/src/lib.rs` 의 `setup_tray` · `spawn_scenario_timer`).
 
 취약점 제보는 [`SECURITY.md`](SECURITY.md) 를 참조하세요.
 
@@ -737,7 +739,9 @@ This project is at a **development-build stage with no code signing, no auto-upd
 - No auto-update path
 - CSP `null` (Tauri default)
 - Provider API keys are **stored in plaintext** in `scenario.json` — values are masked in IPC responses, but the file itself is not encrypted
-- Single instance not guaranteed
+
+Data collection and transfer are documented in [`PRIVACY.md`](PRIVACY.md); third-party licenses in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+Single instance, tray residency, launch at login, auto-switch rules, and the background scenario scheduler **are implemented** (`setup_tray`, `spawn_scenario_timer` in `src-tauri/src/lib.rs`).
 
 For vulnerability reports see [`SECURITY.md`](SECURITY.md).
 

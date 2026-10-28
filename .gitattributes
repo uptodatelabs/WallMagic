@@ -1,0 +1,22 @@
+# 줄바꿈 · 바이너리 규칙
+#
+# 목적: Windows 기여자가 배치 파일을 CRLF 로 커밋하거나, 바이너리가 텍스트로
+# diff 되어 리뷰 노이즈가 생기는 것을 막는다.
+#
+# 주의: `* text=auto eol=lf` 를 전역으로 선언하지 않았다. 전역 정규화는
+# `git add --renormalize .` 없이도 체크아웃 시 전체 파일의 바이트를 바꾸므로,
+# 공개 직후 첫 기여 커밋이 거대한 diff 로 보일 위험이 있다. 아래처럼 예외만
+# 선언하는 편이 안전하다.
+
+# Windows 배치 파일은 CRLF 를 유지해야 cmd.exe 가 안전하게 실행한다.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# 바이너리 — 텍스트 변환·텍스트 diff 대상에서 제외
+*.png binary
+*.ico binary
+*.bmp binary
+*.jpg binary
+*.jpeg binary
+*.exe binary
+*.msi binary

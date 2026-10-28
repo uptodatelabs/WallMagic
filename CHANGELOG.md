@@ -8,6 +8,10 @@
 
 ### Added
 
+- **[`PRIVACY.md`](PRIVACY.md)** — 개인정보 처리 안내(수집하지 않는 항목 · 로컬 저장 파일 · 제3자 전송 시점 · 평문 키 한계 · 삭제 방법). 감사 P0-4 대응
+- **[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)** — Rust 483개 · npm 133개 라이선스 집계(MPL-2.0 5 · Unicode-3.0 18 · CDLA-Permissive-2.0 2 등 주의 항목 별도 정리) + 재집계 명령. 감사 P0-4 대응
+- **[`.gitattributes`](.gitattributes)** — `*.cmd`/`*.bat` CRLF 고정, 이미지·설치본 바이너리 지정. `LF → CRLF` 경고 제거
+- `scripts/verify-app-meta.mjs` — 공개 필수 문서 목록에 `PRIVACY.md` · `THIRD_PARTY_NOTICES.md` 편입(누락 시 실패)
 - 릴리스 노트 한/영 병기 — [`docs/RELEASE_NOTES_v1.0.0.md`](docs/RELEASE_NOTES_v1.0.0.md), `verify-release` 가 절·불릿 수 1:1 대조
 - `docs/README.md` 인덱스에 릴리스 노트 행 추가
 

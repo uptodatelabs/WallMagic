@@ -58,7 +58,7 @@
 | 기본 우선순위 | **무료 우선**: Pollinations → Cloudflare → OpenAI | [실측] `default_provider_order()` / `effective_provider_order()` |
 | 무료 경로 | `Pollinations` = **키 불필요 · 무료**. `provider_is_configured()`가 항상 `true` 반환 | [실측] `scenario.rs` 주석 및 함수 |
 | 실제 차별점 | ① `IDesktopWallpaper` **모니터별 개별 적용** + `SystemParametersInfoW` 폴백 ② 적용 전 스냅샷(**Zero-Black-Screen**) ③ **BYOK**(키 하드코딩 0) ④ seed 3모드 ⑤ 공급자 우선순위·폴백·검색어 순환 | [실측] `README.md`, `scenario.rs` |
-| 규모 | IPC 26개 · 화면 5개 + 히스토리 창 1개 · ko/en 완전 지원 | [실측] `package.json`, `verify-ipc-contract.mjs` |
+| 규모 | IPC 32개 · 화면 5개 + 히스토리 창 1개 · ko/en 완전 지원 | [실측] `package.json`, `verify-ipc-contract.mjs` |
 | 수익화 코드 | **없음** (라이선스 검증·결제·크레딧 0줄) | [실측] `grep "lemon\|activate_license\|license_key\|is_pro\|paywall"` → 소스 0건 |
 | 문서 간 충돌 | `USER_MANUAL.md`: "외부 API·구독·인앱 결제가 없습니다" ↔ `development-plan.md`: "Pro $14.99 평생 라이선스" | [실측] 두 문서 모두 실재 |
 

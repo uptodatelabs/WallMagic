@@ -8,6 +8,8 @@
 
 > **상용화 1단계 개정 (트레이 · 자동 시작 · 시나리오 스케줄러)**: 트레이 상주, 로그인 자동 시작, 자동 전환 규칙 엔진(프로필 전환·디바운스·쿨다운·순환)이 추가되어 IPC 가 26 → **32종**, 코어 테스트가 85 → **101 passed**, 계약 검증 스크립트가 29 → **30종**이 되었다(`verify-scenario-scheduler` 신규). 이번 개정의 모든 수치는 아래 §6 의 명령 출력에서 재측정한 값이다. 자동 전환의 **주기 실행 주체는 Rust 백그라운드 스레드**이며, UI 는 `scenario://auto-applied` · `scenario://auto-tick-failed` 이벤트만 구독한다(숨김 창 WebView 타이머 스로틀링 회피).
 >
+> **(이력) v1.0.0 공개 준비 시점 개정 — 현재 값이 아니다. 기록 보존용으로만 남긴다.** 아래 문단의 26종 / 29종 / 85 passed 는 **그 시점의 값**이며, 현재 값은 바로 위 문단(32종 / 30종 / 101 passed)과 §6 의 실행 출력이다.
+>
 > **v1.0.0 공개 준비 개정**: 이전 판은 IPC 17종 / 스크립트 23종 시점의 기록이었다. 히스토리·메타데이터·원본 미리보기·창 관리 커맨드 9개가 추가되어, 본 개정에서 IPC **26종** / 계약 검증 스크립트 **29종** / 코어 **85 passed** / 앱 **21 passed** 로 **전 수치를 재측정**해 반영했다. 공개 준비 과정에서 저장소 위생(비밀정보·개인 경로) 검사 1종(`verify-repo-hygiene`)이 추가되어 27 → 28종, 이어 릴리스 계약 검사기(`verify-release`)가 추가되어 28 → 29종이 되었다. §3.1 에 추가된 9개(`get_app_meta` `get_history` `record_history_entry` `clear_history` `delete_history_entry` `open_history_window` `record_library_entry` `load_preview_image` `restore_library_candidates`)의 검증 근거도 같은 표에 명시했다.
 
 ---
@@ -59,6 +61,12 @@
 | 24 | `record_library_entry` | 라이브러리 항목 기록 |
 | 25 | `load_preview_image` | 원본 해상도 미리보기 로딩 |
 | 26 | `restore_library_candidates` | 라이브러리 후보 복원 |
+| 27 | `get_auto_switch_workspace` | 자동 전환 워크스페이스(프로필·규칙·활성 프로필) 조회 |
+| 28 | `save_auto_switch_workspace` | 자동 전환 워크스페이스 저장 (`scenario_profiles.json`) |
+| 29 | `evaluate_auto_switch` | 현재 시각 기준 규칙 1회 평가 |
+| 30 | `apply_scenario_profile` | 지정 프로필을 `scenario.json` 에 적용(수동 전환) |
+| 31 | `get_autostart_enabled` | 로그인 자동 시작 상태 조회(OS 등록 상태 재확인) |
+| 32 | `set_autostart_enabled` | 로그인 자동 시작 켜기/끄기 |
 
 ### 1.2 화면 5종
 
@@ -155,6 +163,12 @@
 | `record_library_entry` | `store::tests::test_push_library_dedupes_case_insensitively`, `_prune_missing_drops_vanished_files` | ok | 통과 [검증] |
 | `load_preview_image` | `verify-preview-viewer`(26항목: `load_preview_image` 호출·원본 우선·`viewer-${previewFit}` 전달) + `verify-ipc-contract`(`{path}`) | ok | 통과(계약) [검증] / 실 디코드 **미검증** |
 | `restore_library_candidates` | `verify-ipc-contract`(인자 없음 ↔ `{}`) + `verify-persist-i18n-meta`(복원 경로) | ok | 통과(계약) [검증] |
+| `get_auto_switch_workspace` | `verify-ipc-contract`(인자 없음 ↔ `{}`) | ok | 통과(계약) [검증] |
+| `save_auto_switch_workspace` | `verify-ipc-contract`(인자 키) + `verify-scenario-scheduler`(UI↔Rust 계약 14항목) | ok | 통과(계약) [검증] / 저장 실물 **미검증** |
+| `evaluate_auto_switch` | `verify-ipc-contract` + `verify-scenario-scheduler`(`scenario://` 이벤트 2종 구독·해제) | ok | 통과(계약) [검증] / 실발화 **미검증** |
+| `apply_scenario_profile` | `verify-ipc-contract`(인자 키) + `verify-scenario-scheduler`(프로필 선택 경로) | ok | 통과(계약) [검증] |
+| `get_autostart_enabled` | `verify-ipc-contract`(인자 없음 ↔ `{}`) | ok | **미검증** [검증] — OS 등록 상태 실측 0회 |
+| `set_autostart_enabled` | `verify-ipc-contract`(인자 키) | ok | **미검증** [검증] — 레지스트리 Run 키 실등록 0회 |
 
 ### 3.2 화면 — UI 계약
 
@@ -347,7 +361,7 @@ MATCH: IPC 명령 이름 + 인자 키 계약 일치 (32 commands, 34 호출부)
 ```
 
 ```
-$ grep "tauri::command"  (src-tauri/src/lib.rs)  → 커맨드 26개 (기계 추출 결과와 일치)
+$ grep "tauri::command"  (src-tauri/src/lib.rs)  → 커맨드 32개 (기계 추출 결과와 일치)
 ```
 
 ```

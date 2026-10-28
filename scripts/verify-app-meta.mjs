@@ -122,7 +122,17 @@ if (!existsSync("LICENSE")) {
 }
 
 // ── 7) 공개 필수 문서 실재 ────────────────────────────────────────────────
-for (const doc of ["README.md", "LICENSE", "CONTRIBUTING.md", "SECURITY.md", "CHANGELOG.md"]) {
+// PRIVACY.md · THIRD_PARTY_NOTICES.md 는 P0-4(라이선스·제3자 고지·개인정보 고지)의
+// 이행 증거다. 이 목록에서 빠지면 문서가 다시 사라져도 검사가 통과해 버린다.
+for (const doc of [
+  "README.md",
+  "LICENSE",
+  "CONTRIBUTING.md",
+  "SECURITY.md",
+  "CHANGELOG.md",
+  "PRIVACY.md",
+  "THIRD_PARTY_NOTICES.md",
+]) {
   if (existsSync(doc)) ok(`공개 필수 문서 존재 — ${doc}`);
   else bad(`공개 필수 문서 누락 — ${doc}`);
 }

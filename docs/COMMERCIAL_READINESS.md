@@ -80,7 +80,7 @@
 - `tauri.conf.json` 전문에 `plugins.updater` 키 **없음**, `bundle.createUpdaterArtifacts` **없음**
 - `capabilities/default.json` permissions = `["core:default"]` **1개** → `updater:default` 없음
 - `Cargo.toml`, `src-tauri/Cargo.toml` 어디에도 `tauri-plugin-updater` 없음
-- 앱 내 업데이트 확인 IPC 커맨드 **없음** — 이번 세션에서 `verify-ipc-contract.mjs` 가 출력한 Rust 커맨드 26개 이름 전체(`open_external_url` … `restore_library_candidates`)에 `check_update`/`update` 계열이 **0건**이었다 `[실측]`
+- 앱 내 업데이트 확인 IPC 커맨드 **없음** — 이번 세션에서 `verify-ipc-contract.mjs` 가 출력한 Rust 커맨드 32개 이름 전체(`open_external_url` … `set_autostart_enabled`)에 `check_update`/`update` 계열이 **0건**이었다 `[실측]`
 
 **영향** API 스키마 변경(Pollinations 402 FREE_LIMIT 같은 정책 변경)·보안 취약점 발생 시 사용자가 스스로 새 버전을 내려받아 재설치해야 한다. 데스크톱 앱에서 실질적으로 가장 큰 이탈 요인이다.
 
@@ -113,9 +113,16 @@ connect-src ipc: http://ipc.localhost
 
 ---
 
-### P0-4. 라이선스·제3자 고지·개인정보 고지 파일이 없음
+### P0-4. 라이선스·제3자 고지·개인정보 고지 파일이 없음 → **해소 (2026-10-28)**
 
-**근거** `[실측]`
+**해소 근거** `[검증]`
+- `LICENSE` — MIT 전문 + `Copyright (c) 2026 uptodatelabs`. `verify-app-meta.mjs` 가 전문·저작자·연도를 대조한다.
+- `PRIVACY.md` (루트) — 수집하지 않는 정보 / 로컬 저장 파일 9종 / 제3자 전송 5개 공급자·전송 시점 / **API 키 평문 저장 한계(§4)** / 삭제·이전 방법 / English summary.
+- `THIRD_PARTY_NOTICES.md` (루트) — Rust 483개 · npm 133개 라이선스 실측 집계. MPL-2.0 5 · Unicode-3.0 18 · CDLA-Permissive-2.0 2 · `LGPL-2.1-or-later` 택일 2건의 처리 근거를 명시. `cargo metadata` / `package-lock.json` 만으로 재집계 가능하도록 명령 병기.
+- `.gitattributes` — `*.cmd`/`*.bat` 은 CRLF, 이미지·exe·msi 는 binary 로 고정(전역 `text=auto` 미선언 — 공개 직후 전체 파일 재정규화 diff 를 피하려는 의도).
+- `scripts/verify-app-meta.mjs` §7 공개 필수 문서 목록을 5종 → **7종**(+`PRIVACY.md`, `THIRD_PARTY_NOTICES.md`)으로 확장.
+
+**원래 근거** `[실측]`
 - `glob LICENSE*` → **일치 없음**. 그런데 `Cargo.toml` 은 `license = "MIT"` 선언
 - `glob docs/*` 결과에 `PRIVACY` / `EULA` / `THIRD_PARTY_NOTICES` / `CHANGELOG` **없음**
 - 앱은 사용자 프롬프트·검색어를 **제3자에게 전송**한다: Pollinations(`wallpaper.rs:319` [이전턴]), Cloudflare Workers AI(`scenario.rs:1064`), OpenAI(`scenario.rs:1193`), Puter, Wikimedia 검색(`search.rs`)
@@ -367,7 +374,7 @@ in_handler_not_attr=
 | P2-7 | P2 | 언어 자동 감지 | i18n 설정값 의존 | `navigator.language` 초기값 | S |
 | P2-8 | P2 | 이미지 후처리 없음 | `[확인필요]` | 모니터 분할·리사이즈 | M |
 
-**집계**: P0 **5건** / P1 **9건** / P2 **8건** = **22건** (P1-9 는 재측정 결과 결함 아님 → 해소로 분리)
+**집계**: P0 **5건** / P1 **9건**(해소 3건 — P1-5 · P1-6 · P1-9 → 실질 미해소 **6건**) / P2 **8건** = **22건**
 
 ---
 
@@ -376,10 +383,12 @@ in_handler_not_attr=
 **1차 (출시 전 필수, 1~2주)** — P0-3(CSP) → P0-4(문서) → P0-2(업데이터) → P0-1(서명) → P0-5(키 암호화)
 > CSP·문서는 하루 이내, 업데이터와 서명은 배포 파이프라인을 함께 손봐야 하므로 연속 배치한다. 업데이터는 서명된 산출물을 전제하므로 순서상 P0-1보다 먼저 설계하고 서명과 함께 켠다.
 
-**2차 (출시 직후, 2~4주)** — P1-10(버전 검증) → P1-2(CI) → P1-1(로그) → P1-5(단일 인스턴스) → P1-8(모니터 테스트)
+**2차 (출시 직후, 2~4주)** — P1-10(버전 검증) → P1-2(CI) → P1-1(로그) → P1-8(모니터 테스트)
+> P1-5(단일 인스턴스)는 `tauri_plugin_single_instance` 도입으로 **해소**되어 이 순서에서 제외한다.
 > 모두 S 규모이며 품질 게이트와 지원 기반을 만든다. P1-10을 먼저 하는 이유는 이후 변경의 안전망이 되기 때문이다. (P1-9 는 재측정 결과 결함이 아니어서 실행 순서에서 제외 — 남은 권고인 집계 자기검증만 P1-2 CI 편입 시 함께 반영)
 
-**3차 (사용성, 4~8주)** — P1-4(취소·진행률) → P1-6(트레이·자동시작) → P1-3(Vitest) → P1-7(에러 코드화) → P1-8(모니터 테스트)
+**3차 (사용성, 4~8주)** — P1-4(취소·진행률) → P1-3(Vitest) → P1-7(에러 코드화)
+> P1-6(트레이·자동시작)은 `setup_tray` · `tauri_plugin_autostart` 도입으로 **해소**되어 이 순서에서 제외한다.
 > 트레이·자동시작이 이 앱의 핵심 가치(매일 자동으로 바뀌는 배경화면)를 실제로 성립시킨다.
 
 **4차 (차별화)** — P2-1(해상도) → P2-3·P2-4(히스토리 강화) → P2-5(온보딩) → 나머지
@@ -390,7 +399,7 @@ in_handler_not_attr=
 
 정직하게 남긴다. 아래는 **판단하지 않았거나 근거가 부족한** 항목이다.
 
-1. **`src-tauri/src/lib.rs` 를 전문 열람하지는 않았다.** 다만 커맨드 surface 는 이번 세션에서 **기계 추출로 확인**했다 — `#[tauri::command]` **26개**, `generate_handler!` 등록 **26개**, 양쪽 차집합 **0건** `[실측]`. 반면 `setup()` 내부 구조·창 생성 경로·종료 핸들러 등 나머지 코드는 `[이전턴]`/`[추정]` 이다.
+1. **`src-tauri/src/lib.rs` 를 전문 열람하지는 않았다.** 다만 커맨드 surface 는 이번 세션에서 **기계 추출로 확인**했다 — `#[tauri::command]` **32개**, `generate_handler!` 등록 **32개**, 양쪽 차집합 **0건** `[실측]`. 반면 `setup()` 내부 구조·창 생성 경로·종료 핸들러 등 나머지 코드는 `[이전턴]`/`[추정]` 이다.
 2. **`src-ui/App.tsx` 전문 미열람.** 이번 감사에서 UI 근거는 `grep` 결과 3종(aria/role 10건, cancel 3건)과 이전 세션 실측에 한정된다. P2-5·P2-6·P2-8은 `[확인필요]`로 남겼다.
 3. **`glob "src-ui/**"` 가 일치 없음을 반환**했으나 이는 패턴 문제로 판단해 "파일 없음"의 근거로 쓰지 않았다.
 4. **감사 초기에는 실행 검증이 2개 명령뿐이었다**(커맨드 surface 추출 + `verify-ipc-contract`). 이후 상용화 1단계 구현에서 `cargo test --workspace --lib`(코어 **101 passed** · 앱 **21 passed**), `npm run build`, `node scripts/run-all-verify.mjs`(**30종 failed=0**), `node scripts/verify-scenario-scheduler.mjs`(14항목)를 실제 실행해 수치를 재측정했다. 다만 아래 P0/P1의 **런타임** 항목(트레이 실동작·자동 시작 실등록·취소 체감)은 여전히 미검증이다.
@@ -422,7 +431,7 @@ in_handler_not_attr=
 | **P0-2** | 자동 업데이트 | `tauri-plugin-updater` 미도입, `plugins.updater` 없음, IPC `check_update` 계열 0건 |
 | **P0-3** | CSP `null` | `src-tauri/tauri.conf.json` 의 `security.csp` 는 여전히 `null` — 권장 CSP 문자열은 §2 P0-3 참조 |
 | **P0-5** | API 키 평문 저장 | `scenario.json` 평문 유지. `keyring`/DPAPI 미도입 |
-| P1-1~P1-8 | 로그·CI·Vitest·취소·단일 인스턴스·트레이·에러 코드화·모니터 테스트 | 전부 미착수 |
+| P1-1 · P1-2 · P1-3 · P1-4 · P1-7 · P1-8 | 로그 · CI · Vitest · 취소 · 에러 코드화 · 모니터 테스트 | 전부 미착수 (P1-5 · P1-6 은 §6 표에서 **해소** 처리됨 — 이 행에서 제외) |
 
 > **공개 판단**: 코드·문서·메타데이터는 공개 가능 수준이지만, **P0-1/P0-2/P0-3/P0-5 는 "상용 배포" 기준의 미해소 항목**이며 배포물을 만들기 전에 처리해야 한다. 공개 저장소 자체는 이 사실을 `README.md §7 보안·알려진 제한` 과 이 보고서에 명시한 상태로 공개한다.
 
