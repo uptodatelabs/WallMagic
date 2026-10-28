@@ -8,12 +8,7 @@
 
 ### Added
 
-- README 에 **후원(Support) 섹션** 추가 — GitHub Sponsors · Ko-fi 실링크와 배지 (CodeNexus README `## Support` 형식 참조)
-- README **영문 섹션에 트레이 · 자동 시작 · 자동 전환 절 추가** — 한글 §와 동일 구조(트레이 메뉴 표 · 자동 시작 설명 · 트리거 표 · 60초 평가 주기 고지)로 한/영 대칭 유지
-- **트레이 상주** — 창 닫기(X)를 `CloseRequested` 에서 가로채 프로세스를 유지하고 트레이로 숨긴다. 트레이 메뉴 5종(열기 · 숨기기 · 시나리오 수동 선택 · 자동 시작 토글 · 종료). 프로세스 종료 경로는 트레이 "종료"뿐이므로 상주 중 자동 전환이 계속 돈다.
-- **단일 인스턴스 보장** — `tauri-plugin-single-instance` 를 최우선 등록. 두 번째 실행은 새 프로세스를 만들지 않고 기존 창을 앞으로 가져온다. 설정·`history.json` 동시 쓰기와 시나리오 틱 2배 실행을 막는다.
-- **로그인 자동 시작** — `tauri-plugin-autostart` 로 Windows Run 키 등록을 위임. IPC `get_autostart_enabled` / `set_autostart_enabled` 는 내부 플래그가 아니라 **OS 등록 상태를 진실의 원천**으로 읽고, 설정 후 `is_enabled()` 로 재확인한 실제 값을 반환한다.
-- **시나리오 자동 전환 백그라운드 스케줄러** — `spawn_scenario_timer` 가 Rust 스레드에서 60초 주기로 규칙 평가 → `tick_scenario` 를 실행하고 `scenario://auto-applied` · `scenario://auto-tick-failed` 이벤트로 UI 에 알린다. 프론트 `setInterval` 방식은 창을 트레이로 숨기면 WebView2 타이머 스로틀링으로 주기가 늘거나 멈추고, 히스토리 창이 함께 뜨면 틱이 2배로 돌았다.
+- (아직 없음)
 
 ### Changed
 
@@ -44,7 +39,7 @@
 
 ---
 
-## [1.0.0] — 2026-10-27
+## [1.0.0] — 2026-10-28
 
 첫 공개 릴리스. Windows 바탕화면 **검색 · 생성 · 적용 · 복원** 전체 흐름을 하나의 앱으로 제공합니다.
 
@@ -103,6 +98,17 @@
 - `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`, `LICENSE`(MIT)
 - `docs/` — 아키텍처 · 사용 매뉴얼 · Cloudflare 시나리오 설계 · 전기능 검증 보고서 · 상용화 준비도 감사
 
+**트레이 · 자동 시작 · 자동 전환**
+- **트레이 상주** — 창 닫기(X)를 `CloseRequested` 에서 가로채 프로세스를 유지하고 트레이로 숨긴다. 트레이 메뉴 5종(열기 · 숨기기 · 시나리오 수동 선택 · 자동 시작 토글 · 종료). 프로세스 종료 경로는 트레이 "종료"뿐이므로 상주 중 자동 전환이 계속 돈다.
+- **단일 인스턴스 보장** — `tauri-plugin-single-instance` 를 최우선 등록. 두 번째 실행은 새 프로세스를 만들지 않고 기존 창을 앞으로 가져온다. 설정·`history.json` 동시 쓰기와 시나리오 틱 2배 실행을 막는다.
+- **로그인 자동 시작** — `tauri-plugin-autostart` 로 Windows Run 키 등록을 위임. IPC `get_autostart_enabled` / `set_autostart_enabled` 는 내부 플래그가 아니라 **OS 등록 상태를 진실의 원천**으로 읽고, 설정 후 `is_enabled()` 로 재확인한 실제 값을 반환한다.
+- **시나리오 자동 전환 백그라운드 스케줄러** — `spawn_scenario_timer` 가 Rust 스레드에서 60초 주기로 규칙 평가 → `tick_scenario` 를 실행하고 `scenario://auto-applied` · `scenario://auto-tick-failed` 이벤트로 UI 에 알린다. 프론트 `setInterval` 방식은 창을 트레이로 숨기면 WebView2 타이머 스로틀링으로 주기가 늘거나 멈추고, 히스토리 창이 함께 뜨면 틱이 2배로 돌았다.
+- **자동 전환 규칙의 디바운스 · 쿨다운** — 조건이 연속 참인 시간과 전환 직후 재발동 금지를 분리해 시간 경계에서의 연속 전환을 막는다.
+
+**문서 (README)**
+- README 에 **후원(Support) 섹션** 추가 — GitHub Sponsors · Ko-fi 실링크와 배지
+- README **영문 섹션에 트레이 · 자동 시작 · 자동 전환 절 추가** — 한글 §와 동일 구조로 한/영 대칭 유지
+
 ### Changed
 
 - 프론트엔드 번들 크기 최적화 및 미리보기 패널 폭 확대(320px → 380px)
@@ -127,7 +133,7 @@
 
 - API 키가 `scenario.json` 에 평문 저장됨 (암호화 미적용)
 - 코드 서명 · 자동 업데이트 · CSP 미적용
-- 단일 인스턴스 미보장
+- 배포 산출물은 서명되지 않아 Windows SmartScreen 경고가 표시된다
 
 ---
 

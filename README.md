@@ -66,7 +66,18 @@ WallMagic은 Windows 데스크톱의 바탕화면을 **찾고 · 만들고 · �
 
 ## 빠른 시작
 
-### 설치
+### 설치 (인스톨러 — 일반 사용자)
+
+빌드 도구 없이 바로 쓰려면 [Releases](https://github.com/uptodatelabs/WallMagic/releases/latest) 에서 인스톨러를 내려받습니다.
+
+| 파일 | 형식 | 용도 |
+|---|---|---|
+| `WallMagic_1.0.0_x64-setup.exe` | NSIS | 일반 설치 (권장) |
+| `WallMagic_1.0.0_x64_en-US.msi` | MSI | 그룹 정책 · 기업 배포 |
+
+> 코드 서명이 아직 적용되지 않아 첫 실행 시 Windows SmartScreen 경고가 표시될 수 있습니다. **추가 정보 → 실행**으로 진행합니다.
+
+### 소스에서 빌드
 
 ```bash
 git clone https://github.com/uptodatelabs/WallMagic.git
@@ -443,7 +454,18 @@ WallMagic is a desktop application that finishes four desktop-wallpaper flows �
 
 ## Quick Start
 
-### Installation
+### Installation (installer — end users)
+
+To install without build tools, download an installer from [Releases](https://github.com/uptodatelabs/WallMagic/releases/latest).
+
+| File | Format | Use |
+|---|---|---|
+| `WallMagic_1.0.0_x64-setup.exe` | NSIS | Standard install (recommended) |
+| `WallMagic_1.0.0_x64_en-US.msi` | MSI | Group Policy · enterprise deployment |
+
+> The build is not code-signed yet, so Windows SmartScreen may warn on first launch. Choose **More info → Run anyway**.
+
+### Build from source
 
 ```bash
 git clone https://github.com/uptodatelabs/WallMagic.git
