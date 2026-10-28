@@ -8,7 +8,7 @@
 
 ### Added
 
-- (아직 없음 — 릴리스 후 추가되는 변경을 여기에 적는다)
+- README 에 **후원(Support) 섹션** 추가 — GitHub Sponsors · Ko-fi 실링크와 배지 (CodeNexus README `## Support` 형식 참조)
 
 ### Changed
 

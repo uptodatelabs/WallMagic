@@ -326,6 +326,15 @@ seed 모드가 `fixed` 인지 확인하세요. `random` 이면 매 요청에 새
 
 ---
 
+## 후원
+
+WallMagic이 유용하다면 프로젝트를 후원해 주세요. 후원금은 아직 남아 있는 배포 인프라 작업 — 코드 서명 · 자동 업데이트 · CSP 적용([`docs/COMMERCIAL_READINESS.md`](docs/COMMERCIAL_READINESS.md) P0) — 에 사용됩니다.
+
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/uptodatelabs)
+[![GitHub Sponsors](https://img.shields.io/badge/Sponsor-WallMagic-ea4aaa?style=for-the-badge&logo=githubsponsors&logoColor=white)](https://github.com/sponsors/uptodatelabs)
+
+---
+
 ## 라이선스
 
 [MIT License](LICENSE) — Copyright (c) 2026 **uptodatelabs**
@@ -637,6 +646,17 @@ For vulnerability reports see [`SECURITY.md`](SECURITY.md).
 Bug reports · feature requests · PRs are all welcome. Please read [`CONTRIBUTING.md`](CONTRIBUTING.md) before starting. **IPC contracts and i18n rules are enforced by the verification scripts**, so run `node scripts/run-all-verify.mjs` before opening a PR.
 
 Change history lives in [`CHANGELOG.md`](CHANGELOG.md).
+
+---
+
+## Support
+
+If you find WallMagic useful, consider supporting the project. Donations go toward the distribution infrastructure that is still missing — code signing, auto-update, and CSP ([`docs/COMMERCIAL_READINESS.md`](docs/COMMERCIAL_READINESS.md) P0).
+
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/uptodatelabs)
+[![GitHub Sponsors](https://img.shields.io/badge/Sponsor-WallMagic-ea4aaa?style=for-the-badge&logo=githubsponsors&logoColor=white)](https://github.com/sponsors/uptodatelabs)
+
+---
 
 ## License
 
