@@ -9,6 +9,11 @@
 ### Added
 
 - README 에 **후원(Support) 섹션** 추가 — GitHub Sponsors · Ko-fi 실링크와 배지 (CodeNexus README `## Support` 형식 참조)
+- README **영문 섹션에 트레이 · 자동 시작 · 자동 전환 절 추가** — 한글 §와 동일 구조(트레이 메뉴 표 · 자동 시작 설명 · 트리거 표 · 60초 평가 주기 고지)로 한/영 대칭 유지
+- **트레이 상주** — 창 닫기(X)를 `CloseRequested` 에서 가로채 프로세스를 유지하고 트레이로 숨긴다. 트레이 메뉴 5종(열기 · 숨기기 · 시나리오 수동 선택 · 자동 시작 토글 · 종료). 프로세스 종료 경로는 트레이 "종료"뿐이므로 상주 중 자동 전환이 계속 돈다.
+- **단일 인스턴스 보장** — `tauri-plugin-single-instance` 를 최우선 등록. 두 번째 실행은 새 프로세스를 만들지 않고 기존 창을 앞으로 가져온다. 설정·`history.json` 동시 쓰기와 시나리오 틱 2배 실행을 막는다.
+- **로그인 자동 시작** — `tauri-plugin-autostart` 로 Windows Run 키 등록을 위임. IPC `get_autostart_enabled` / `set_autostart_enabled` 는 내부 플래그가 아니라 **OS 등록 상태를 진실의 원천**으로 읽고, 설정 후 `is_enabled()` 로 재확인한 실제 값을 반환한다.
+- **시나리오 자동 전환 백그라운드 스케줄러** — `spawn_scenario_timer` 가 Rust 스레드에서 60초 주기로 규칙 평가 → `tick_scenario` 를 실행하고 `scenario://auto-applied` · `scenario://auto-tick-failed` 이벤트로 UI 에 알린다. 프론트 `setInterval` 방식은 창을 트레이로 숨기면 WebView2 타이머 스로틀링으로 주기가 늘거나 멈추고, 히스토리 창이 함께 뜨면 틱이 2배로 돌았다.
 
 ### Changed
 
@@ -90,7 +95,7 @@
 - `npm run release:check` — 버전 3곳 정합 · CHANGELOG 릴리스 섹션 · 산출물 실재 + **파일명 버전 포함**까지 검증
 - `scripts/verify-release.mjs` — 릴리스 계약 검사기 (계약 모드 / `--require-artifacts` 산출물 모드)
 - 저장소 위생 검사기 `scripts/verify-repo-hygiene.mjs` — 비밀정보 · 빌드 산출물 · 로컬 절대경로 추적 차단
-- 계약 검증 스크립트 29종 (`scripts/verify-*.mjs`) 및 일괄 러너 `node scripts/run-all-verify.mjs`
+- 계약 검증 스크립트 30종 (`scripts/verify-*.mjs`) 및 일괄 러너 `node scripts/run-all-verify.mjs`
 - IPC 이름 + 인자 키 ↔ Rust 시그니처 대조, i18n 키 계약, seed 정책, 미리보기 모드, 창 생성 async 규칙, 메타데이터 단일 소스 검증
 - Windows 편의 배치 파일 (인스톨러 빌드 · 실행 · 종료 · 검사)
 

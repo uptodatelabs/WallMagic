@@ -45,7 +45,7 @@ WallMagic은 Windows 데스크톱의 바탕화면을 **찾고 · 만들고 · �
 | 코어 | Rust 1.82+ (edition 2021) — `ureq 2`(TLS) · `image 0.25`(png/jpeg/bmp) · `serde` / `serde_json` · `thiserror 2` · `base64 0.22` · `urlencoding 2` · `tracing 0.1` |
 | Windows 연동 | `windows 0.62` — `Win32_System_Com` · `Win32_UI_Shell` · `Win32_UI_Shell_Common` · `Win32_UI_WindowsAndMessaging` · `Win32_Graphics_Gdi` · `Win32_Foundation` |
 | 프론트엔드 | [React 19](https://react.dev) · TypeScript 5.7 · Vite 6 · `@tauri-apps/api 2` |
-| 테스트 / 검증 | `cargo test`(워크스페이스 2개 크레이트) · 계약 검증 스크립트 29종 (Node.js, 추가 프레임워크 없음) |
+| 테스트 / 검증 | `cargo test`(워크스페이스 2개 크레이트) · 계약 검증 스크립트 30종 (Node.js, 추가 프레임워크 없음) |
 
 - **빌드 파이프라인** — `tsc` → `vite build` 로 만든 `dist/` 를 Tauri 가 정적 자산으로 번들에 포함합니다.
 - **두 창이 하나의 HTML 공유** — `index.html` 하나를 메인 창과 히스토리 창이 함께 쓰고, `src-ui/main.tsx` 가 `getCurrentWindow().label` 로 렌더 대상을 고릅니다.
@@ -237,6 +237,44 @@ src-ui (React)  ── IPC / JSON ──▶  src-tauri (Tauri v2)  ── 함수
 
 ---
 
+## 트레이 상주 · 자동 시작 · 자동 전환
+
+앱은 **창을 닫아도 종료되지 않습니다.** `X` 는 트레이로 숨기기만 하고, 백그라운드 스케줄러는 60초 주기로 자동 전환을 계속 실행합니다. 실제 종료는 트레이 메뉴의 **종료**입니다.
+
+### 트레이 메뉴
+
+| 메뉴 | 동작 |
+|---|---|
+| 열기 | 숨긴 메인 창을 다시 표시 |
+| 숨기기 | 창을 숨기고 백그라운드 유지 |
+| 시나리오 수동 선택 | 메인 창의 프로필 드롭다운을 연다 (프로필이 1개 이상일 때) |
+| 자동 시작 켜기/끄기 | 창을 열지 않고 로그인 자동 시작 토글 |
+| 종료 | 프로세스 종료 — 유일한 종료 경로 |
+
+### 자동 시작 (로그인 시)
+
+`자동 전환 규칙` 섹션의 **로그인 시 자동 시작** 체크박스, 또는 트레이 메뉴로 켭니다. 앱은 내부 플래그 대신 **Windows 시작 프로그램 등록 상태를 매번 다시 읽어** 표시하므로, 레지스트리를 직접 수정하거나 정책으로 차단되어도 UI 가 어긋나지 않습니다.
+
+### 자동 전환 규칙
+
+`자동 전환 규칙` 섹션에서 **프로필**과 **규칙**을 만듭니다.
+
+1. `새 프로필 이름` 입력 → **현재 설정으로 프로필 추가** — 지금 `시나리오 (자동 업데이트)` 설정이 그대로 프로필로 저장됩니다.
+2. **규칙 추가** → 트리거 선택
+
+| 트리거 | 설정 | 발동 조건 |
+|---|---|---|
+| 시간대 | 시작 시 · 종료 시 · 요일 | 해당 시간대 + 요일에 대상 프로필로 전환 (요일을 비우면 매일) |
+| 앱 시작 | 대상 프로필 | 앱이 시작될 때 1회 |
+| 순환 | 순환 주기(분) | 마지막 전환 후 N분 경과 시 다음 프로필로 순환 |
+
+3. **디바운스(초)** 는 조건이 연속으로 참이어야 하는 시간, **쿨다운(초)** 은 전환 직후 같은 규칙의 재발동을 막는 시간입니다. 순간적인 조건 변화로 배경이 요동치는 것을 방지합니다.
+4. **지금 규칙 평가** 로 저장 없이 1회 평가해 결과를 확인하고, **자동 전환 설정 저장** 으로 `scenario_profiles.json` 에 기록합니다.
+
+스케줄러는 **Rust 스레드**에서 돌기 때문에 창을 트레이로 숨겨도 주기가 늘거나 멈추지 않습니다. 평가 주기는 60초 고정이므로 시간대 경계 전환은 최대 60초 늦게 적용됩니다.
+
+---
+
 ## 데이터 위치
 
 | 파일 / 폴더 | 위치 | 내용 |
@@ -252,10 +290,10 @@ src-ui (React)  ── IPC / JSON ──▶  src-tauri (Tauri v2)  ── 함수
 
 ## 검증
 
-이 저장소는 **계약 검증 스크립트 29종**을 함께 운영합니다. IPC 이름과 인자 키, i18n 키, seed 정책, 미리보기 모드, 창 생성 스레드 규칙, 저장소 위생(비밀정보·개인 경로)이 코드 변경으로 깨지면 자동으로 감지됩니다.
+이 저장소는 **계약 검증 스크립트 30종**을 함께 운영합니다. IPC 이름과 인자 키, i18n 키, seed 정책, 미리보기 모드, 창 생성 스레드 규칙, 자동 전환 스케줄러 소유권, 저장소 위생(비밀정보·개인 경로)이 코드 변경으로 깨지면 자동으로 감지됩니다.
 
 ```bash
-# 전체 계약 검증 (29종)
+# 전체 계약 검증 (30종)
 node scripts/run-all-verify.mjs
 
 # 개별 실행
@@ -388,7 +426,7 @@ WallMagic is a desktop application that finishes four desktop-wallpaper flows �
 | Core | Rust 1.82+ (edition 2021) — `ureq 2` (TLS) · `image 0.25` (png/jpeg/bmp) · `serde` / `serde_json` · `thiserror 2` · `base64 0.22` · `urlencoding 2` · `tracing 0.1` |
 | Windows integration | `windows 0.62` — `Win32_System_Com` · `Win32_UI_Shell` · `Win32_UI_Shell_Common` · `Win32_UI_WindowsAndMessaging` · `Win32_Graphics_Gdi` · `Win32_Foundation` |
 | Frontend | [React 19](https://react.dev) · TypeScript 5.7 · Vite 6 · `@tauri-apps/api 2` |
-| Test / verification | `cargo test` (2 workspace crates) · 29 contract verification scripts (Node.js, no extra framework) |
+| Test / verification | `cargo test` (2 workspace crates) · 30 contract verification scripts (Node.js, no extra framework) |
 
 - **Build pipeline** — the `dist/` produced by `tsc` → `vite build` is embedded into the bundle by Tauri as static assets.
 - **Two windows share one HTML** — the main window and the history window share a single `index.html`, and `src-ui/main.tsx` picks the render target via `getCurrentWindow().label`.
@@ -568,6 +606,42 @@ Does not generate images. It finds public images and adds them as candidates, so
 
 History opens in a **separate window**, not in the main panel. The fullscreen preview closes with `Esc`.
 
+## Tray · Launch at Login · Auto Switch
+
+The app **keeps running when you close the window.** `X` only hides it to the tray, and the background scheduler keeps applying auto-switch rules every 60 seconds. The only real exit is **Quit** in the tray menu.
+
+### Tray menu
+
+| Menu | Action |
+|---|---|
+| Open | Show the hidden main window again |
+| Hide | Hide the window and keep running in the background |
+| Select scenario manually | Opens the profile dropdown in the main window (only when at least one profile exists) |
+| Toggle launch at login | Flips login autostart without opening the window |
+| Quit | Terminate the process — the only exit path |
+
+### Launch at login
+
+Turn it on with the **Launch at login** checkbox in the `Auto-switch rules` section, or from the tray menu. The app keeps no internal flag — it **re-reads the Windows startup registration state every time it renders**, so the UI stays correct even if you edit the registry directly or a policy blocks the entry.
+
+### Auto-switch rules
+
+Create **profiles** and **rules** in the `Auto-switch rules` section.
+
+1. Type a `New profile name` → **Add profile from current settings** — the current `Scenario (auto update)` settings are captured as a profile.
+2. **Add rule** → pick a trigger
+
+| Trigger | Settings | Fires when |
+|---|---|---|
+| Time window | Start hour · end hour · weekdays | Inside that window on those weekdays (leave weekdays empty for every day) |
+| App start | Target profile | Once, when the app starts |
+| Rotation | Rotation interval (minutes) | Cycles to the next profile N minutes after the last switch |
+
+3. **Debounce (seconds)** is how long a condition must stay true before switching; **Cooldown (seconds)** blocks the same rule from re-firing right after a switch. Together they stop transient condition changes from thrashing your wallpaper.
+4. Use **Evaluate rules now** to run one evaluation without saving, then **Save auto-switch settings** to persist to `scenario_profiles.json`.
+
+The scheduler runs on a **Rust thread**, so hiding the window to the tray never stretches or stops the interval. The evaluation period is fixed at 60 seconds, so a time-window boundary can be applied up to 60 seconds late.
+
 ## Data Locations
 
 | File / folder | Location | Contents |
@@ -581,10 +655,10 @@ History opens in a **separate window**, not in the main panel. The fullscreen pr
 
 ## Verification
 
-This repository ships **29 contract verification scripts**. They automatically detect when a code change breaks IPC names and argument keys, i18n keys, seed policy, preview modes, the window-creation thread rule, or repository hygiene (secrets · personal paths).
+This repository ships **30 contract verification scripts**. They automatically detect when a code change breaks IPC names and argument keys, i18n keys, seed policy, preview modes, the window-creation thread rule, the ownership of the auto-switch scheduler, or repository hygiene (secrets · personal paths).
 
 ```bash
-# full contract suite (29 scripts)
+# full contract suite (30 scripts)
 node scripts/run-all-verify.mjs
 
 # run individually

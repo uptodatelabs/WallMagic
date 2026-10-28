@@ -1,11 +1,13 @@
 # WallMagic — 전기능 결과 보고서 (All-Features Verification Report)
 
 > **대상**: WallMagic GUI (Tauri v2 + React 19 + `wallmagic-core`) 전 기능
-> **범위**: IPC 커맨드 26종 / 화면 5종 + 히스토리 창 1개 / 설정 항목 12종
+> **범위**: IPC 커맨드 32종 / 화면 5종 + 히스토리 창 1개 / 설정 항목 12종 + 시나리오 프로필 워크스페이스
 > **측정 일자**: 2026-10-27 (v1.0.0 공개 준비 시점 재측정)
 > **측정 기준**: §6 의 명령을 이번 측정에서 실행한 출력. 커밋 해시는 본문에 인용하지 않는다(§7 참조)
 > **플랫폼**: Windows (로컬 실측)
 
+> **상용화 1단계 개정 (트레이 · 자동 시작 · 시나리오 스케줄러)**: 트레이 상주, 로그인 자동 시작, 자동 전환 규칙 엔진(프로필 전환·디바운스·쿨다운·순환)이 추가되어 IPC 가 26 → **32종**, 코어 테스트가 85 → **101 passed**, 계약 검증 스크립트가 29 → **30종**이 되었다(`verify-scenario-scheduler` 신규). 이번 개정의 모든 수치는 아래 §6 의 명령 출력에서 재측정한 값이다. 자동 전환의 **주기 실행 주체는 Rust 백그라운드 스레드**이며, UI 는 `scenario://auto-applied` · `scenario://auto-tick-failed` 이벤트만 구독한다(숨김 창 WebView 타이머 스로틀링 회피).
+>
 > **v1.0.0 공개 준비 개정**: 이전 판은 IPC 17종 / 스크립트 23종 시점의 기록이었다. 히스토리·메타데이터·원본 미리보기·창 관리 커맨드 9개가 추가되어, 본 개정에서 IPC **26종** / 계약 검증 스크립트 **29종** / 코어 **85 passed** / 앱 **21 passed** 로 **전 수치를 재측정**해 반영했다. 공개 준비 과정에서 저장소 위생(비밀정보·개인 경로) 검사 1종(`verify-repo-hygiene`)이 추가되어 27 → 28종, 이어 릴리스 계약 검사기(`verify-release`)가 추가되어 28 → 29종이 되었다. §3.1 에 추가된 9개(`get_app_meta` `get_history` `record_history_entry` `clear_history` `delete_history_entry` `open_history_window` `record_library_entry` `load_preview_image` `restore_library_candidates`)의 검증 근거도 같은 표에 명시했다.
 
 ---
@@ -25,9 +27,9 @@
 
 ## 1. 기능 개요
 
-### 1.1 IPC 커맨드 26종
+### 1.1 IPC 커맨드 32종
 
-`#[tauri::command]` 기계 추출 결과 **26개**. `verify-ipc-contract.mjs` → `MATCH (26 commands, 28 호출부)`.
+`#[tauri::command]` 기계 추출 결과 **32개**. `verify-ipc-contract.mjs` → `MATCH (32 commands, 34 호출부)`.
 
 | # | 커맨드 | 역할 |
 |---|---|---|
@@ -101,14 +103,14 @@
 
 | # | 명령 | 대상 |
 |---|---|---|
-| 1 | `cargo test -p wallmagic-core --lib -- --test-threads=8` | 코어 도메인 로직 89 테스트 |
-| 2 | `cargo test -p wallmagic-app --lib -- --test-threads=4` | IPC 래퍼 계약 22 테스트(21 passed / 1 ignored) |
+| 1 | `cargo test --workspace --lib` | 코어 **105 테스트(101 passed / 4 ignored)** · 앱 **22 테스트(21 passed / 1 ignored)** |
+| 2 | `node scripts/verify-scenario-scheduler.mjs` | 시나리오 스케줄러 계약 **14항목** (정상 exit=0 / 과거 스냅샷 exit=1 양방향) |
 | 3 | `npx tsc --noEmit` | 프론트 타입 |
 | 4 | `npm run build` | `tsc && vite build` 프로덕션 번들 |
-| 5 | `node scripts/run-all-verify.mjs` | 계약 검증 스크립트 **29종** 일괄 |
+| 5 | `node scripts/run-all-verify.mjs` | 계약 검증 스크립트 **30종** 일괄 → `scripts=30 failed=0` |
 | 6 | `git log` / `git status` / `grep` | 상태·구조 실측 |
 
-`run-all-verify.mjs` 가 구동한 29종: `app-meta`, `applied-query`, `applied-sync`, `apply-label`, `delete-file`, `file-geninfo`, `format-err`, `free-port`, `generation-info`, `ipc-contract`, `persist-i18n-meta`, `popup-allow`, `popup-fallback`, `port-e2e`, `preview-fit-size`, `preview-viewer`, `provider-routing`, `provider-toggle-credit`, `puter-image`, `puter-priority`, `puter-signin`, `puter-usage-normalize`, `release`, `repo-hygiene`, `search-generate-button`, `search-provider`, `seed`, `ui-consistency`, `window-builder-async`.
+`run-all-verify.mjs` 가 구동한 30종: `app-meta`, `applied-query`, `applied-sync`, `apply-label`, `delete-file`, `file-geninfo`, `format-err`, `free-port`, `generation-info`, `ipc-contract`, `persist-i18n-meta`, `popup-allow`, `popup-fallback`, `port-e2e`, `preview-fit-size`, `preview-viewer`, `provider-routing`, `provider-toggle-credit`, `puter-image`, `puter-priority`, `puter-signin`, `puter-usage-normalize`, `release`, `repo-hygiene`, **`scenario-scheduler`**, `search-generate-button`, `search-provider`, `seed`, `ui-consistency`, `window-builder-async`.
 
 ---
 
@@ -165,7 +167,7 @@
 | 시나리오 | `verify-provider-toggle-credit`(18) · `verify-puter-priority`(12) | ok | 통과(계약) [검증] |
 | Puter 크레딧 정규화 | `verify-puter-usage-normalize`(17) | ok | 통과 [검증] — 실측 JSON(remaining 578.6956…, allowance 1,000) 재현 |
 | Puter 로그인·모델 | `verify-puter-signin` · `verify-puter-image`(12) | ok | 통과(계약) [검증] / 실브라우저 **미검증** |
-| IPC 이름·인자 키 | `verify-ipc-contract` → `MATCH (26 commands, 28 호출부)` | ok | 통과 [검증] |
+| IPC 이름·인자 키 | `verify-ipc-contract` → `MATCH (32 commands, 34 호출부)` | ok | 통과 [검증] |
 
 ### 3.3 설정·하이퍼파라미터
 
@@ -195,17 +197,17 @@
 
 | 분류 | 건수 | 비고 |
 |---|---|---|
-| **통과 (실행 검증)** | IPC 26 중 14 · 화면 5 중 0(계약만) · 설정 12 중 12 | 아래 "통과(계약)"와 구분 |
-| **통과 (계약만)** | IPC 26 중 10(`apply_generated_image`·`generate_library_wallpaper_with_provider`·`generate_wallpaper_ai`·`generate_wallpaper_openai`·`apply_wallpaper`·`restore_wallpaper`·`open_history_window`·`load_preview_image`·`clear_history`·`restore_library_candidates`) · 화면 5 전건 | 런타임 실행 없음 |
+| **통과 (실행 검증)** | IPC 32 중 16 · 화면 5 중 0(계약만) · 설정 12 중 12 | 아래 "통과(계약)"와 구분 |
+| **통과 (계약만)** | IPC 32 중 14(`apply_generated_image`·`generate_library_wallpaper_with_provider`·`generate_wallpaper_ai`·`generate_wallpaper_openai`·`apply_wallpaper`·`restore_wallpaper`·`open_history_window`·`load_preview_image`·`clear_history`·`restore_library_candidates`·`get_auto_switch_workspace`·`save_auto_switch_workspace`·`get_autostart_enabled`·`set_autostart_enabled`) · 화면 5 전건 | 런타임 실행 없음 |
 | **미검증 (수동 확인 필요)** | 2 — `candidate_for_path`, `list_monitors` | 검증 수단 자체가 부재/부족 |
 | **제외 (opt-in)** | 5 — 실 OS 배경·실네트워크 의존 | 실행 명령은 §5 |
 
 ### 실행 결과 집계 [검증]
 
 ```
-cargo test -p wallmagic-core --lib → 85 passed; 0 failed; 4 ignored   (등록 89)
+cargo test -p wallmagic-core --lib → 101 passed; 0 failed; 4 ignored  (등록 105)
 cargo test -p wallmagic-app  --lib → 21 passed; 0 failed; 1 ignored   (등록 22)
-node scripts/run-all-verify.mjs    → scripts=28 failed=0
+node scripts/run-all-verify.mjs    → scripts=30 failed=0
 npx tsc --noEmit                   → exit=0
 npm run build                      → exit=0 (39 modules, wallmagic@1.0.0)
 ```
@@ -237,7 +239,7 @@ npm run build                      → exit=0 (39 modules, wallmagic@1.0.0)
 
 | 항목 | 사유 | 대체 증거 |
 |---|---|---|
-| GUI 5화면 렌더·클릭 | 에이전트가 Tauri 창을 조작할 수 없음 | `verify-*` 29종의 계약 검증 + `grep <h2>` 구조 실측 |
+| GUI 5화면 렌더·클릭 | 에이전트가 Tauri 창을 조작할 수 없음 | `verify-*` 30종의 계약 검증 + `grep <h2>` 구조 실측 |
 | 실 API 호출(Pollinations/Cloudflare/OpenAI/Puter/Wikimedia) | 네트워크 의존·과금·레이트리밋 | 요청 조립 단위 테스트(`test_pollinations_url_carries_seed`, `test_openai_request_body_has_no_seed`, `cf_parse_*`) |
 | 실 OS 배경 적용·원복 | 사용자 데스크톱 변경 | 사이드카 복원·스냅샷 보존 단위 테스트 |
 | `tauri build` 패키징(NSIS/MSI) | 이번 측정 미실행 | — (**미검증**) |
@@ -280,7 +282,7 @@ test tests::test_online_generate_is_not_offline_gradient_stub ... ignored, requi
 test tests::test_online_search_falls_back_when_local_has_no_matches ... ignored, requires network access to the online image search API
 test wallpaper::pollinations_retry_tests::test_fetch_with_retry_recovers_from_transient_rate_limit ... ok
 test wallpaper::pollinations_retry_tests::test_fetch_with_retry_gives_up_after_max_attempts_with_diagnostics ... ok
-test result: ok. 85 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 22.64s
+test result: ok. 101 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 33.74s
 ```
 
 ```
@@ -335,13 +337,13 @@ dist/assets/index-k0zICrHf.js 317.84 kB │ gzip: 96.14 kB
 ```
 $ node scripts/run-all-verify.mjs
 exit=0
-scripts=28 failed=0
+scripts=30 failed=0
 ```
 
 ```
 $ node scripts/verify-ipc-contract.mjs
 exit=0
-MATCH: IPC 명령 이름 + 인자 키 계약 일치 (26 commands, 28 호출부)
+MATCH: IPC 명령 이름 + 인자 키 계약 일치 (32 commands, 34 호출부)
 ```
 
 ```
@@ -377,7 +379,7 @@ exit=0
 
 문서 본문에 자기 커밋 해시·`--stat` 수치를 넣지 않는 이유는 위 §7 안내와 같다 — 인용을 추가하는 편집이 파일 크기를 다시 바꾸어 인용값이 즉시 stale 이 되는 자기참조 루프가 생긴다. 따라서 본문은 자기 자신의 커밋 수치를 담지 않고, 최종 HEAD 기준 증빙은 대화 보고로만 제출한다.
 
-§6 의 테스트·스크립트 수치는 공개 준비 개정 시점의 워킹트리에서 재측정한 값이다 — core **85 passed / 4 ignored**, app **21 passed / 1 ignored**, `scripts=28 failed=0`, `tsc`·`build` exit=0. 본 보고서 추가는 실행 코드를 바꾸지 않으므로 커밋 후에도 그대로 유효하다.
+§6 의 테스트·스크립트 수치는 상용화 1단계 개정 시점의 워킹트리에서 재측정한 값이다 — core **101 passed / 4 ignored**, app **21 passed / 1 ignored**, `scripts=30 failed=0`, `tsc`·`build` exit=0. 본 보고서 추가는 실행 코드를 바꾸지 않으므로 커밋 후에도 그대로 유효하다.
 
 ---
 
@@ -387,6 +389,6 @@ exit=0
 2. **실네트워크 0회** — Pollinations 이미지 생성, Wikimedia 검색, Cloudflare/OpenAI/Puter API 호출을 실행하지 않았다. 따라서 "실제로 이미지가 생성되는가"는 이 보고서로 증명되지 않는다(§5.2 의 ignored 4건).
 3. **실 OS 배경 변경 0회** — 적용·원복·모니터별 지정은 OS 상태를 바꾸므로 실행하지 않았다. `list_monitors` 는 검증 수단 자체가 없다(§5.1-1).
 4. **`tauri build` 패키징 미실행** — 상용 배포 산출물(NSIS/MSI)은 이번 측정 범위 밖이다.
-5. **계약 검증의 한계** — `verify-*` 29종은 소스 문자열·구조를 검사하는 스크립트다. "함수가 의도대로 호출된다"는 사실은 검증하나, "호출 결과가 사용자에게 옳게 보인다"는 검증하지 않는다. 후자는 GUI 실기동이 필요하다.
+5. **계약 검증의 한계** — `verify-*` 30종은 소스 문자열·구조를 검사하는 스크립트다. "함수가 의도대로 호출된다"는 사실은 검증하나, "호출 결과가 사용자에게 옳게 보인다"는 검증하지 않는다. 후자는 GUI 실기동이 필요하다.
 6. **설정 항목 12종의 필드명** — 이번 측정에서 `scenario.rs` 를 다시 읽지 않고 테스트·스크립트 이름에서 역추적한 항목이 일부 있다(`source.local_dir` 등). 필드명 자체의 최신 확인은 별도 read 가 필요하다.
 7. **`scripts/run-all-verify.mjs`** 는 `scripts/verify-*.mjs` 를 **자동 수집**해 일괄 실행한다(목록을 파일에 하드코딩하지 않으므로 스크립트 추가 시 자동 편입). 파일 헤더의 "임시 — 실행 후 삭제" 주석은 공개 준비 과정에서 **정식 러너로 정정**했다. 다만 러너 자체의 실행 시간·병렬화는 이번에 측정하지 않았다(현재 `spawnSync` 순차 실행).

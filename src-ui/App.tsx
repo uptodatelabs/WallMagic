@@ -1046,51 +1046,76 @@ export function App(): React.ReactElement {
     })();
   }, []);
 
-  // 지적 #1: 자동 실행 타이머 — 앱이 켜져 있는 동안 60초마다 주기 도래를 확인한다.
-  // tick은 코어 should_run 게이트를 그대로 타므로 OFF/미도래 시 Ok(None)으로 skip된다.
-  // 지적 #4: 자동 틱 실패를 삼키지 않고 console.error + 카운터 + 상태 메시지로 노출한다.
+  // [검수 지적 #1 해소] 자동 전환 주기는 **Rust 스레드**가 소유한다(`spawn_scenario_timer`).
+  //
+  // 이전 구현은 여기서 `setInterval(60_000)` 로 `tick_scenario_now` 를 직접 호출했다.
+  // 그 경로는 ① 창을 닫아 트레이로 숨기면 WebView2 의 백그라운드 타이머 스로틀링에 걸려
+  // 발화가 지연·정지될 수 있고 ② 히스토리 창이 함께 떠 있으면 WebView 가 2개라 틱이
+  // 2배로 돌았다. 이제 주기 판정·적용은 Rust 가 단독으로 수행하므로(창 상태와 무관)
+  // UI 는 결과 이벤트만 받는다. **여기서 `tick_scenario_now` 를 다시 호출하지 않는다**(이중 틱 금지).
+  //
+  // 구독은 컴포넌트 수명 동안 유지된다. `listen()` 은 비동기이고, 해제 전에 언마운트되면
+  // 리스너가 누수되므로 `disposed` 플래그로 늦게 도착한 unlisten 도 즉시 호출한다.
   useEffect(() => {
-    const timer = setInterval(() => {
-      void (async () => {
-        try {
-          const applied = await invoke<WallpaperState | null>("tick_scenario_now");
-          if (applied) {
-            setScAutoFail(0);
-            setStatus((prev) =>
-              prev
-                ? {
-                    ...prev,
-                    current_wallpaper: applied.current_wallpaper,
-                    previous_wallpaper: applied.previous_wallpaper,
-                    backend_used: applied.backend_used,
-                    provider: applied.provider,
-                    source: applied.source,
-                  }
-                : prev,
-            );
-            reportOk(
-              t(lang, "scenario.autoApplied", {
-                backend: applied.backend_used ?? t(lang, "common.unknown"),
-              }),
-            );
-            await refreshScenario();
-            await refreshStatus();
-          }
-        } catch (err) {
-          console.error("scenario auto-tick failed:", err);
+    let disposed = false;
+    let unlistenApplied: (() => void) | undefined;
+    let unlistenFailed: (() => void) | undefined;
+
+    void (async () => {
+      try {
+        const offApplied = await listen<WallpaperState>("scenario://auto-applied", (event) => {
+          const applied = event.payload;
+          setScAutoFail(0);
+          setStatus((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  current_wallpaper: applied.current_wallpaper,
+                  previous_wallpaper: applied.previous_wallpaper,
+                  backend_used: applied.backend_used,
+                  provider: applied.provider,
+                  source: applied.source,
+                }
+              : prev,
+          );
+          reportOk(
+            t(lang, "scenario.autoApplied", {
+              backend: applied.backend_used ?? t(lang, "common.unknown"),
+            }),
+          );
+          void refreshScenario();
+          void refreshStatus();
+        });
+        if (disposed) offApplied();
+        else unlistenApplied = offApplied;
+
+        // Rust 는 실패 사유를 문자열 페이로드로 보낸다(무음 실패 금지 — 지적 #4 유지).
+        const offFailed = await listen<string>("scenario://auto-tick-failed", (event) => {
+          console.error("scenario auto-tick failed:", event.payload);
           setScAutoFail((n) => {
             const next = n + 1;
             setScInfo(
               (prev) =>
-                `${t(lang, "scenario.autoTickFail", { n: next, err: formatErr(err) })} · ${prev}`,
+                `${t(lang, "scenario.autoTickFail", { n: next, err: event.payload })} · ${prev}`,
             );
             return next;
           });
-        }
-      })();
-    }, 60_000);
-    return () => clearInterval(timer);
-  }, [refreshScenario, refreshStatus]);
+        });
+        if (disposed) offFailed();
+        else unlistenFailed = offFailed;
+      } catch (err) {
+        // 구독 자체가 실패하면 자동 전환이 조용히 죽는다 — 반드시 노출한다.
+        console.error("scenario 자동 전환 이벤트 구독 실패:", err);
+        setScInfo((prev) => `${formatErr(err)} · ${prev}`);
+      }
+    })();
+
+    return () => {
+      disposed = true;
+      unlistenApplied?.();
+      unlistenFailed?.();
+    };
+  }, [lang, refreshScenario, refreshStatus]);
 
   const handleSearch = async () => {
     setBusy(true);

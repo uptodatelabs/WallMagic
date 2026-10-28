@@ -990,6 +990,49 @@ fn tick_scenario_now() -> Result<Option<WallpaperState>, String> {
     wallmagic_core::tick_scenario(now).map_err(err_to_string)
 }
 
+/// 백그라운드 자동 전환 타이머 주기(초).
+///
+/// 프론트엔드 `setInterval` 로 틱을 돌리면 창을 닫아 트레이에 상주시킨 순간
+/// WebView2 가 숨김 창의 타이머를 스로틀링해 주기가 수 분으로 늘어난다.
+/// 그러면 "아침 6시에는 어두운 프로필" 같은 규칙이 앱을 다시 열 때까지
+/// 발동하지 않는다(검수 지적 [high]). 그래서 전환의 주체를 Rust 로 옮긴다.
+const SCENARIO_TICK_INTERVAL_SECS: u64 = 60;
+
+/// 백그라운드 자동 전환 타이머 — **트레이 상주·창 숨김과 무관하게** 계속 돈다.
+///
+/// 매 주기마다 `tick_scenario_now` 와 **동일한 순서**로 실행한다:
+/// ① 자동 전환 규칙 평가(`evaluate_auto_switch_impl`) → ② `tick_scenario`.
+/// 순서가 반대면 규칙이 갱신한 프로필이 다음 주기에야 반영돼 한 주기 지연된다.
+///
+/// 결과는 이벤트로 프론트에 알린다 — UI 는 표시만 담당하므로, 렌더링이 멈춘
+/// 숨김 창에서도 배경화면 전환 자체는 정상 수행된다.
+/// - `scenario://auto-applied`     : 전환이 발생함(페이로드 = `WallpaperState`)
+/// - `scenario://auto-tick-failed` : 틱 실패(페이로드 = 오류 문자열)
+///
+/// 실패해도 루프를 멈추지 않는다. 규칙 파일이 손상돼도 다음 주기에 다시 시도하고,
+/// 사유는 stderr + 이벤트 양쪽으로 남긴다(무음 실패 금지).
+fn spawn_scenario_timer(app: tauri::AppHandle) {
+    use tauri::Emitter;
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(SCENARIO_TICK_INTERVAL_SECS));
+        let now = wallmagic_core::now_unix_secs();
+        if let Err(err) = evaluate_auto_switch_impl(now) {
+            eprintln!("auto-switch evaluation failed during background tick: {err}");
+        }
+        match wallmagic_core::tick_scenario(now) {
+            Ok(Some(state)) => {
+                let _ = app.emit("scenario://auto-applied", &state);
+            }
+            Ok(None) => {}
+            Err(err) => {
+                let message = err_to_string(err);
+                eprintln!("scenario background tick failed: {message}");
+                let _ = app.emit("scenario://auto-tick-failed", message);
+            }
+        }
+    });
+}
+
 /// IPC #18: 앱 메타데이터(버전·제작자).
 ///
 /// 버전/제작자를 코드에 하드코딩하면 `Cargo.toml`(`workspace.package`)·
@@ -1571,6 +1614,11 @@ pub fn run() {
 
             // ── 트레이 아이콘 상주 ──
             setup_tray(app.handle())?;
+
+            // ── 자동 전환 백그라운드 타이머 ──
+            // 트레이 상주(창 숨김) 중에도 도는 유일한 경로다. 프론트 타이머는
+            // 숨김 WebView 에서 스로틀링되므로 신뢰할 수 없다.
+            spawn_scenario_timer(app.handle().clone());
 
             // 시작 직후 자동 전환 규칙을 1회 평가한다(AppStart 트리거·시간대 진입 처리).
             // 실패해도 앱 시작을 막지 않는다 — 규칙 파일이 손상돼도 창은 떠야 한다.

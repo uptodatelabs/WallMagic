@@ -47,9 +47,9 @@
 | 자산 | 결과 |
 |---|---|
 | `glob .github/**` | **일치 없음** → CI/CD 워크플로 없음 |
-| `glob LICENSE*` | **일치 없음** → 라이선스 파일 없음 (Cargo.toml 은 MIT 선언) |
-| `glob docs/*` | `ARCHITECTURE.md` `CLOUDFLARE_SCENARIO.md` `development-plan.md` `USER_MANUAL.md` `VERIFY_ALL_FEATURES.md` `VERIFY_M1.md` |
-| `glob scripts/*` | **35개** — `verify-*` **29개** + `run-all-verify` + `free-port` + `gen-icons` + CDP 프로브 3개(`cdp-puter-generate` `cdp-puter-probe` `test-puter-gesture`) `[검증]` |
+| `LICENSE` | **존재** — MIT 전문 + `Copyright (c) 2026 uptodatelabs` (공개 준비 커밋에서 추가) `[검증]` |
+| `glob docs/*` | `ARCHITECTURE.md` `CLOUDFLARE_SCENARIO.md` `COMMERCIAL_READINESS.md` `development-plan.md` `market-competitor-analysis.md` `market-verdict-summary.md` `README.md` `USER_MANUAL.md` `VERIFY_ALL_FEATURES.md` `VERIFY_M1.md` + `market/04-…md` `[검증]` |
+| `glob scripts/*` | **36개** — `verify-*` **30개** + `run-all-verify` + `free-port` + `gen-icons` + CDP 프로브 3개(`cdp-puter-generate` `cdp-puter-probe` `test-puter-gesture`) `[검증]` |
 
 ---
 
@@ -164,12 +164,12 @@ connect-src ipc: http://ipc.localhost
 
 ---
 
-### P1-2. CI가 없고 29개 검증 스크립트가 로컬 전용
+### P1-2. CI가 없고 30개 검증 스크립트가 로컬 전용
 
-**근거** `[실측]` `glob .github/**` → 일치 없음. `scripts/` 에 `verify-*` **29개** + `run-all-verify.mjs` 러너가 있으나 자동 실행 지점이 없다. 러너는 `verify-*.mjs` 를 디렉터리에서 자동 발견하므로 스크립트를 추가하면 자동 편입되어 목록이 stale 해질 수 없다.
+**근거** `[실측]` `glob .github/**` → 일치 없음. `scripts/` 에 `verify-*` **30개** + `run-all-verify.mjs` 러너가 있으나 자동 실행 지점이 없다. 러너는 `verify-*.mjs` 를 디렉터리에서 자동 발견하므로 스크립트를 추가하면 자동 편입되어 목록이 stale 해질 수 없다.
 `run-all-verify.mjs` 는 `scripts/verify-*.mjs` 를 **디렉터리에서 자동 발견**해 순차 실행하고, 실패가 1건이라도 있으면 `process.exit(1)` 로 종료하는 **정식 러너**다 — 헤더의 "임시 — 실행 후 삭제" 주석은 공개 준비 과정에서 정정되었다 `[검증: scripts/run-all-verify.mjs]`.
 
-**영향** 저장소 품질 게이트(검증 29종·`tsc`·`cargo test`·`build`)가 개발자 습관에만 의존한다. `package.json` scripts 에 `test`·`ci` 항목이 없다 `[실측]`.
+**영향** 저장소 품질 게이트(검증 30종·`tsc`·`cargo test`·`build`)가 개발자 습관에만 의존한다. `package.json` scripts 에 `test`·`ci` 항목이 없다 `[실측]`.
 
 **권장 조치**
 1. `package.json` 에 `"verify": "node scripts/run-all-verify.mjs"`, `"ci": "npm run verify && npm run build && cargo test --workspace"` 추가
@@ -279,12 +279,12 @@ korean_code_lines=68     # 그중 주석(//, ///, *, /*) 제외 = 실제 코드�
 **근거** `[실측]` 이번 감사에서 `src-tauri/src/lib.rs` 를 직접 계측한 결과 **불일치가 존재하지 않는다**:
 
 ```
-attr_commands=26      # #[tauri::command] (?:pub )?(?:async )?fn 추출
-handler_entries=26    # generate_handler![ ... ] 등록 항목
+attr_commands=32      # #[tauri::command] (?:pub )?(?:async )?fn 추출
+handler_entries=32    # generate_handler![ ... ] 등록 항목
 in_attr_not_handler=  # 양방향 차집합 공집합
 in_handler_not_attr=
 ```
-`verify-ipc-contract.mjs` 실행도 **`MATCH: IPC 명령 이름 + 인자 키 계약 일치 (26 commands, 28 호출부)`** 로 26개를 본다. 이전 기록의 "25" 는 `load_preview_image`·`restore_library_candidates` 추가 이전 시점값이거나 `async fn` 미인식 정규식 시절의 잔재다 — 즉 **보고서 초안의 P1-9 전제 자체가 stale** 이었다.
+`verify-ipc-contract.mjs` 실행도 **`MATCH: IPC 명령 이름 + 인자 키 계약 일치 (32 commands, 34 호출부)`** 로 32개를 본다. 상용화 1단계에서 자동 전환 규칙 엔진 커맨드 6개(`get_auto_switch_workspace` `save_auto_switch_workspace` `evaluate_auto_switch` `apply_scenario_profile` `get_autostart_enabled` `set_autostart_enabled`)가 추가되어 26 → **32** 로 늘었다. 이전 기록의 "25" 는 `load_preview_image`·`restore_library_candidates` 추가 이전 시점값이거나 `async fn` 미인식 정규식 시절의 잔재다 — 즉 **보고서 초안의 P1-9 전제 자체가 stale** 이었다.
 
 **남은 개선(권고)** `generate_handler!` 와 속성 추출 수가 **어긋날 때 검사기가 스스로 FAIL** 하도록 자기검증(`count(commands) === count(handler_entries)`)을 추가한다. 현재는 두 수치가 우연히 일치하지만, 커맨드를 추가하고 `generate_handler!` 등록을 빠뜨리면 `missing_in_rust`/`unused_in_rust` 로는 잡히지 않는다(그 커맨드는 UI 호출도 없으므로 양쪽에서 사라짐). 장기적으로는 정규식 대신 `syn` 기반 추출로 대체한다 — §3 검사기 결함 이력과 같은 뿌리다.
 
@@ -333,7 +333,7 @@ in_handler_not_attr=
 | 공급자 폴백·자격증명 교차 사용 방지 | `[이전턴]` `test_provider_credentials_are_not_cross_used` 등 |
 | 사용자 산출물 고유 파일명(덮어쓰기 금지) | `[이전턴]` `test_save_generated_image_never_overwrites_previous_output` 통과 |
 | 다국어 228키 ko/en, 동적 메시지 리터럴 0건 | `[이전턴]` 계측 결과 |
-| IPC 계약 검사(이름+인자 키) | `[실측]` 이번 세션 재실행 → `MATCH (26 commands, 28 호출부)` exit=0 |
+| IPC 계약 검사(이름+인자 키) | `[실측]` 재실행 → `MATCH (32 commands, 34 호출부)` exit=0 |
 | 접근성 기초(aria-label 5, role=dialog 2, aria-modal 2, role=status 1) | `[실측]` `grep "aria-|role="` App.tsx 10건 |
 | 문서 자산(ARCHITECTURE / USER_MANUAL / CLOUDFLARE_SCENARIO / development-plan / VERIFY) | `[실측]` `glob docs/*` |
 
@@ -349,14 +349,14 @@ in_handler_not_attr=
 | P0-4 | **P0** | LICENSE·제3자 고지·개인정보 고지 부재 | `glob LICENSE*` 0건 / `docs/*` 목록 | LICENSE·NOTICES·PRIVACY | S |
 | P0-5 | **P0** | API 키 평문 저장 | 마스킹 테스트만 존재 / keyring·DPAPI 부재 | DPAPI 암호화 저장 | M |
 | P1-1 | P1 | 로그·크래시 수집 부재 | core `tracing::` 10곳 / subscriber 없음 | subscriber + 파일 로그 + panic 훅 | S |
-| P1-2 | P1 | CI 부재, 검증 29종 로컬 전용 | `glob .github/**` 0건 / `package.json` scripts 4개 | Actions + `npm run ci` | S |
+| P1-2 | P1 | CI 부재, 검증 30종 로컬 전용 | `glob .github/**` 0건 / `package.json` scripts 4개 | Actions + `npm run ci` | S |
 | P1-3 | P1 | 프론트 테스트 프레임워크 없음 | `package.json` devDeps에 vitest 없음 | Vitest + 핵심 단위/스모크 | M |
 | P1-4 | P1 | 취소·진행률·경과시간 없음 | `grep cancel` 3건 전부 뷰어 | 취소 플래그 + 진행 표시 | M |
-| P1-5 | P1 | 단일 인스턴스 미보장 | workspace deps에 single-instance 없음 | 플러그인 도입 | S |
-| P1-6 | P1 | 트레이·자동시작 없음 | workspace deps / `app.trayIcon` 없음 | 트레이 + 자동시작 토글 | M |
+| ~~P1-5~~ | **해소** | ~~단일 인스턴스 미보장~~ → `tauri_plugin_single_instance` 도입 | `lib.rs` `.plugin(tauri_plugin_single_instance::init(...))` — 두 번째 실행은 새 프로세스 없이 기존 창을 앞으로 가져온다 | — |
+| ~~P1-6~~ | **해소** | ~~트레이·자동시작 없음~~ → `setup_tray`(메뉴 5종: 열기/숨기기/시나리오/자동시작/종료) + `tauri_plugin_autostart` | `lib.rs` `setup_tray` · `get/set_autostart_enabled` · 닫기(X)=숨김(`prevent_close`), 진짜 종료는 트레이 "종료"뿐 | — |
 | P1-7 | P1 | Rust 오류 문자열 한국어 하드코딩 | `[실측]` `src-tauri/src/lib.rs` 한글 포함 **414줄** 중 **코드·문자열 68줄**(주석 제외) — `199`·`332`·`345`·`370` 등 | 에러 코드화 + `t()` | M |
 | P1-8 | P1 | `list_monitors` 검증 0건 | 앱 테스트에 monitor 없음 | 순수 함수 분리 + 테스트 | S |
-| ~~P1-9~~ | **해소** | ~~커맨드 수 25 vs 26 불일치~~ → 재측정 결과 **불일치 없음** | `node -e` 추출 `attr_commands=26` / `handler_entries=26` / 차집합 0 · `verify-ipc-contract` 26 commands `[실측]` | 남은 권고: 집계 자기검증(`26===26`) 추가 | S |
+| ~~P1-9~~ | **해소** | ~~커맨드 수 25 vs 26 불일치~~ → 재측정 결과 **불일치 없음** (이후 26 → 32 로 증가) | `node -e` 추출 `attr_commands=32` / `handler_entries=32` / 차집합 0 · `verify-ipc-contract` 32 commands `[실측]` | 남은 권고: 집계 자기검증(`32===32`) 추가 | S |
 | P1-10 | P1 | 버전 검증기 부재(주석만 참조) | `Cargo.toml` 주석의 `verify-app-meta.mjs` 없음 | 검증기 작성·편입 | S |
 | P2-1 | P2 | 해상도 지정 불가 | `wallpaper.rs:319`·`scenario.rs:1193`·`search.rs:108,201` | 프리셋 + 공급자 게이팅 | M |
 | P2-2 | P2 | 비용·사용량 정보 부족 | Puter 단가 표 삭제 후 잔여 크레딧만 | 로컬 생성 카운터 | S |
@@ -393,7 +393,7 @@ in_handler_not_attr=
 1. **`src-tauri/src/lib.rs` 를 전문 열람하지는 않았다.** 다만 커맨드 surface 는 이번 세션에서 **기계 추출로 확인**했다 — `#[tauri::command]` **26개**, `generate_handler!` 등록 **26개**, 양쪽 차집합 **0건** `[실측]`. 반면 `setup()` 내부 구조·창 생성 경로·종료 핸들러 등 나머지 코드는 `[이전턴]`/`[추정]` 이다.
 2. **`src-ui/App.tsx` 전문 미열람.** 이번 감사에서 UI 근거는 `grep` 결과 3종(aria/role 10건, cancel 3건)과 이전 세션 실측에 한정된다. P2-5·P2-6·P2-8은 `[확인필요]`로 남겼다.
 3. **`glob "src-ui/**"` 가 일치 없음을 반환**했으나 이는 패턴 문제로 판단해 "파일 없음"의 근거로 쓰지 않았다.
-4. **실행 검증은 2개 명령만 수행했다.** 이번 세션에서 실행한 것은 ⓐ 커맨드 surface 기계 추출(`node -e`, `attr_commands=26` / `handler_entries=26` / 차집합 0) ⓑ `node scripts/verify-ipc-contract.mjs`(exit=0, `MATCH 26 commands, 28 호출부`) **2건**이다. `cargo test`·`npm run build`·검증 스크립트 전체는 실행하지 않았으므로, 그 밖의 "통과" 서술은 이전 세션 기록(`[이전턴]`)이다.
+4. **감사 초기에는 실행 검증이 2개 명령뿐이었다**(커맨드 surface 추출 + `verify-ipc-contract`). 이후 상용화 1단계 구현에서 `cargo test --workspace --lib`(코어 **101 passed** · 앱 **21 passed**), `npm run build`, `node scripts/run-all-verify.mjs`(**30종 failed=0**), `node scripts/verify-scenario-scheduler.mjs`(14항목)를 실제 실행해 수치를 재측정했다. 다만 아래 P0/P1의 **런타임** 항목(트레이 실동작·자동 시작 실등록·취소 체감)은 여전히 미검증이다.
 5. **GUI·실네트워크·실 OS 배경 변경 미실행.** P0/P1 항목 중 런타임 확인이 필요한 것(예: 트레이 동작, 취소 버튼 체감)은 설계 권고 수준이다.
 6. **가격·수익화 정책은 다루지 않았다.** 요청 범위가 "기능·품질 격차"이며, 가격은 시장·경쟁 조사가 별도로 필요하다. P2-2를 비용 가시성 항목으로만 남겼다.
 7. **의존성 취약점 스캔(`cargo audit`, `npm audit`) 미실행.** P0에 포함할지 판단하려면 실제 CVE 조회가 필요하다.
@@ -432,8 +432,8 @@ in_handler_not_attr=
 cargo check --workspace                  → exit=0 / Finished dev profile
 npm run build                            → exit=0 / 39 modules, index-k0zICrHf.js 317.84 kB
 node scripts/verify-app-meta.mjs         → exit=0 / 34항목 전부 ok
-node scripts/run-all-verify.mjs          → exit=0 / scripts=28 failed=0
-cargo test -p wallmagic-core --lib       → exit=0 / 85 passed; 0 failed; 4 ignored
+node scripts/run-all-verify.mjs          → exit=0 / scripts=30 failed=0
+cargo test -p wallmagic-core --lib       → exit=0 / 101 passed; 0 failed; 4 ignored
 cargo test -p wallmagic-app  --lib       → exit=0 / 21 passed; 0 failed; 1 ignored
 ```
 
