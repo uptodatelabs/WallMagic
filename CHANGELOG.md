@@ -128,6 +128,7 @@
 - `open_external_url` 스킴 화이트리스트(http/https)
 - 파일 삭제 허용 루트 검증
 - 저장소에 하드코딩된 API 키 없음 — 테스트 픽스처는 가짜 값만 사용
+- **릴리스 바이너리에서 소스 경로 제거** — Rust 는 panic 위치(`Location`)와 `file!()` 에 절대경로를 그대로 넣는다. `scripts/release-build.cmd` 가 `--remap-path-prefix` 로 사용자 프로필과 체크아웃 경로를 치환해 빌드하고, `verify-release` 가 `.exe` 안의 `\Users\<이름>` 패턴을 스캔해 허용 이름 외 잔존 시 실패시킨다 (리맵 전 실측 541건 → 리맵 후 0건)
 
 ### Known limitations
 
