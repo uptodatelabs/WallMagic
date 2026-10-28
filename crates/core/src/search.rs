@@ -554,11 +554,37 @@ pub fn generate_library_wallpaper(prompt: &str) -> Result<WallpaperCandidate, Wa
     })
 }
 
+/// 검색 후보 중 이번 적용에 쓸 인덱스를 고른다 (순수 함수).
+///
+/// 배경(실측 결함 — 사용자 보고 "검색만 선택 + 60분 자동 업데이트인데 배경화면이 안 바뀐다"):
+/// 이전 구현은 `result.candidates.first()` 로 **항상 0번 후보**를 썼다. Wikimedia 검색은
+/// 같은 키워드에 대해 같은 결과 순서를 돌려주고, 캐시 파일명도 `(query, idx)` 로 고정되므로
+/// 매 주기마다 **완전히 같은 파일**이 적용됐다. 적용 자체는 성공하므로 오류도 없고,
+/// 사용자에게는 "자동 업데이트가 동작하지 않는다"로 보인다.
+/// 후보를 회전 선택하면 같은 키워드라도 주기마다 다른 이미지가 적용된다.
+pub fn pick_candidate_index(candidate_count: usize, nonce: u64) -> usize {
+    if candidate_count == 0 {
+        return 0;
+    }
+    (nonce % candidate_count as u64) as usize
+}
+
+/// 프로세스 전역 단조 증가 nonce — 같은 키워드 반복 적용 시 후보를 한 칸씩 회전시킨다.
+static SEARCH_VARIANT_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// 후보 회전용 nonce 를 하나 소비한다 (0,1,2,… — 첫 호출은 0 이라 기존 동작과 동일).
+pub fn next_search_variant() -> u64 {
+    SEARCH_VARIANT_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// 검색(Search) 공급자: 키워드로 공개 이미지를 검색해 그 결과 1건을 `dest`에 확정한다.
 ///
 /// - 프롬프트(생성) 대신 **키워드 검색**을 사용하는 공급자 경로다.
-/// - `search_online_wallpapers`가 내려받은 캐시 파일 중 첫 후보를 원본으로 삼아
+/// - `search_online_wallpapers`가 내려받은 캐시 파일 중 **회전 선택된 후보**
+///   (`pick_candidate_index` + `next_search_variant`)를 원본으로 삼아
 ///   `normalize_to_hd`로 1920x1080 기준에 맞춘 뒤 `dest`에 저장한다.
+///   후보를 회전하지 않으면 같은 키워드의 자동 업데이트가 매 주기 같은 이미지를 다시
+///   적용해 "배경화면이 바뀌지 않는" 증상이 된다.
 /// - 파일 자체에 사이드카(`provider=search`, 검색어 포함)를 남겨, ② 생성처럼 배경을
 ///   적용하지 않는 경로에서도 미리보기가 자기 생성 경로를 정확히 표시할 수 있게 한다.
 /// - 검색 결과 0건·다운로드 전멸은 `Network`/`HttpStatus`로 그대로 반환한다(무음 폴백 금지).
@@ -570,12 +596,14 @@ pub fn generate_search_wallpaper(query: &str, dest: &PathBuf) -> Result<PathBuf,
         ));
     }
     let result = search_online_wallpapers(trimmed)?;
-    let first = result.candidates.first().ok_or_else(|| {
-        WallpaperError::Network(format!(
+    if result.candidates.is_empty() {
+        return Err(WallpaperError::Network(format!(
             "search provider found no usable image for '{trimmed}'"
-        ))
-    })?;
-    let bytes = std::fs::read(&first.path)
+        )));
+    }
+    let idx = pick_candidate_index(result.candidates.len(), next_search_variant());
+    let picked = &result.candidates[idx];
+    let bytes = std::fs::read(&picked.path)
         .map_err(|e| WallpaperError::CandidateLoad(format!("read searched image failed: {e}")))?;
     let img = image::load_from_memory(&bytes).map_err(|e| {
         WallpaperError::CandidateLoad(format!("searched image decode failed: {e}"))
@@ -591,4 +619,56 @@ pub fn generate_search_wallpaper(query: &str, dest: &PathBuf) -> Result<PathBuf,
         Some(&format!("Wikimedia Commons image search (키워드 검색) · query: {trimmed}")),
     )?;
     Ok(dest.clone())
+}
+
+#[cfg(test)]
+mod search_variant_tests {
+    use super::*;
+
+    /// 후보 인덱스 회전 — 경계·순환·결정성.
+    ///
+    /// 회귀 배경(사용자 보고): "검색만 선택 + 60분 간격인데 배경이 바뀌지 않는다".
+    /// 이전 구현은 `result.candidates.first()` 로 **항상 0번 후보**를 골랐고, 검색 결과는
+    /// 쿼리별 캐시 파일(`online_{hash}_{idx}.jpg`)에서 오므로 매 tick **같은 파일**이
+    /// 적용됐다. 회전이 그 원인을 제거한다.
+    #[test]
+    fn pick_candidate_index_rotates_and_wraps() {
+        // 후보 0개 — 패닉 없이 0 을 돌려준다(호출자는 빈 목록을 먼저 걸러낸다).
+        assert_eq!(pick_candidate_index(0, 0), 0);
+        assert_eq!(pick_candidate_index(0, 12_345), 0);
+
+        // 순환·랩어라운드.
+        assert_eq!(pick_candidate_index(3, 0), 0);
+        assert_eq!(pick_candidate_index(3, 1), 1);
+        assert_eq!(pick_candidate_index(3, 2), 2);
+        assert_eq!(pick_candidate_index(3, 3), 0);
+        assert_eq!(pick_candidate_index(3, 7), 1);
+
+        // 결정적 — 같은 nonce 는 같은 인덱스(캐시 재사용 경로에서도 재현 가능해야 한다).
+        assert_eq!(pick_candidate_index(5, 42), pick_candidate_index(5, 42));
+    }
+
+    /// 키워드 1개여도 후보가 N개면 N개를 모두 순환해야 한다.
+    ///
+    /// 이전 구현은 항상 0번이라 nonce 를 아무리 올려도 같은 배경이 적용됐다.
+    #[test]
+    fn pick_candidate_index_visits_every_candidate() {
+        let n = 4usize;
+        let picked: std::collections::HashSet<usize> = (0..n as u64)
+            .map(|nonce| pick_candidate_index(n, nonce))
+            .collect();
+        assert_eq!(
+            picked.len(),
+            n,
+            "후보 {n}개를 모두 서로 다르게 골라야 한다: {picked:?}"
+        );
+    }
+
+    /// variant nonce 는 단조 증가 — 같은 tick 안에서 두 번 호출해도 다른 후보가 나온다.
+    #[test]
+    fn next_search_variant_is_monotonic() {
+        let a = next_search_variant();
+        let b = next_search_variant();
+        assert!(b > a, "variant nonce 는 증가해야 한다: {a} → {b}");
+    }
 }
